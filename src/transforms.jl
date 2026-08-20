@@ -112,7 +112,7 @@ function analysis_axisym(cfg::SHTConfig, Vr::AbstractVector{<:Real})
     @inbounds for l in 0:lmax
         Ql[l+1] *= scaleφ
     end
-    return Ql
+    return _convert_mode_norm!(Ql, Ql, cfg, 0, lmax; to_internal=false)
 end
 
 """
@@ -203,7 +203,9 @@ function synthesis_axisym(cfg::SHTConfig, Qlm::AbstractVector{<:Complex})
     nlat, lmax = cfg.nlat, cfg.lmax
     length(Qlm) == lmax + 1 || throw(DimensionMismatch("Qlm length must be lmax+1=$(lmax+1)"))
     
-    RT = real(float(eltype(Qlm)))  # AD/Float32-safe output eltype
+    Qlm_int = _uses_canonical_convention(cfg) ? Qlm :
+              _convert_mode_norm!(similar(Qlm), Qlm, cfg, 0, lmax; to_internal=true)
+    RT = real(float(eltype(Qlm_int)))  # AD/Float32-safe output eltype
     Vr = Vector{RT}(undef, nlat)
     P = Vector{Float64}(undef, lmax + 1)
     xv = cfg.x  # hoist field reads out of the i/l loops (cfg is mutable, so not auto-hoisted)
@@ -214,7 +216,7 @@ function synthesis_axisym(cfg::SHTConfig, Qlm::AbstractVector{<:Complex})
 
         val = zero(RT)
         @inbounds for l in 0:lmax
-            val += real(Qlm[l+1] * P[l+1])  # Take real part for spatial field
+            val += real(Qlm_int[l+1] * P[l+1])  # Take real part for spatial field
         end
         Vr[i] = val
     end
@@ -254,7 +256,7 @@ function analysis_axisym_l(cfg::SHTConfig, Vr::AbstractVector{<:Real}, ltr::Int)
     @inbounds for l in eachindex(Ql)
         Ql[l] *= scaleφ
     end
-    return Ql
+    return _convert_mode_norm!(Ql, Ql, cfg, 0, ltr; to_internal=false)
 end
 
 """
@@ -268,7 +270,10 @@ function synthesis_axisym_l(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, ltr:
     ltr <= cfg.lmax || throw(ArgumentError("ltr must be <= lmax=$(cfg.lmax)"))
     ltr <= ltr_qlm || throw(ArgumentError("ltr must be <= length(Qlm)-1=$(ltr_qlm)"))
     
-    RT = real(float(eltype(Qlm)))  # AD/Float32-safe output eltype
+    Qlm_used = view(Qlm, 1:(ltr + 1))
+    Qlm_int = _uses_canonical_convention(cfg) ? Qlm_used :
+              _convert_mode_norm!(similar(Qlm_used), Qlm_used, cfg, 0, ltr; to_internal=true)
+    RT = real(float(eltype(Qlm_int)))  # AD/Float32-safe output eltype
     Vr = Vector{RT}(undef, nlat)
     P = Vector{Float64}(undef, ltr + 1)
     xv = cfg.x  # hoist field reads out of the i/l loops (cfg is mutable, so not auto-hoisted)
@@ -279,7 +284,7 @@ function synthesis_axisym_l(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, ltr:
 
         val = zero(RT)
         @inbounds for l in 0:ltr
-            val += real(Qlm[l+1] * P[l+1])
+            val += real(Qlm_int[l+1] * P[l+1])
         end
         Vr[i] = val
     end
@@ -323,7 +328,7 @@ function analysis_packed_ml(cfg::SHTConfig, im::Int, Vr_m::AbstractVector{<:Comp
 
     # Apply phi scaling to match full transform normalization
     Ql .*= scaleφ
-    return Ql
+    return _convert_mode_norm!(Ql, Ql, cfg, im, ltr; to_internal=false)
 end
 
 """
@@ -343,8 +348,10 @@ function synthesis_packed_ml(cfg::SHTConfig, im::Int, Ql::AbstractVector{<:Compl
     expected_len = ltr - im + 1
     length(Ql) == expected_len || throw(DimensionMismatch("Ql length must be $(expected_len)"))
 
+    Ql_int = _uses_canonical_convention(cfg) ? Ql :
+             _convert_mode_norm!(similar(Ql), Ql, cfg, im, ltr; to_internal=true)
     # Output eltype follows the input so AD types propagate.
-    CT = promote_type(eltype(Ql), ComplexF64)
+    CT = promote_type(eltype(Ql_int), ComplexF64)
     Vr_m = Vector{CT}(undef, nlat)
     P = Vector{Float64}(undef, ltr + 1)
     inv_scaleφ = phi_inv_scale(cfg)  # Match full transform normalization
@@ -356,7 +363,7 @@ function synthesis_packed_ml(cfg::SHTConfig, im::Int, Ql::AbstractVector{<:Compl
 
         val = zero(CT)
         @inbounds for l in im:ltr
-            val += Ql[l-im+1] * P[l+1]
+            val += Ql_int[l-im+1] * P[l+1]
         end
         Vr_m[i] = val * inv_scaleφ
     end
@@ -377,6 +384,7 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
     lmax, mmax = cfg.lmax, cfg.mmax
     size(Qlm, 1) == lmax + 1 || throw(DimensionMismatch("Qlm first dim must be lmax+1"))
     size(Qlm, 2) == mmax + 1 || throw(DimensionMismatch("Qlm second dim must be mmax+1"))
+    Qlm_int = _internal_coefficients(Qlm, cfg)
 
     # Accumulator eltype follows the input so AD types propagate.
     CT = promote_type(eltype(Qlm), ComplexF64)
@@ -386,7 +394,7 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
     # m = 0 contribution (no conjugate partner)
     Plm_norm_row!(P, cost, lmax, 0)  # P̄ already orthonormal-normalized
     @inbounds for l in 0:lmax
-        result += real(Qlm[l+1, 1]) * P[l+1]
+        result += real(Qlm_int[l+1, 1]) * P[l+1]
     end
 
     # m > 0 contributions: add both +m and -m via 2*real(...)
@@ -395,7 +403,7 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
         phase = cis(m * phi)  # e^(imφ)
         gm = zero(CT)
         @inbounds for l in m:lmax
-            gm += Qlm[l+1, m+1] * P[l+1]
+            gm += Qlm_int[l+1, m+1] * P[l+1]
         end
         result += 2 * real(gm * phase)
     end

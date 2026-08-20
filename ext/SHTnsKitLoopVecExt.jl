@@ -108,10 +108,7 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
             end
         end
     end
-    # NO conversion: `analysis_turbo` is documented as producing the same output
-    # as `SHTnsKit.analysis`, which is orthonormal-only. Converting here made the
-    # accelerator disagree with the function it is a drop-in for.
-    return alm
+    return SHTnsKit._externalize_coefficients!(alm, cfg)
 end
 
 """
@@ -125,8 +122,9 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
     size(alm, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
 
+    alm_int = SHTnsKit._internal_coefficients(alm, cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = eltype(alm)
+    CT = eltype(alm_int)
     Fφ = Matrix{CT}(undef, nlat, nlon)
     fill!(Fφ, 0.0 + 0.0im)
 
@@ -134,8 +132,6 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
     # Bind cfg fields to locals so the @tturbo loops below operate on plain arrays.
     # LoopVectorization can't analyze property access (cfg.Nlm) inside @tturbo, and cfg is mutable.
     xv = cfg.x
-
-    # NO conversion — see `analysis_turbo`: this mirrors orthonormal `synthesis`.
 
     # Adaptive threading: use nested parallelism for better load balancing
     n_threads = Threads.nthreads()
@@ -154,7 +150,7 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
                     g_im = 0.0
                     @tturbo warn_check_args=false for l in m:lmax
                         c = tbl[l + 1, i]  # P̄ already normalized; no extra Nlm
-                        a = alm[l + 1, col]
+                        a = alm_int[l + 1, col]
                         g_re += c * real(a)
                         g_im += c * imag(a)
                     end
@@ -168,7 +164,7 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
                     g_im = 0.0
                     @tturbo warn_check_args=false for l in m:lmax
                         c = thread_P[l + 1]  # P̄ already normalized; no extra Nlm
-                        a = alm[l + 1, col]
+                        a = alm_int[l + 1, col]
                         g_re += c * real(a)
                         g_im += c * imag(a)
                     end
@@ -201,7 +197,7 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
                     g_im = 0.0
                     @tturbo warn_check_args=false for l in m:lmax
                         c = tbl[l + 1, i]  # P̄ already normalized; no extra Nlm
-                        a = alm[l + 1, col]
+                        a = alm_int[l + 1, col]
                         g_re += c * real(a)
                         g_im += c * imag(a)
                     end
@@ -215,7 +211,7 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
                     g_im = 0.0
                     @tturbo warn_check_args=false for l in m:lmax
                         c = thread_P[l + 1]  # P̄ already normalized; no extra Nlm
-                        a = alm[l + 1, col]
+                        a = alm_int[l + 1, col]
                         g_re += c * real(a)
                         g_im += c * imag(a)
                     end

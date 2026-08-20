@@ -107,8 +107,8 @@ end
 function _synthesis_qst(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix,
                         ::Val{real_output}) where {real_output}
     validate_qst_dimensions(Qlm, Slm, Tlm, cfg)
-    # Reuse the scalar and sphtor implementations; both are orthonormal, so the
-    # triple needs no normalization handling here.
+    # Reuse the scalar and sphtor public-boundary implementations. Each converts
+    # exactly its own component from the configured coefficient convention.
     Vr = _synthesis(cfg, Qlm, Val(real_output), nothing, Val(false))
     Vt, Vp = _synthesis_sphtor(cfg, Slm, Tlm, Val(real_output), Val(false))
 
@@ -127,7 +127,7 @@ function analysis_qst(cfg::SHTConfig, Vr::AbstractMatrix, Vt::AbstractMatrix, Vp
     # Validate input dimensions
     validate_vector_spatial_dimensions(Vr, Vt, Vp, cfg)
 
-    # Everything is orthonormal, so the triple is just the two sub-transforms.
+    # Each sub-transform returns configured coefficients exactly once.
     Qlm = analysis(cfg, Vr)
     Slm, Tlm = analysis_sphtor(cfg, Vt, Vp)
 
@@ -141,9 +141,7 @@ Complex version of QST to spatial transform, preserving complex values.
 """
 function synthesis_qst_cplx(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix)
     validate_qst_dimensions(Qlm, Slm, Tlm, cfg)
-    # No conversion on either component: `synthesis_cplx` and the `_synthesis_sphtor`
-    # that `synthesis_sphtor_cplx` delegates to are both orthonormal-only, so Q/S/T
-    # enter on one convention. Matches the real-output `_synthesis_qst`.
+    # Each component delegates to the same converting boundary as the real path.
     Vr = synthesis_cplx(cfg, Qlm)
     Vt, Vp = synthesis_sphtor_cplx(cfg, Slm, Tlm)
 
@@ -161,9 +159,7 @@ function analysis_qst_cplx(cfg::SHTConfig, Vr::AbstractMatrix{<:Complex}, Vt::Ab
     # Validate input dimensions
     validate_vector_spatial_dimensions(Vr, Vt, Vp, cfg)
 
-    # Transform each component. `analysis` and the `analysis_sphtor` that
-    # `analysis_sphtor_cplx` delegates to are both orthonormal-only, so the
-    # returned triple sits on one convention (see `analysis_qst`).
+    # Transform each component through its configured-convention boundary.
     Qlm = analysis(cfg, Vr)
     Slm, Tlm = analysis_sphtor_cplx(cfg, Vt, Vp)
 
@@ -204,9 +200,7 @@ end
 function _synthesis_qst_l(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix,
                           ltr::Int, ::Val{real_output}) where {real_output}
     validate_qst_dimensions(Qlm, Slm, Tlm, cfg)
-    # Same single convention as `_synthesis_qst`: neither `_synthesis_l` nor
-    # `_synthesis_sphtor_l` converts, and `analysis_qst_l` returns Q orthonormal,
-    # so the degree-limited round trip closes for every `cfg.norm`.
+    # The scalar and horizontal degree-limited boundaries each convert once.
     Vr = _synthesis_l(cfg, Qlm, ltr, Val(real_output))
     Vt, Vp = _synthesis_sphtor_l(cfg, Slm, Tlm, ltr, Val(real_output))
     return Vr, Vt, Vp
@@ -221,9 +215,7 @@ function analysis_qst_ml(cfg::SHTConfig, im::Int, Vr_m::AbstractVector{<:Complex
     # Transform each component for this specific mode
     Ql = analysis_packed_ml(cfg, im, Vr_m, ltr)
     Sl, Tl = analysis_sphtor_ml(cfg, im, Vt_m, Vp_m, ltr)
-    # `analysis_packed_ml` and `analysis_sphtor_ml` are both orthonormal-only, so
-    # the returned triple sits on one convention — no scaling here, matching
-    # `analysis_qst`.
+    # Both fixed-mode sub-transforms already return configured coefficients.
 
     return Ql, Sl, Tl
 end
@@ -234,9 +226,7 @@ end
 Mode-limited synthesis for specific azimuthal mode im.
 """
 function synthesis_qst_ml(cfg::SHTConfig, im::Int, Ql::AbstractVector{<:Complex}, Sl::AbstractVector{<:Complex}, Tl::AbstractVector{<:Complex}, ltr::Int)
-    # Synthesize each component for this specific mode. Exact inverse of
-    # `analysis_qst_ml`: Q/S/T all arrive orthonormal, which is what
-    # `synthesis_packed_ml` and `synthesis_sphtor_ml` expect — nothing to convert.
+    # Each fixed-mode sub-transform converts its component to canonical once.
     Vr_m = synthesis_packed_ml(cfg, im, Ql, ltr)
     Vt_m, Vp_m = synthesis_sphtor_ml(cfg, im, Sl, Tl, ltr)
 

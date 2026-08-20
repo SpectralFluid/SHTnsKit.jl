@@ -93,9 +93,10 @@ function synthesis_packed_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Comp
     mres == 1 || throw(ArgumentError("LM_cplx layout only defined for mres==1"))
     expected = nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)
     length(alm_packed) == expected || throw(DimensionMismatch("alm length $(length(alm_packed)) != expected $(expected)"))
+    alm_int = _internal_coefficients(alm_packed, cfg)
 
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = eltype(alm_packed)
+    CT = eltype(alm_int)
     Fφ = Matrix{CT}(undef, nlat, nlon)
     fill!(Fφ, zero(CT))
 
@@ -119,10 +120,10 @@ function synthesis_packed_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Comp
             gp = zero(CT); gn = zero(CT)
             @inbounds for l in am:lmax
                 Pl = P[l+1]
-                ap = alm_packed[LM_cplx_index(lmax, mmax, l, am) + 1]
+                ap = alm_int[LM_cplx_index(lmax, mmax, l, am) + 1]
                 gp += Pl * ap
                 if am > 0
-                    an = alm_packed[LM_cplx_index(lmax, mmax, l, -am) + 1]
+                    an = alm_int[LM_cplx_index(lmax, mmax, l, -am) + 1]
                     gn += Pl * an
                 end
             end
@@ -181,7 +182,7 @@ function analysis_packed_cplx(cfg::SHTConfig, z::AbstractMatrix{<:Complex})
             end
         end
     end
-    return alm
+    return _externalize_coefficients!(alm, cfg)
 end
 
 """
@@ -192,9 +193,10 @@ Evaluate a complex field represented by packed `alm` at a single point.
 function synthesis_point_cplx(cfg::SHTConfig, alm::AbstractVector{<:Complex}, cost::Real, phi::Real)
     expected = nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)
     length(alm) == expected || throw(DimensionMismatch("alm length mismatch"))
+    alm_int = _internal_coefficients(alm, cfg)
     x = float(cost)
     lmax, mmax = cfg.lmax, cfg.mmax
-    CT = eltype(alm)
+    CT = eltype(alm_int)
     P = Vector{Float64}(undef, lmax + 1)
     acc = zero(CT)
     # Loop over |m| once (P̄_l^{|m|}, CS-phase and norm scale depend only on |m|)
@@ -204,10 +206,10 @@ function synthesis_point_cplx(cfg::SHTConfig, alm::AbstractVector{<:Complex}, co
         gp = zero(CT); gn = zero(CT)
         @inbounds for l in am:lmax
             Pl = P[l+1]
-            ap = alm[LM_cplx_index(lmax, mmax, l, am) + 1]
+            ap = alm_int[LM_cplx_index(lmax, mmax, l, am) + 1]
             gp += Pl * ap
             if am > 0
-                an = alm[LM_cplx_index(lmax, mmax, l, -am) + 1]
+                an = alm_int[LM_cplx_index(lmax, mmax, l, -am) + 1]
                 gn += Pl * an
             end
         end

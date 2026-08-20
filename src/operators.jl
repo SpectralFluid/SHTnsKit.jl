@@ -100,6 +100,26 @@ Out-of-range neighbors (l<m or l>lmax) are automatically ignored.
 """
 
 """
+    apply_laplacian!(cfg::SHTConfig, alm::AbstractMatrix)
+
+Apply the spherical Laplacian eigenvalue `-l(l+1)` to dense spectral
+coefficients in place. This is the host implementation used by optional device
+wrappers when execution is explicitly routed to `CPU()`.
+"""
+function apply_laplacian!(cfg::SHTConfig, alm::AbstractMatrix)
+    lmax, mmax = cfg.lmax, cfg.mmax
+    size(alm, 1) == lmax + 1 ||
+        throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
+    size(alm, 2) == mmax + 1 ||
+        throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
+
+    @inbounds for m in 0:mmax, l in m:lmax
+        alm[l + 1, m + 1] *= -(l * (l + 1))
+    end
+    return alm
+end
+
+"""
     mul_ct_matrix(cfg::SHTConfig, mx::AbstractVector{<:Real})
 
 Fill `mx` with coupling coefficients for cosθ operator: cosθ Y_l^m = a_l^m Y_{l-1}^m + b_l^m Y_{l+1}^m.
@@ -208,4 +228,3 @@ function SH_mul_mx(cfg::SHTConfig, mx::AbstractVector{<:Real}, Qlm::AbstractVect
     end
     return Rlm
 end
-

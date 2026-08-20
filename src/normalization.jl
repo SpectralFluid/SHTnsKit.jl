@@ -106,9 +106,10 @@ mathematical relationships.
 The scale factor depends on the target convention:
 - :orthonormal → k = 1 (no scaling)
 - :fourpi → k = sqrt(4π) (geodesy convention)
-- :schmidt → k = sqrt((2 - δ_{0m}) * 4π/(2l+1)) (semi-normalized, common in geomagnetics)
-  where δ_{0m} = 1 if m=0, else 0. This gives sqrt(4π/(2l+1)) for m=0,
-  and sqrt(2) * sqrt(4π/(2l+1)) for m>0.
+- :schmidt → k = sqrt(4π/(2l+1)) (Schmidt semi-normalization)
+
+The optional real-basis `sqrt(2)` factor is deliberately separate from Schmidt
+normalization and is controlled by `cfg.real_norm`.
 """
 function norm_scale_from_orthonormal(l::Int, m::Int, to::Symbol)
     if to === :orthonormal
@@ -123,14 +124,30 @@ function norm_scale_from_orthonormal(l::Int, m::Int, to::Symbol)
     elseif to === :schmidt
         # Schmidt semi-normalized spherical harmonics
         # Used extensively in geomagnetic field modeling (e.g., IGRF, WMM)
-        # The ratio includes the (2 - δ_{0m}) factor for proper m-dependence
-        m_factor = m == 0 ? 1.0 : 2.0  # (2 - δ_{0m})
-        return sqrt(m_factor * 4π / (2l + 1))
+        return sqrt(4π / (2l + 1))
 
     else
         throw(ArgumentError("Unsupported normalization: $to"))
     end
 end
+
+"""
+    coefficient_scale_to_canonical(cfg, l, m)
+
+Return the multiplier `s` such that `a_canonical = s * a_configured` for the
+same physical field. The canonical convention is orthonormal with the
+Condon–Shortley phase. With `real_norm=true`, coefficients for `m>0` are stored
+`sqrt(2)` larger, so their multiplier to canonical form is `1/sqrt(2)`.
+"""
+@inline function coefficient_scale_to_canonical(cfg, l::Int, m::Int)
+    norm = norm_scale_from_orthonormal(l, m, cfg.norm)
+    real_scale = cfg.real_norm && m > 0 ? inv(sqrt(2.0)) : 1.0
+    phase = cs_phase_factor(m, true, cfg.cs_phase)
+    return norm * real_scale * phase
+end
+
+@inline _uses_canonical_convention(cfg) =
+    cfg.norm === :orthonormal && !cfg.real_norm && cfg.cs_phase
 
 """
     cs_phase_factor(m::Int, cs_from::Bool, cs_to::Bool) -> Float64
@@ -163,21 +180,25 @@ end
     _ensure_norm_scale_matrix!(cfg) -> Matrix{Float64}
 
 Lazily build (or return cached) `(lmax+1, mmax+1)` matrix holding
-`norm_scale_from_orthonormal(l, m, cfg.norm) * cs_phase_factor(m, true, cfg.cs_phase)`
+`coefficient_scale_to_canonical(cfg, l, m)`
 so `convert_alm_norm!` reduces to one elementwise multiply per coefficient.
 """
 function _ensure_norm_scale_matrix!(cfg)
     M = cfg.norm_scale_matrix
-    if size(M, 1) == cfg.lmax + 1 && size(M, 2) == cfg.mmax + 1
+    size_matches = size(M, 1) == cfg.lmax + 1 && size(M, 2) == cfg.mmax + 1
+    cache_is_current = size_matches &&
+        M[1, 1] == coefficient_scale_to_canonical(cfg, 0, 0) &&
+        (cfg.lmax == 0 || M[2, 1] == coefficient_scale_to_canonical(cfg, 1, 0)) &&
+        (cfg.mmax == 0 || M[2, 2] == coefficient_scale_to_canonical(cfg, 1, 1))
+    if cache_is_current
         return M
     end
     lmax, mmax = cfg.lmax, cfg.mmax
     M = Matrix{Float64}(undef, lmax + 1, mmax + 1)
     fill!(M, 1.0)  # entries with l < m stay at 1 but are never consumed
     @inbounds for m in 0:mmax
-        α = cs_phase_factor(m, true, cfg.cs_phase)
         for l in m:lmax
-            M[l+1, m+1] = norm_scale_from_orthonormal(l, m, cfg.norm) * α
+            M[l+1, m+1] = coefficient_scale_to_canonical(cfg, l, m)
         end
     end
     cfg.norm_scale_matrix = M
@@ -194,6 +215,8 @@ from internal to cfg. Writes into `dest` which must match `src` size.
 function convert_alm_norm!(dest::AbstractMatrix, src::AbstractMatrix, cfg; to_internal::Bool=false)
     size(dest) == size(src) || throw(DimensionMismatch("dest/src dims mismatch"))
     lmax, mmax = cfg.lmax, cfg.mmax
+    size(src) == (lmax + 1, mmax + 1) ||
+        throw(DimensionMismatch("coefficient matrix must have size ($(lmax+1), $(mmax+1))"))
     M = _ensure_norm_scale_matrix!(cfg)
     z = zero(eltype(dest))
     # to_internal=true: alm_int = alm_cfg * M. to_internal=false: alm_cfg = alm_int / M.
@@ -209,3 +232,82 @@ function convert_alm_norm!(dest::AbstractMatrix, src::AbstractMatrix, cfg; to_in
     return dest
 end
 
+"""Convert packed coefficients between configured and canonical conventions."""
+function convert_alm_norm!(dest::AbstractVector, src::AbstractVector, cfg; to_internal::Bool=false)
+    length(dest) == length(src) || throw(DimensionMismatch("dest/src lengths mismatch"))
+    M = _ensure_norm_scale_matrix!(cfg)
+    if length(src) == cfg.nlm
+        @inbounds for k in eachindex(src)
+            s = M[cfg.li[k] + 1, cfg.mi[k] + 1]
+            dest[k] = to_internal ? s * src[k] : src[k] / s
+        end
+    elseif cfg.mres == 1 && length(src) == nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)
+        @inbounds for l in 0:cfg.lmax, m in -min(l, cfg.mmax):min(l, cfg.mmax)
+            k = LM_cplx_index(cfg.lmax, cfg.mmax, l, m) + 1
+            s = M[l + 1, abs(m) + 1]
+            dest[k] = to_internal ? s * src[k] : src[k] / s
+        end
+    else
+        throw(DimensionMismatch("packed coefficient length does not match real or complex SHTns storage"))
+    end
+    return dest
+end
+
+"""Convert a `(l,m,batch)` coefficient array without changing its element type."""
+function convert_alm_norm!(dest::AbstractArray{<:Any,3}, src::AbstractArray{<:Any,3}, cfg;
+                           to_internal::Bool=false)
+    size(dest) == size(src) || throw(DimensionMismatch("dest/src dims mismatch"))
+    expected = (cfg.lmax + 1, cfg.mmax + 1)
+    size(src, 1) == expected[1] && size(src, 2) == expected[2] ||
+        throw(DimensionMismatch("coefficient batch first dimensions must be $expected"))
+    M = _ensure_norm_scale_matrix!(cfg)
+    z = zero(eltype(dest))
+    @inbounds for k in axes(src, 3), m in 0:cfg.mmax
+        for l in 0:(m - 1)
+            dest[l + 1, m + 1, k] = z
+        end
+        for l in m:cfg.lmax
+            s = M[l + 1, m + 1]
+            dest[l + 1, m + 1, k] = to_internal ?
+                s * src[l + 1, m + 1, k] : src[l + 1, m + 1, k] / s
+        end
+    end
+    return dest
+end
+
+@inline function _convert_mode_norm!(dest::AbstractVector, src::AbstractVector,
+                                     cfg, m::Int, ltr::Int; to_internal::Bool=false)
+    expected = ltr - m + 1
+    length(dest) == length(src) == expected ||
+        throw(DimensionMismatch("mode coefficients must have length $expected"))
+    M = _ensure_norm_scale_matrix!(cfg)
+    @inbounds for l in m:ltr
+        s = M[l + 1, m + 1]
+        k = l - m + 1
+        dest[k] = to_internal ? s * src[k] : src[k] / s
+    end
+    return dest
+end
+
+@inline function _internal_coefficients(src, cfg)
+    _uses_canonical_convention(cfg) && return src
+    dest = similar(src)
+    return convert_alm_norm!(dest, src, cfg; to_internal=true)
+end
+
+@inline function _externalize_coefficients!(dest, cfg)
+    _uses_canonical_convention(cfg) && return dest
+    return convert_alm_norm!(dest, dest, cfg; to_internal=false)
+end
+
+# Adjoint maps are transposes of the real diagonal convention maps.
+@inline function _analysis_cotangent_to_canonical(src, cfg)
+    _uses_canonical_convention(cfg) && return src
+    dest = similar(src)
+    return convert_alm_norm!(dest, src, cfg; to_internal=false)
+end
+
+@inline function _synthesis_cotangent_to_configured!(dest, cfg)
+    _uses_canonical_convention(cfg) && return dest
+    return convert_alm_norm!(dest, dest, cfg; to_internal=true)
+end

@@ -15,6 +15,7 @@
 using Test
 using Random
 using SHTnsKit
+using ChainRulesCore
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
@@ -23,6 +24,24 @@ const _HAS_ZYGOTE_ROT = try
     true
 catch
     false
+end
+
+@testset "Complex-packed analysis rrule respects configured convention" begin
+    lmax = 4
+    cfg = create_gauss_config(lmax, 7; nlon=11, norm=:schmidt,
+                              real_norm=true, cs_phase=false)
+    rng = MersenneTwister(8491)
+    z = randn(rng, ComplexF64, cfg.nlat, cfg.nlon)
+    h = randn(rng, ComplexF64, size(z))
+    cotangent = randn(rng, ComplexF64, nlm_cplx_calc(lmax, lmax, 1))
+
+    _, pullback = ChainRulesCore.rrule(analysis_packed_cplx, cfg, z)
+    _, _, zbar = pullback(cotangent)
+    loss(zv) = real(sum(conj(cotangent) .* analysis_packed_cplx(cfg, zv)))
+    epsilon = 1e-6
+    fd = (loss(z .+ epsilon .* h) - loss(z .- epsilon .* h)) / (2epsilon)
+    ad = real(sum(conj(zbar) .* h))
+    @test isapprox(ad, fd; rtol=2e-6, atol=2e-8)
 end
 
 if _HAS_ZYGOTE_ROT

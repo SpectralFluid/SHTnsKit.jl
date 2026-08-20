@@ -339,12 +339,10 @@ max_local_error(pa::PencilArray, F::AbstractMatrix) =
             root_println("    [PASS] complex packed_cplx on $label pencil")
         end
     end
-    @testset "distributed transforms are orthonormal, like the serial ones" begin
-        # The package settled on ONE convention: everything orthonormal. The
-        # distributed layer used to convert to cfg's normalization, so the two
-        # backends read the same `alm` differently. These are equality checks,
-        # not roundtrip checks — a roundtrip closes under either convention and
-        # cannot detect a revert.
+    @testset "distributed transforms match the configured serial convention" begin
+        # These are coefficient equality checks, not only roundtrip checks: a
+        # roundtrip closes under either convention and cannot detect a backend
+        # that forgot the configured normalization or phase boundary.
         lmax = 5
         nlat, nlon = lmax + 3, 2*lmax + 2
         for (nrm, cs) in ((:orthonormal, true), (:schmidt, true), (:fourpi, false))
@@ -363,7 +361,7 @@ max_local_error(pa::PencilArray, F::AbstractMatrix) =
             @test isapprox(SHTnsKit.dist_analysis(cfg, fpa), SHTnsKit.analysis(cfg, F);
                            rtol=1e-12, atol=1e-13)
 
-            # dist_synthesis must reproduce the field from the SAME (orthonormal) alm
+            # dist_synthesis must reproduce the field from the SAME configured alm
             frec = SHTnsKit.dist_synthesis(cfg, SHTnsKit.analysis(cfg, F);
                                            prototype_θφ=fpa, real_output=true)
             @test max_local_error(frec, F, pen) < 1e-10

@@ -82,7 +82,7 @@ function energy_scalar_l_spectrum(cfg::SHTConfig, alm::AbstractMatrix; real_fiel
 
     El = zeros(real(float(eltype(alm))), lmax + 1)
     for l in 0:lmax, m in 0:min(l, mmax)
-        El[l+1] += _wm(m, real_field) * abs2(alm[l+1, m+1])
+        El[l+1] += _wm(m, real_field) * _convention_metric(cfg, l, m) * abs2(alm[l+1, m+1])
     end
     return 0.5 * El
 end
@@ -98,7 +98,7 @@ function energy_scalar_m_spectrum(cfg::SHTConfig, alm::AbstractMatrix; real_fiel
 
     Em = zeros(real(float(eltype(alm))), mmax + 1)
     for m in 0:mmax, l in m:lmax
-        Em[m+1] += _wm(m, real_field) * abs2(alm[l+1, m+1])
+        Em[m+1] += _wm(m, real_field) * _convention_metric(cfg, l, m) * abs2(alm[l+1, m+1])
     end
     return 0.5 * Em
 end
@@ -115,7 +115,8 @@ function energy_vector_l_spectrum(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::Abst
     El = zeros(real(float(promote_type(eltype(Slm), eltype(Tlm)))), lmax + 1)
     for l in 1:lmax, m in 0:min(l, mmax)  # Vector fields start at l=1
         ll1 = l * (l + 1)
-        El[l+1] += _wm(m, real_field) * ll1 * (abs2(Slm[l+1, m+1]) + abs2(Tlm[l+1, m+1]))
+        El[l+1] += _wm(m, real_field) * _convention_metric(cfg, l, m) * ll1 *
+                   (abs2(Slm[l+1, m+1]) + abs2(Tlm[l+1, m+1]))
     end
     return 0.5 * El
 end
@@ -132,7 +133,8 @@ function energy_vector_m_spectrum(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::Abst
     Em = zeros(real(float(promote_type(eltype(Slm), eltype(Tlm)))), mmax + 1)
     for m in 0:mmax, l in max(1,m):lmax
         ll1 = l * (l + 1)
-        Em[m+1] += _wm(m, real_field) * ll1 * (abs2(Slm[l+1, m+1]) + abs2(Tlm[l+1, m+1]))
+        Em[m+1] += _wm(m, real_field) * _convention_metric(cfg, l, m) * ll1 *
+                   (abs2(Slm[l+1, m+1]) + abs2(Tlm[l+1, m+1]))
     end
     return 0.5 * Em
 end
@@ -151,7 +153,8 @@ function energy_scalar_lm(cfg::SHTConfig, alm::AbstractMatrix; real_field::Bool=
     fill!(Elm, zero(RT))
 
     for m in 0:mmax, l in m:lmax
-        Elm[l+1, m+1] = 0.5 * _wm(m, real_field) * abs2(alm[l+1, m+1])
+        Elm[l+1, m+1] = 0.5 * _wm(m, real_field) * _convention_metric(cfg, l, m) *
+                        abs2(alm[l+1, m+1])
     end
     return Elm
 end
@@ -171,7 +174,8 @@ function energy_vector_lm(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatr
 
     for m in 0:mmax, l in max(1,m):lmax
         ll1 = l * (l + 1)
-        Elm[l+1, m+1] = 0.5 * _wm(m, real_field) * ll1 * (abs2(Slm[l+1, m+1]) + abs2(Tlm[l+1, m+1]))
+        Elm[l+1, m+1] = 0.5 * _wm(m, real_field) * _convention_metric(cfg, l, m) * ll1 *
+                        (abs2(Slm[l+1, m+1]) + abs2(Tlm[l+1, m+1]))
     end
     return Elm
 end

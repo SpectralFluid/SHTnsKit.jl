@@ -86,4 +86,25 @@ _wmat(lmax) = Float64[(m == 0 ? 1.0 : 2.0) for l in 0:lmax, m in 0:lmax]
         @test isapprox(L, loss_vorticity_grid(cfg, T0, ζ_target); rtol=1e-12, atol=1e-14)
         @test isapprox(g, grad_loss_vorticity_Tlm(cfg, T0, ζ_target); rtol=1e-12, atol=1e-14)
     end
+
+    @testset "noncanonical inverse gradients" begin
+        cfgn = create_gauss_config(lmax, nlat; nlon, norm=:schmidt,
+                                   real_norm=true, cs_phase=false)
+        Ttarget_n = _rand_Tlm(rng, lmax)
+        ζtarget_n = vorticity_grid(cfgn, Ttarget_n)
+        T0 = 0.3 .* _rand_Tlm(rng, lmax)
+        h = _rand_Tlm(rng, lmax)
+        W = _wmat(lmax)
+        epsilon = 1e-6
+        fd = (loss_vorticity_grid(cfgn, T0 .+ epsilon .* h, ζtarget_n) -
+              loss_vorticity_grid(cfgn, T0 .- epsilon .* h, ζtarget_n)) / (2epsilon)
+
+        g = grad_loss_vorticity_Tlm(cfgn, T0, ζtarget_n)
+        @test isapprox(real(sum(W .* conj(g) .* h)), fd; rtol=2e-5, atol=2e-7)
+
+        loss, combined_g = loss_and_grad_vorticity_Tlm(cfgn, T0, ζtarget_n)
+        @test loss ≈ loss_vorticity_grid(cfgn, T0, ζtarget_n)
+        @test isapprox(real(sum(W .* conj(combined_g) .* h)), fd;
+                       rtol=2e-5, atol=2e-7)
+    end
 end

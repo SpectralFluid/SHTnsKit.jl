@@ -694,11 +694,7 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
             end
         end
     end
-        # NO normalization conversion: the distributed transforms are
-        # orthonormal-only, matching serial `analysis`/`synthesis` and the energy
-        # diagnostics. (They used to convert to cfg's convention, which made the
-        # two backends read the same `alm` differently.)
-    return Alm_local
+    return SHTnsKit._externalize_coefficients!(Alm_local, cfg)
 end
 
 function SHTnsKit.dist_analysis!(plan::DistAnalysisPlan, Alm_out::AbstractMatrix, fθφ::PencilArray; use_tables=plan.cfg.use_plm_tables)
@@ -755,7 +751,7 @@ function SHTnsKit.dist_analysis!(plan::DistAnalysisPlan, Alm_out::AbstractMatrix
     end
 
     copyto!(Alm_out, plan.Alm_work)
-    return Alm_out
+    return SHTnsKit._externalize_coefficients!(Alm_out, cfg)
 end
 
 """
@@ -778,6 +774,9 @@ function SHTnsKit.dist_synthesis(cfg::SHTnsKit.SHTConfig, Alm::AbstractMatrix; p
         real_output && throw(ArgumentError("dist_synthesis with Aminus requires real_output=false"))
         size(Aminus) == size(Alm) || throw(DimensionMismatch("Aminus must match Alm's shape"))
     end
+
+    Alm = SHTnsKit._internal_coefficients(Alm, cfg)
+    Aminus = Aminus === nothing ? nothing : SHTnsKit._internal_coefficients(Aminus, cfg)
 
     # Contract: Alm must be replicated identically on every rank. Sample-hash a
     # bounded prefix + a small tail slice instead of the full matrix so the check
@@ -943,7 +942,7 @@ function SHTnsKit.dist_synthesis!(plan::DistPlan, fθφ_out::PencilArray, Alm::P
     if !real_output && eltype(fθφ_out) <: Real
         throw(ArgumentError("dist_synthesis! with real_output=false needs a complex output " *
                             "PencilArray; got eltype=$(eltype(fθφ_out)). If you are porting code " *
-                            "that used this combination before v1.2.18: it used to return the REAL " *
+                            "that used this combination before v2.0.0: it used to return the REAL " *
                             "field wrapped as complex, so pass real_output=true to keep that result. " *
                             "Pass a complex output PencilArray to get the true complex synthesis."))
     end
@@ -1079,8 +1078,8 @@ function SHTnsKit.dist_analysis_sphtor(cfg::SHTnsKit.SHTConfig, Vtθφ::PencilAr
         end
     end
 
-    # Orthonormal-only, like serial `analysis_sphtor`'s internal form and the
-    # rest of the distributed layer.
+    SHTnsKit._externalize_coefficients!(Slm_local, cfg)
+    SHTnsKit._externalize_coefficients!(Tlm_local, cfg)
     return Slm_local, Tlm_local
 end
 
@@ -1213,6 +1212,8 @@ function SHTnsKit.dist_analysis_sphtor!(plan::DistSphtorPlan, Slm_out::AbstractM
 
     copyto!(Slm_out, plan.Slm_work)
     copyto!(Tlm_out, plan.Tlm_work)
+    SHTnsKit._externalize_coefficients!(Slm_out, cfg)
+    SHTnsKit._externalize_coefficients!(Tlm_out, cfg)
     return Slm_out, Tlm_out
 end
 
@@ -1224,6 +1225,9 @@ function SHTnsKit.dist_synthesis_sphtor(cfg::SHTnsKit.SHTConfig, Slm::AbstractMa
 
     size(Slm, 1) == lmax + 1 && size(Slm, 2) == mmax + 1 || throw(DimensionMismatch("Slm dims"))
     size(Tlm, 1) == lmax + 1 && size(Tlm, 2) == mmax + 1 || throw(DimensionMismatch("Tlm dims"))
+
+    Slm = SHTnsKit._internal_coefficients(Slm, cfg)
+    Tlm = SHTnsKit._internal_coefficients(Tlm, cfg)
 
 
     # Get the local portion info from the prototype
@@ -1349,7 +1353,7 @@ function SHTnsKit.dist_synthesis_sphtor!(plan::DistSphtorPlan, Vtθφ_out::Penci
     if !real_output && (eltype(Vtθφ_out) <: Real || eltype(Vpθφ_out) <: Real)
         throw(ArgumentError("dist_synthesis_sphtor! with real_output=false needs complex output " *
                             "PencilArrays; got eltype(Vt)=$(eltype(Vtθφ_out)), eltype(Vp)=$(eltype(Vpθφ_out)). " *
-                            "If you are porting code that used this combination before v1.2.18: it used " *
+                            "If you are porting code that used this combination before v2.0.0: it used " *
                             "to return the REAL field wrapped as complex, so pass real_output=true to keep " *
                             "that result. Pass complex output PencilArrays to get the true complex synthesis."))
     end
@@ -1380,6 +1384,9 @@ function _dist_synthesis_sphtor_with_scratch!(cfg::SHTnsKit.SHTConfig, Slm::Abst
 
     size(Slm, 1) == lmax + 1 && size(Slm, 2) == mmax + 1 || throw(DimensionMismatch("Slm dims"))
     size(Tlm, 1) == lmax + 1 && size(Tlm, 2) == mmax + 1 || throw(DimensionMismatch("Tlm dims"))
+
+    Slm = SHTnsKit._internal_coefficients(Slm, cfg)
+    Tlm = SHTnsKit._internal_coefficients(Tlm, cfg)
 
 
     # Get the local portion info from the prototype
@@ -1951,8 +1958,15 @@ function dist_analysis_distributed(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
 
     # Create output distributed array and extract local portion
     result = create_distributed_spectral_array(plan, ComplexF64)
-    for (i, (l, m)) in enumerate(plan.local_lm_indices)
-        result.local_coeffs[i] = local_contrib[l+1, m+1]
+    if SHTnsKit._uses_canonical_convention(cfg)
+        for (i, (l, m)) in enumerate(plan.local_lm_indices)
+            result.local_coeffs[i] = local_contrib[l+1, m+1]
+        end
+    else
+        scales = SHTnsKit._ensure_norm_scale_matrix!(cfg)
+        for (i, (l, m)) in enumerate(plan.local_lm_indices)
+            result.local_coeffs[i] = local_contrib[l+1, m+1] / scales[l+1, m+1]
+        end
     end
 
     return result
@@ -2739,8 +2753,15 @@ function _dist_analysis_2d_safe(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     # Create output array and extract owned coefficients
     result = create_distributed_spectral_array_2d(plan, ComplexF64)
 
-    for (i, (l, m)) in enumerate(plan.local_lm_indices)
-        result.local_coeffs[i] = local_contrib[l+1, m+1]
+    if SHTnsKit._uses_canonical_convention(cfg)
+        for (i, (l, m)) in enumerate(plan.local_lm_indices)
+            result.local_coeffs[i] = local_contrib[l+1, m+1]
+        end
+    else
+        scales = SHTnsKit._ensure_norm_scale_matrix!(cfg)
+        for (i, (l, m)) in enumerate(plan.local_lm_indices)
+            result.local_coeffs[i] = local_contrib[l+1, m+1] / scales[l+1, m+1]
+        end
     end
 
     return result
@@ -2851,6 +2872,18 @@ function dist_synthesis_distributed_2d_optimized(cfg::SHTnsKit.SHTConfig, alm::D
     if !isempty(m_range)
         # Gather within l-communicator to get all l values for local m values
         alm_partial = gather_to_dense_2d(alm)
+
+        if !SHTnsKit._uses_canonical_convention(cfg)
+            scales = SHTnsKit._ensure_norm_scale_matrix!(cfg)
+            m_col = 0
+            for m in m_range
+                (m % mres == 0) || continue
+                m_col += 1
+                @inbounds for l in m:lmax
+                    alm_partial[l+1, m_col] *= scales[l+1, m+1]
+                end
+            end
+        end
 
 
         inv_scaleφ = SHTnsKit.phi_inv_scale(cfg)
@@ -3197,17 +3230,21 @@ function _dist_analysis_2d_aligned(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     # For general case, compute offset from m_range start
     m_range_start = first(m_range)
 
+    canonical = SHTnsKit._uses_canonical_convention(cfg)
+    scales = canonical ? nothing : SHTnsKit._ensure_norm_scale_matrix!(cfg)
     if mres == 1
         # Fast path: direct indexing when mres=1
         @inbounds for (i, (l, m)) in enumerate(plan.local_lm_indices)
             m_col = m - m_range_start + 1
-            result.local_coeffs[i] = local_contrib[l+1, m_col]
+            result.local_coeffs[i] = canonical ? local_contrib[l+1, m_col] :
+                local_contrib[l+1, m_col] / scales[l+1, m+1]
         end
     else
         # General case: account for mres spacing
         @inbounds for (i, (l, m)) in enumerate(plan.local_lm_indices)
             m_col = (m - m_range_start) ÷ mres + 1
-            result.local_coeffs[i] = local_contrib[l+1, m_col]
+            result.local_coeffs[i] = canonical ? local_contrib[l+1, m_col] :
+                local_contrib[l+1, m_col] / scales[l+1, m+1]
         end
     end
 

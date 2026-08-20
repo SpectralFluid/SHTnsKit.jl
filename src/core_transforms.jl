@@ -168,7 +168,8 @@ end
     analysis(cfg::SHTConfig, f::AbstractMatrix) -> Matrix{ComplexF64}
 
 Forward transform on Gauss-Legendre x equiangular grid.
-Returns coefficients `alm[l+1, m+1]` with orthonormal normalization.
+Returns coefficients `alm[l+1, m+1]` in the normalization, real-normalization,
+and phase convention configured by `cfg`.
 
 Parallelizes over m-modes using static scheduling for consistent performance.
 """
@@ -203,7 +204,7 @@ function analysis(cfg::SHTConfig, f::AbstractMatrix; fft_scratch::Union{Nothing,
     CT = eltype(Fph)
     alm = zeros(CT, cfg.lmax + 1, cfg.mmax + 1)
     _analysis_scalar_mloop!(alm, cfg, Fph)
-    return alm
+    return _externalize_coefficients!(alm, cfg)
 end
 
 """
@@ -250,7 +251,7 @@ function _analysis!(cfg::SHTConfig, alm_out::AbstractMatrix, f::AbstractMatrix,
         end
     end
     _analysis_scalar_mloop!(alm_out, cfg, Fph)
-    return alm_out
+    return _externalize_coefficients!(alm_out, cfg)
 end
 
 """
@@ -282,6 +283,7 @@ function _synthesis(cfg::SHTConfig, alm::AbstractMatrix, ::Val{real_output},
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
+    alm_int = _internal_coefficients(alm, cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
     CT = eltype(alm)
     if use_rfft
@@ -297,7 +299,7 @@ function _synthesis(cfg::SHTConfig, alm::AbstractMatrix, ::Val{real_output},
             fft_scratch
         end
         fill!(Fph, zero(CT))
-        _synthesis_scalar_mloop!(Fph, cfg, alm; real_output=false, use_rfft=true)
+        _synthesis_scalar_mloop!(Fph, cfg, alm_int; real_output=false, use_rfft=true)
         RT = real(CT)
         out = Matrix{RT}(undef, nlat, nlon)
         irfft_phi!(out, Fph, nlon)
@@ -306,7 +308,7 @@ function _synthesis(cfg::SHTConfig, alm::AbstractMatrix, ::Val{real_output},
     Fph = fft_scratch === nothing ? Matrix{CT}(undef, nlat, nlon) : fft_scratch
     size(Fph, 1) == nlat && size(Fph, 2) == nlon || throw(DimensionMismatch("fft_scratch wrong size"))
     fill!(Fph, zero(CT))
-    _synthesis_scalar_mloop!(Fph, cfg, alm; real_output=real_output)
+    _synthesis_scalar_mloop!(Fph, cfg, alm_int; real_output=real_output)
     ifft_phi!(Fph, Fph)
     if real_output
         RT = typeof(real(zero(CT)))
@@ -324,11 +326,12 @@ function _synthesis_l(cfg::SHTConfig, alm::AbstractMatrix, ltr::Int, ::Val{real_
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
+    alm_int = _internal_coefficients(alm, cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
     CT = eltype(alm)
     Fph = Matrix{CT}(undef, nlat, nlon)
     fill!(Fph, zero(CT))
-    _synthesis_scalar_mloop!(Fph, cfg, alm; real_output=real_output, ltr=ltr)
+    _synthesis_scalar_mloop!(Fph, cfg, alm_int; real_output=real_output, ltr=ltr)
     ifft_phi!(Fph, Fph)
     if real_output
         RT = typeof(real(zero(CT)))
@@ -362,6 +365,7 @@ function _synthesis!(cfg::SHTConfig, f_out::AbstractMatrix, alm::AbstractMatrix,
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
+    alm_int = _internal_coefficients(alm, cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
     CT = eltype(alm)
     if use_rfft
@@ -376,14 +380,14 @@ function _synthesis!(cfg::SHTConfig, f_out::AbstractMatrix, alm::AbstractMatrix,
             fft_scratch
         end
         fill!(Fph, zero(eltype(Fph)))
-        _synthesis_scalar_mloop!(Fph, cfg, alm; real_output=false, use_rfft=true)
+        _synthesis_scalar_mloop!(Fph, cfg, alm_int; real_output=false, use_rfft=true)
         irfft_phi!(f_out, Fph, nlon)
         return f_out
     end
     Fph = fft_scratch === nothing ? Matrix{CT}(undef, nlat, nlon) : fft_scratch
     size(Fph, 1) == nlat && size(Fph, 2) == nlon || throw(DimensionMismatch("fft_scratch wrong size"))
     fill!(Fph, zero(eltype(Fph)))
-    _synthesis_scalar_mloop!(Fph, cfg, alm; real_output=real_output)
+    _synthesis_scalar_mloop!(Fph, cfg, alm_int; real_output=real_output)
     ifft_phi!(Fph, Fph)
     if real_output
         @inbounds for j in 1:nlon, i in 1:nlat
@@ -479,7 +483,7 @@ function _adjoint_synthesis(cfg::SHTConfig, f̄::AbstractMatrix;
             end
         end
     end
-    return ālm
+    return _synthesis_cotangent_to_configured!(ālm, cfg)
 end
 
 """
@@ -540,6 +544,8 @@ function _adjoint_synthesis_sphtor(cfg::SHTConfig, V̄t::AbstractMatrix, V̄p::A
             end
         end
     end
+    _synthesis_cotangent_to_configured!(S̄, cfg)
+    _synthesis_cotangent_to_configured!(T̄, cfg)
     return S̄, T̄
 end
 
@@ -560,8 +566,9 @@ function _adjoint_analysis(cfg::SHTConfig, Alm̄::AbstractMatrix;
                            φ_window::Union{Nothing,UnitRange{Int}}=nothing)
     nlon = cfg.nlon
     nlat_local = length(θ_globals)
+    Alm̄_int = _analysis_cotangent_to_canonical(Alm̄, cfg)
     # eltype-derived buffers so Float32 / ForwardDiff.Dual cotangents survive.
-    CT = complex(float(eltype(Alm̄)))
+    CT = complex(float(eltype(Alm̄_int)))
     Fφ = Matrix{CT}(undef, nlat_local, nlon)
     fill!(Fφ, zero(eltype(Fφ)))
     lmax, mmax = cfg.lmax, cfg.mmax
@@ -574,12 +581,12 @@ function _adjoint_analysis(cfg::SHTConfig, Alm̄::AbstractMatrix;
             NP = cfg.NP_tables[m+1]
             @inbounds for (ii, iglob) in pairs(θ_globals)
                 Fφ[ii, col] = (φadj * cfg.w[iglob]) *
-                    _scalar_synthesis_kernel(cfg, Alm̄, NP, iglob, col, m, lmax)
+                    _scalar_synthesis_kernel(cfg, Alm̄_int, NP, iglob, col, m, lmax)
             end
         else
             @inbounds for (ii, iglob) in pairs(θ_globals)
                 Fφ[ii, col] = (φadj * cfg.w[iglob]) *
-                    _scalar_synthesis_kernel_otf(cfg, Alm̄, P, iglob, col, m, lmax)
+                    _scalar_synthesis_kernel_otf(cfg, Alm̄_int, P, iglob, col, m, lmax)
             end
         end
     end

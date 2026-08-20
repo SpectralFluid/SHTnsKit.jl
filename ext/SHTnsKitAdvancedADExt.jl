@@ -20,24 +20,14 @@ import SHTnsKit: wigner_d_matrix_deriv
 
     # ---- normalization in the adjoint -------------------------------------
     #
-    # There is NO normalization factor in any adjoint here, and adding one would
-    # be a bug. Every transform in the package — scalar, sphtor, QST, plan,
-    # distributed, GPU — now emits and consumes coefficients in the single
-    # INTERNAL (orthonormal + CS) convention, which is exactly the convention the
-    # `_adjoint_*` helpers work in. Primal and adjoint therefore agree with no
-    # scaling on either side, for every `cfg.norm`/`cs_phase`.
+    # Public transforms emit and consume the convention configured on `cfg`,
+    # while their Legendre kernels remain canonical orthonormal+CS. Dense scalar
+    # and vector adjoint helpers own their boundary maps. Specialized adjoints
+    # that operate directly on packed storage must apply the corresponding
+    # transpose map themselves before or after their canonical kernel.
     #
-    # This block used to say the opposite, because the sphtor pair once converted
-    # on the way in and out with a real diagonal scale `M`, which forced a
-    # matching `M`/`1/M` into the pullbacks. Those conversions are gone. If you
-    # reintroduce an `M ⊙ ȳ` here to "match the primal", every non-default-norm
-    # gradient becomes wrong by M[l,m] (finite differences: 40–180% relative
-    # error on :schmidt and :fourpi) and nothing in the suite will catch it —
-    # the regression tests assert forward equality only.
-    #
-    # `convert_alm_norm!` survives as a standalone public utility for callers who
-    # want coefficients in some other convention; no transform calls it. It does
-    # reach `_ensure_norm_scale_matrix!`, which lazily BUILDS and caches a
+    # `convert_alm_norm!` reaches `_ensure_norm_scale_matrix!`, which lazily
+    # builds and caches a
     # constant (l,m) table on the config. That `setindex!` is invisible to a
     # caller but fatal to Zygote ("Mutating arrays is not supported") if a
     # differentiated function ever reaches it. The table does not depend on any
@@ -258,7 +248,8 @@ import SHTnsKit: wigner_d_matrix_deriv
         lmax, mmax = cfg.lmax, cfg.mmax
         nlat, nlon = cfg.nlat, cfg.nlon
         length(ā) == SHTnsKit.nlm_cplx_calc(lmax, mmax, 1) || throw(DimensionMismatch("ā length"))
-        CT = complex(float(eltype(ā)))
+        ā_int = SHTnsKit._analysis_cotangent_to_canonical(ā, cfg)
+        CT = complex(float(eltype(ā_int)))
         F̄ = zeros(CT, nlat, nlon)
         P = Vector{Float64}(undef, lmax + 1)
         scaleφ = cfg.cphi
@@ -272,9 +263,9 @@ import SHTnsKit: wigner_d_matrix_deriv
                 gp = zero(CT); gn = zero(CT)
                 @inbounds for l in am:lmax
                     base = wi * P[l+1]
-                    gp += base * ā[LM_cplx_index(lmax, mmax, l, am) + 1]
+                    gp += base * ā_int[LM_cplx_index(lmax, mmax, l, am) + 1]
                     if am > 0
-                        gn += base * ā[LM_cplx_index(lmax, mmax, l, -am) + 1]
+                        gn += base * ā_int[LM_cplx_index(lmax, mmax, l, -am) + 1]
                     end
                 end
                 F̄[i, colp] += gp

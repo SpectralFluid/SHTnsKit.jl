@@ -372,7 +372,7 @@ function analysis_batch(cfg::SHTConfig, fields::AbstractArray{<:Real,3}; use_rff
         end
     end
 
-    return alm_batch
+    return _externalize_coefficients!(alm_batch, cfg)
 end
 
 """
@@ -459,7 +459,7 @@ function analysis_batch!(cfg::SHTConfig, alm_out::AbstractArray{<:Complex,3},
         end
     end
 
-    return alm_out
+    return _externalize_coefficients!(alm_out, cfg)
 end
 
 """
@@ -499,6 +499,7 @@ function _synthesis_batch(cfg::SHTConfig, alm_batch::AbstractArray{<:Complex,3},
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm_batch, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm_batch, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
+    alm_int = _internal_coefficients(alm_batch, cfg)
 
     nfields = size(alm_batch, 3)
     nlat, nlon = cfg.nlat, cfg.nlon
@@ -512,7 +513,7 @@ function _synthesis_batch(cfg::SHTConfig, alm_batch::AbstractArray{<:Complex,3},
 
     # Allocate FFT scratch buffer (eltype-derived from alm_batch, matching
     # analysis_batch, so Float32 / ForwardDiff.Dual coefficients aren't upcast)
-    CT = complex(float(eltype(alm_batch)))
+    CT = complex(float(eltype(alm_int)))
     nbins = use_rfft ? (nlon ÷ 2 + 1) : nlon
     Fφ_batch = Array{CT,3}(undef, nlat, nbins, nfields)
     fill!(Fφ_batch, zero(CT))
@@ -527,7 +528,7 @@ function _synthesis_batch(cfg::SHTConfig, alm_batch::AbstractArray{<:Complex,3},
                 for i in 1:nlat
                     acc = zero(CT)
                     for l in m:lmax
-                        acc += tbl[l+1, i] * alm_batch[l+1, col, k]
+                        acc += tbl[l+1, i] * alm_int[l+1, col, k]
                     end
                     Fφ_batch[i, col, k] = inv_scaleφ * acc
                 end
@@ -547,7 +548,7 @@ function _synthesis_batch(cfg::SHTConfig, alm_batch::AbstractArray{<:Complex,3},
                 @inbounds for k in 1:nfields
                     acc = zero(CT)
                     for l in m:lmax
-                        acc += P[l+1] * alm_batch[l+1, col, k]
+                        acc += P[l+1] * alm_int[l+1, col, k]
                     end
                     Fφ_batch[i, col, k] = inv_scaleφ * acc
                 end
@@ -602,6 +603,7 @@ function synthesis_batch!(cfg::SHTConfig, f_out::AbstractArray,
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm_batch, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm_batch, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
+    alm_int = _internal_coefficients(alm_batch, cfg)
 
     nfields = size(alm_batch, 3)
     nlat, nlon = cfg.nlat, cfg.nlon
@@ -617,7 +619,7 @@ function synthesis_batch!(cfg::SHTConfig, f_out::AbstractArray,
     end
 
     # Reuse caller-provided scratch if given, else allocate (eltype-derived).
-    CT = complex(float(eltype(alm_batch)))
+    CT = complex(float(eltype(alm_int)))
     nbins = use_rfft ? (nlon ÷ 2 + 1) : nlon
     if fft_batch === nothing
         Fφ_batch = Array{CT,3}(undef, nlat, nbins, nfields)
@@ -637,7 +639,7 @@ function synthesis_batch!(cfg::SHTConfig, f_out::AbstractArray,
                 for i in 1:nlat
                     acc = zero(CT)
                     for l in m:lmax
-                        acc += tbl[l+1, i] * alm_batch[l+1, col, k]
+                        acc += tbl[l+1, i] * alm_int[l+1, col, k]
                     end
                     Fφ_batch[i, col, k] = inv_scaleφ * acc
                 end
@@ -657,7 +659,7 @@ function synthesis_batch!(cfg::SHTConfig, f_out::AbstractArray,
                 @inbounds for k in 1:nfields
                     acc = zero(CT)
                     for l in m:lmax
-                        acc += P[l+1] * alm_batch[l+1, col, k]
+                        acc += P[l+1] * alm_int[l+1, col, k]
                     end
                     Fφ_batch[i, col, k] = inv_scaleφ * acc
                 end
@@ -853,9 +855,7 @@ function analysis_qst_batch(cfg::SHTConfig, Vr_batch::AbstractArray{<:Real,3},
         analysis_sphtor!(plan, view(Slm_batch, :, :, k), view(Tlm_batch, :, :, k),
                          view(Vt_batch, :, :, k), view(Vp_batch, :, :, k))
     end
-    # No normalization conversion here, by design: the scalar plan and the sphtor
-    # plan are both orthonormal+CS, as is every other transform in the package, so
-    # Q/S/T come back on one convention. See `analysis_qst`, the non-batch form.
+    # The scalar and S/T plan boundaries have each externalized their component.
 
     return Qlm_batch, Slm_batch, Tlm_batch
 end
@@ -912,8 +912,7 @@ function _synthesis_qst_batch(cfg::SHTConfig, Qlm_batch::AbstractArray{<:Complex
         Vt_batch = Array{CT,3}(undef, nlat, nlon, nfields)
         Vp_batch = Array{CT,3}(undef, nlat, nlon, nfields)
     end
-    # Q/S/T all arrive orthonormal+CS — the one convention the whole package uses
-    # — so nothing is converted here, mirroring `_synthesis_qst`.
+    # Scalar and S/T plan boundaries convert their own configured inputs once.
 
     if !_fftw_planable(CT)
         # No FFTW plan for this element type — per-field `cfg`-form transform.

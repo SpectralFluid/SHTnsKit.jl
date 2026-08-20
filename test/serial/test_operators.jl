@@ -153,4 +153,28 @@ using SHTnsKit
             end
         end
     end
+
+    @testset "Dense Laplacian fallback" begin
+        cfg = create_gauss_config(4, 6; nlon=9)
+        @test isdefined(SHTnsKit, :apply_laplacian!)
+
+        if isdefined(SHTnsKit, :apply_laplacian!)
+            coefficients = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+            coefficients[1, 1] = 2.0
+            coefficients[3, 2] = 1.5 - 0.25im
+            coefficients[5, 3] = -0.5 + 0.75im
+            expected = copy(coefficients)
+            expected[1, 1] = 0
+            expected[3, 2] *= -6
+            expected[5, 3] *= -20
+
+            returned = SHTnsKit.apply_laplacian!(cfg, coefficients)
+            @test returned === coefficients
+            @test coefficients == expected
+            @test_throws DimensionMismatch SHTnsKit.apply_laplacian!(
+                cfg,
+                zeros(ComplexF64, cfg.lmax, cfg.mmax + 1),
+            )
+        end
+    end
 end

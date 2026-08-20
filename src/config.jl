@@ -364,7 +364,9 @@ function Base.setproperty!(cfg::SHTConfig, name::Symbol, val)
         getfield(cfg, :_norm).scale_matrix[] = Matrix{Float64}(undef, 0, 0)  # invalidate cached scale
         return val
     elseif name === :real_norm
-        return setfield!(getfield(cfg, :_norm), :real_norm, val)
+        setfield!(getfield(cfg, :_norm), :real_norm, val)
+        getfield(cfg, :_norm).scale_matrix[] = Matrix{Float64}(undef, 0, 0)
+        return val
     elseif name === :robert_form
         return setfield!(getfield(cfg, :_norm), :robert_form, val)
     elseif name === :norm_scale_matrix

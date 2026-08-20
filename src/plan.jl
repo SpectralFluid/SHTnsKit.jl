@@ -190,7 +190,8 @@ function SHTPlan(cfg::SHTConfig; use_rfft::Bool=false)
         irfft_plan = nothing
     end
 
-    # No normalization scratch: the package is orthonormal-only, so nothing converts.
+    # Convention conversion is a public-boundary operation. Canonical plans
+    # remain allocation-free; non-canonical synthesis uses a typed temporary.
     return SHTPlan(cfg, P, dPdx, dPdtheta, P_over_sinth, Pb, G, Fθk, Fθk_r, real_scratch,
                    fft_plan, ifft_plan, rfft_plan, irfft_plan, use_rfft)
 end
@@ -283,8 +284,8 @@ function analysis_sphtor!(plan::SHTPlan, Slm_out::AbstractMatrix, Tlm_out::Abstr
         end
     end
     
-    # No conversion: the package is orthonormal-only, and the scalar plan
-    # methods match `analysis`/`synthesis` the same way.
+    _externalize_coefficients!(Slm_out, cfg)
+    _externalize_coefficients!(Tlm_out, cfg)
     return Slm_out, Tlm_out
 end
 
@@ -305,8 +306,8 @@ function synthesis_sphtor!(plan::SHTPlan, Vt_out::AbstractMatrix, Vp_out::Abstra
     lmax, mmax = cfg.lmax, cfg.mmax
     inv_scaleφ = phi_inv_scale(cfg)
     
-    # No conversion — orthonormal-only; see `analysis_sphtor!`.
-    Slm_int = Slm; Tlm_int = Tlm
+    Slm_int = _internal_coefficients(Slm, cfg)
+    Tlm_int = _internal_coefficients(Tlm, cfg)
     
     # Two sibling passes: build Vt's Fourier buffer then Vp's, each with its
     # own m-loop formula. rfft path writes to the half-spectrum buffer and uses
@@ -444,15 +445,7 @@ function analysis!(plan::SHTPlan, alm_out::AbstractMatrix, f::AbstractMatrix)
         end
     end
 
-    # NO normalization conversion: the scalar `SHTPlan` is a drop-in accelerator
-    # for `analysis`/`synthesis`, which are orthonormal-only by documented
-    # contract, so it must return exactly what they return. It previously
-    # converted to cfg's convention, which meant swapping the plan in silently
-    # changed the coefficients — plan∘plan and dense∘dense each round-tripped,
-    # but mixing them (e.g. `synthesis(cfg, analysis!(plan, alm, f))`) was off by
-    # M[l,m] plus a sign on odd m. The sphtor plan methods above do not convert
-    # either, for the same reason: their non-plan twins do not.
-    return alm_out
+    return _externalize_coefficients!(alm_out, cfg)
 end
 
 """
@@ -470,9 +463,7 @@ function synthesis!(plan::SHTPlan, f_out::AbstractMatrix, alm::AbstractMatrix; r
     size(alm,1)==cfg.lmax+1 || throw(DimensionMismatch("alm rows must be lmax+1"))
     size(alm,2)==cfg.mmax+1 || throw(DimensionMismatch("alm cols must be mmax+1"))
 
-    # NO normalization conversion — see `analysis!(::SHTPlan, …)` above: this
-    # mirrors the orthonormal-only `synthesis`, not the converting sphtor plan.
-    alm_int = alm
+    alm_int = _internal_coefficients(alm, cfg)
 
     lmax, mmax = cfg.lmax, cfg.mmax
     inv_scaleφ = phi_inv_scale(cfg)

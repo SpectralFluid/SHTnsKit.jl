@@ -171,8 +171,8 @@ function _synthesis_sphtor(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMat
     size(Slm,1) == lmax+1 && size(Slm,2) == mmax+1 || throw(DimensionMismatch("Slm dims"))
     size(Tlm,1) == lmax+1 && size(Tlm,2) == mmax+1 || throw(DimensionMismatch("Tlm dims"))
 
-    # Orthonormal-only: no normalization conversion anywhere in the package.
-    Slm_int, Tlm_int = Slm, Tlm
+    Slm_int = _internal_coefficients(Slm, cfg)
+    Tlm_int = _internal_coefficients(Tlm, cfg)
 
     nlat, nlon = cfg.nlat, cfg.nlon
     CT = eltype(Slm_int)
@@ -260,6 +260,8 @@ function analysis_sphtor(cfg::SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatrix;
 
     _analysis_sphtor_mloop!(Slm_int, Tlm_int, cfg, Fthetam, Fphim; ltr=lmax)
 
+    _externalize_coefficients!(Slm_int, cfg)
+    _externalize_coefficients!(Tlm_int, cfg)
     return Slm_int, Tlm_int
 end
 
@@ -282,6 +284,8 @@ function _adjoint_analysis_sphtor(cfg::SHTConfig, Slm̄::AbstractMatrix, Tlm̄::
     nlon = cfg.nlon
     lmax, mmax = cfg.lmax, cfg.mmax
     nlat_local = length(θ_globals)
+    Slm̄_int = _analysis_cotangent_to_canonical(Slm̄, cfg)
+    Tlm̄_int = _analysis_cotangent_to_canonical(Tlm̄, cfg)
 
     F̄θ = Matrix{ComplexF64}(undef, nlat_local, nlon)
     F̄φ = Matrix{ComplexF64}(undef, nlat_local, nlon)
@@ -304,7 +308,7 @@ function _adjoint_analysis_sphtor(cfg::SHTConfig, Slm̄::AbstractMatrix, Tlm̄::
                 Y_over_sθ = P_over_sinth[l+1]
                 ll1 = l * (l + 1)
                 term = 1.0im * m * Y_over_sθ
-                S_bar = Slm̄[l+1, col]; T_bar = Tlm̄[l+1, col]
+                S_bar = Slm̄_int[l+1, col]; T_bar = Tlm̄_int[l+1, col]
                 sθ += (dθY * S_bar + conj(term) * T_bar) / ll1
                 sφ += (-conj(term) * S_bar + dθY * T_bar) / ll1
             end
@@ -646,7 +650,8 @@ function _synthesis_sphtor_l(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractM
     size(Slm,1) == lmax+1 && size(Slm,2) == mmax+1 || throw(DimensionMismatch("Slm dims"))
     size(Tlm,1) == lmax+1 && size(Tlm,2) == mmax+1 || throw(DimensionMismatch("Tlm dims"))
 
-    Slm_int, Tlm_int = Slm, Tlm
+    Slm_int = _internal_coefficients(Slm, cfg)
+    Tlm_int = _internal_coefficients(Tlm, cfg)
 
     nlat, nlon = cfg.nlat, cfg.nlon
     CT = eltype(Slm_int)
@@ -697,7 +702,8 @@ function analysis_sphtor_l(cfg::SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatri
     Tlm = zeros(CT, lmax + 1, mmax + 1)
     _analysis_sphtor_mloop!(Slm, Tlm, cfg, Fthetam, Fphim; ltr=ltr)
 
-    # Normalization conversion — must match analysis_sphtor behavior
+    _externalize_coefficients!(Slm, cfg)
+    _externalize_coefficients!(Tlm, cfg)
     return Slm, Tlm
 end
 
@@ -818,6 +824,8 @@ function analysis_sphtor_ml(cfg::SHTConfig, mval::Int, Vt_m::AbstractVector{<:Co
         end
     end
 
+    _convert_mode_norm!(Sl, Sl, cfg, mval, ltr; to_internal=false)
+    _convert_mode_norm!(Tl, Tl, cfg, mval, ltr; to_internal=false)
     return Sl, Tl
 end
 
@@ -837,7 +845,10 @@ function synthesis_sphtor_ml(cfg::SHTConfig, mval::Int, Sl::AbstractVector{<:Com
     expected_len = ltr - mval + 1
     length(Sl) == expected_len || throw(DimensionMismatch("Sl length mismatch"))
     length(Tl) == expected_len || throw(DimensionMismatch("Tl length mismatch"))
-    Sl_int = Sl; Tl_int = Tl
+    Sl_int = _uses_canonical_convention(cfg) ? Sl :
+             _convert_mode_norm!(similar(Sl), Sl, cfg, mval, ltr; to_internal=true)
+    Tl_int = _uses_canonical_convention(cfg) ? Tl :
+             _convert_mode_norm!(similar(Tl), Tl, cfg, mval, ltr; to_internal=true)
 
     CT = complex(float(promote_type(eltype(Sl), eltype(Tl))))  # AD/Float32-safe output eltype
     inv_scaleφ = phi_inv_scale(cfg)  # Match full transform normalization

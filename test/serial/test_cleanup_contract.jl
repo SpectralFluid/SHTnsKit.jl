@@ -46,4 +46,21 @@ using SHTnsKit
     cfg = create_gauss_config(3, 4; nlon=7)
     @test !hasproperty(cfg, :compute_device)
     @test !hasproperty(cfg, :device_preference)
+
+    @testset "CUDA plan wrapper accepts concrete plan variants" begin
+        package_root = dirname(dirname(pathof(SHTnsKit)))
+        extension_source = read(joinpath(package_root, "ext", "SHTnsKitGPUExt.jl"), String)
+        @test occursin(r"struct CuFFTPlan\{", extension_source)
+        @test !occursin("inverse_plan::CUFFT.CuFFTPlan", extension_source)
+        @test count("SHTnsKit._externalize_coefficients!", extension_source) >= 3
+        @test count("SHTnsKit._internal_coefficients", extension_source) >= 3
+    end
+
+    @testset "Breaking release uses a major version" begin
+        package_root = dirname(dirname(pathof(SHTnsKit)))
+        project = read(joinpath(package_root, "Project.toml"), String)
+        changelog = read(joinpath(package_root, "CHANGELOG.md"), String)
+        @test occursin(r"(?m)^version = \"2\.0\.0\"$", project)
+        @test occursin("## Unreleased (v2.0.0)", changelog)
+    end
 end

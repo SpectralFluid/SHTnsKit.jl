@@ -47,6 +47,42 @@ else
             @test isapprox(a_rt, alm; rtol=1e-9, atol=1e-11)
         end
 
+        @testset "configured convention parity" begin
+            convention_cases = (
+                (:fourpi, false, true),
+                (:schmidt, true, false),
+                (:orthonormal, true, true),
+            )
+            for T in (Float32, Float64),
+                (norm, real_norm, cs_phase) in convention_cases
+                cfgc = create_gauss_config(3, 6; nlon=9, norm, real_norm, cs_phase)
+                field = Matrix{T}(undef, cfgc.nlat, cfgc.nlon)
+                for j in 1:cfgc.nlon, i in 1:cfgc.nlat
+                    phi = T(2pi * (j - 1) / cfgc.nlon)
+                    field[i, j] = sqrt(max(zero(T), one(T) - T(cfgc.x[i])^2)) * cos(phi)
+                end
+
+                norm_scale = norm === :orthonormal ? one(T) :
+                             norm === :fourpi ? sqrt(T(4pi)) : sqrt(T(4pi / 3))
+                real_scale = real_norm ? inv(sqrt(T(2))) : one(T)
+                phase_scale = cs_phase ? one(T) : -one(T)
+                expected_a11 = -sqrt(T(2pi / 3)) /
+                               (norm_scale * real_scale * phase_scale)
+                atol = T === Float32 ? 3f-5 : 2e-11
+                rtol = T === Float32 ? 3f-5 : 2e-10
+
+                got = analysis_turbo(cfgc, field)
+                @test got ≈ analysis(cfgc, field) rtol=rtol atol=atol
+                @test got[2, 2] ≈ expected_a11 rtol=rtol atol=atol
+
+                requested = zeros(Complex{T}, cfgc.lmax + 1, cfgc.mmax + 1)
+                requested[2, 2] = expected_a11
+                @test synthesis_turbo(cfgc, requested) ≈ field rtol=rtol atol=atol
+                @test analysis_turbo(cfgc, synthesis_turbo(cfgc, requested)) ≈
+                      requested rtol=rtol atol=atol
+            end
+        end
+
         @testset "turbo_apply_laplacian! (matrix form)" begin
             A = copy(alm)
             turbo_apply_laplacian!(cfg, A)
