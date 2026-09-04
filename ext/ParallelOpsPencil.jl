@@ -11,12 +11,18 @@ function SHTnsKit.dist_apply_laplacian!(cfg::SHTnsKit.SHTConfig, Alm_pencil::Pen
     # Scalar-indexing the PencilArray avoids `.*=` on a row slice, which tries
     # to construct a differently sized `similar` PencilArray and throws
     # `DimensionMismatch`.
+    gsize = PencilArrays.size_global(Alm_pencil)
+    gsize[1] == cfg.lmax + 1 && gsize[2] >= cfg.mmax + 1 ||
+        throw(DimensionMismatch("spectral pencil must have global size " *
+                                "($(cfg.lmax + 1), >=$(cfg.mmax + 1)); got $gsize"))
     lloc = axes(Alm_pencil, 1); gl_l = collect(Int, globalindices(Alm_pencil, 1))
-    mloc = axes(Alm_pencil, 2)
+    mloc = axes(Alm_pencil, 2); gl_m = collect(Int, globalindices(Alm_pencil, 2))
     @inbounds for (ii, il) in enumerate(lloc)
         lval = gl_l[ii] - 1
         factor = -(lval * (lval + 1))
-        for jm in mloc
+        for (jj, jm) in enumerate(mloc)
+            mval = gl_m[jj] - 1
+            (mval <= cfg.mmax && mval % cfg.mres == 0 && lval >= mval) || continue
             Alm_pencil[il, jm] *= factor
         end
     end
@@ -32,6 +38,29 @@ where lm_prev = LM_index(l-1,m) and lm_next = LM_index(l+1,m).
 """
 function SHTnsKit.dist_SH_mul_mx!(cfg::SHTnsKit.SHTConfig, mx::AbstractVector{<:Real}, Alm_pencil::PencilArray, R_pencil::PencilArray)
     lmax, mmax, mres = cfg.lmax, cfg.mmax, cfg.mres
+    comm = communicator(Alm_pencil)
+    _validate_prototype_communicator(comm, R_pencil, "dist_SH_mul_mx!")
+    local_alias = parent(Alm_pencil) === parent(R_pencil) ||
+                  Base.mightalias(parent(Alm_pencil), parent(R_pencil))
+    global_alias = MPI.Allreduce(local_alias, |, comm)
+    global_alias && throw(ArgumentError(
+        "dist_SH_mul_mx! is out-of-place; input and output PencilArrays must not alias"))
+    length(mx) == 2cfg.nlm ||
+        throw(DimensionMismatch("mx length must be 2*nlm=$(2cfg.nlm); got $(length(mx))"))
+    in_size = PencilArrays.size_global(Alm_pencil)
+    out_size = PencilArrays.size_global(R_pencil)
+    in_size[1] == lmax + 1 && in_size[2] >= mmax + 1 ||
+        throw(DimensionMismatch("input spectral pencil must have global size " *
+                                "($(lmax + 1), >=$(mmax + 1)); got $in_size"))
+    out_size == in_size ||
+        throw(DimensionMismatch("input/output spectral pencils must have matching global sizes; " *
+                                "got $in_size and $out_size"))
+    for dim in 1:2
+        globalindices(Alm_pencil, dim) == globalindices(R_pencil, dim) ||
+            throw(DimensionMismatch("input/output spectral pencils must have identical local ranges"))
+    end
+    size(parent(Alm_pencil)) == size(parent(R_pencil)) ||
+        throw(DimensionMismatch("input/output spectral pencils must have identical local storage"))
     lloc = axes(Alm_pencil, 1); mloc = axes(Alm_pencil, 2)
     gl_l = collect(Int, globalindices(Alm_pencil, 1))
     gl_m = collect(Int, globalindices(Alm_pencil, 2))
@@ -49,6 +78,7 @@ function SHTnsKit.dist_SH_mul_mx!(cfg::SHTnsKit.SHTConfig, mx::AbstractVector{<:
     end
     CT = promote_type(eltype(Alm_pencil), eltype(R_pencil), complex(eltype(mx)))  # AD/Float32-safe
     col_full = zeros(CT, lmax + 1)
+    fill!(R_pencil, zero(eltype(R_pencil)))
     for (jj, jm) in enumerate(mloc)
         mval = gl_m[jj] - 1
         # Columns this operator does not compute must still be DEFINED: the
@@ -57,18 +87,14 @@ function SHTnsKit.dist_SH_mul_mx!(cfg::SHTnsKit.SHTConfig, mx::AbstractVector{<:
         # operator implies. Zero, then skip.
         #   * m > mmax          — outside the spectral band (dealiased grids)
         #   * m % mres != 0     — not a stored order; `LM_index` throws on these
-        if mval > mmax || (mval % mres != 0)
-            @inbounds for il in lloc
-                R_pencil[il, jm] = zero(eltype(R_pencil))
-            end
-            continue
-        end
+        (mval <= mmax && mval % mres == 0) || continue
         # Extract the full l-column from local data
         @inbounds for (ii, il) in enumerate(lloc)
             col_full[gl_l[ii]] = Alm_pencil[il, jm]
         end
         for (ii, il) in enumerate(lloc)
             lval = gl_l[ii] - 1
+            lval >= mval || continue
             acc = zero(CT)
             # Contribution from lower neighbor Y_{l-1}^m (uses mx[2*lm_prev + 2])
             if lval > mval && lval > 0

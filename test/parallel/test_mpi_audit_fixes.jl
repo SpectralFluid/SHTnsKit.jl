@@ -13,8 +13,12 @@
 #      that owns θ rows, or a whole latitude slab drops out of the sum
 #   7. sphtor pole limits on the OTF (no-table) branch, not just the table branch
 #   8. complex dist_analysis_packed_cplx on a φ-decomposed pencil
+#   9. direct complex dist_analysis preserves the gathered element type
+#  10. local evaluation and diagnostics honor configured coefficient conventions
+#  11. distributed Y rotation converts conventions around Wigner mixing
+#  12. l-distributed spectral pencils are rejected before row-wise collectives
 #
-# Run with: mpiexec -n 4 julia --project test/parallel/test_mpi_audit_fixes.jl
+# Run with: mpiexec -n 8 julia --project test/parallel/test_mpi_audit_fixes.jl
 
 using MPI
 MPI.Init()
@@ -70,6 +74,53 @@ max_local_error(pa::PencilArray, F::AbstractMatrix) =
         @test !isdefined(ParExt, :_ParallelExtState)
         @test !isdefined(ParExt, :dist_analysis_cache_blocked)
         @test !isdefined(ParExt, :dist_analysis_fused_cache_blocked)
+    end
+
+    @testset "cfg-form transforms reject permuted parent storage" begin
+        lmax = 4
+        cfg = create_gauss_config(lmax, lmax + 2; nlon=2lmax + 1)
+        # These kernels intentionally operate on `parent(A)` for performance.
+        # A Pencil permutation changes parent memory order while logical global
+        # indices remain (θ,φ), so accepting it silently swaps transform axes.
+        pen_perm = Pencil((cfg.nlat, cfg.nlon), (1,), MPI.COMM_SELF;
+                          permute=Permutation(2, 1))
+        f_perm = PencilArray{Float64}(undef, pen_perm)
+        for j in axes(f_perm, 2), i in axes(f_perm, 1)
+            f_perm[i, j] = sin(0.2i) * cos(0.3j)
+        end
+        err_analysis = try
+            SHTnsKit.dist_analysis(cfg, f_perm)
+            nothing
+        catch err
+            err
+        end
+        @test err_analysis isa ArgumentError
+        @test occursin("permut", lowercase(sprint(showerror, err_analysis)))
+
+        err_synthesis = try
+            SHTnsKit.dist_synthesis(
+                cfg, zeros(ComplexF64, lmax + 1, lmax + 1);
+                prototype_θφ=f_perm)
+            nothing
+        catch err
+            err
+        end
+        @test err_synthesis isa ArgumentError
+        @test occursin("permut", lowercase(sprint(showerror, err_synthesis)))
+
+        spec_perm = Pencil((lmax + 1, lmax + 1), (2,), MPI.COMM_SELF;
+                           permute=Permutation(2, 1))
+        A_perm = PencilArray{ComplexF64}(undef, spec_perm)
+        fill!(A_perm, 0)
+        err_rotation = try
+            SHTnsKit.dist_SH_Zrotate(cfg, A_perm, 0.2, similar(A_perm))
+            nothing
+        catch err
+            err
+        end
+        @test err_rotation isa DimensionMismatch
+        @test occursin("unpermuted", lowercase(sprint(showerror, err_rotation)))
+        root_println("    [PASS] permuted parent storage rejected explicitly")
     end
 
     @testset "equivalent pencils have rank-symmetric topology lookup" begin
@@ -334,7 +385,13 @@ max_local_error(pa::PencilArray, F::AbstractMatrix) =
         ref = SHTnsKit.analysis_packed_cplx(cfg, zref)
         for (label, pen) in (("φ-split", Pencil((nlat, nlon), comm)),
                              ("θ-split", Pencil((nlat, nlon), (1,), comm)))
-            got = SHTnsKit.dist_analysis_packed_cplx(cfg, scatter_field(pen, zref))
+            zdist = scatter_field(pen, zref)
+            # The direct dense path must preserve the PencilArray element type too;
+            # packed_cplx used to hide a Float64-only φ gather by splitting into
+            # real and imaginary transforms.
+            @test isapprox(SHTnsKit.dist_analysis(cfg, zdist), SHTnsKit.analysis(cfg, zref);
+                           rtol=1e-9, atol=1e-11)
+            got = SHTnsKit.dist_analysis_packed_cplx(cfg, zdist)
             @test isapprox(got, ref; rtol=1e-9, atol=1e-11)
             root_println("    [PASS] complex packed_cplx on $label pencil")
         end
@@ -365,7 +422,455 @@ max_local_error(pa::PencilArray, F::AbstractMatrix) =
             frec = SHTnsKit.dist_synthesis(cfg, SHTnsKit.analysis(cfg, F);
                                            prototype_θφ=fpa, real_output=true)
             @test max_local_error(frec, F, pen) < 1e-10
+
+            # Public distributed coefficient containers use cfg's convention,
+            # just like serial analysis. Local evaluation and diagnostics must
+            # convert/apply its metric rather than treating values as canonical.
+            pen_spec = Pencil((lmax + 1, cfg.mmax + 1), comm)
+            A_p = scatter_field(pen_spec, A0)
+            iθ, jφ = 3, 4
+            cost = cfg.x[iθ]
+            phi = 2π * (jφ - 1) / nlon
+            @test isapprox(SHTnsKit.dist_SH_to_point(cfg, A_p, cost, phi), F[iθ, jφ];
+                           rtol=1e-10, atol=1e-11)
+            @test isapprox(SHTnsKit.dist_SH_to_lat(cfg, A_p, cost; nphi=nlon),
+                           vec(F[iθ, :]); rtol=1e-10, atol=1e-11)
+            @test isapprox(SHTnsKit.energy_scalar(cfg, A_p),
+                           SHTnsKit.energy_scalar(cfg, A0); rtol=1e-12, atol=1e-13)
+            @test isapprox(SHTnsKit.energy_scalar_l_spectrum(cfg, A_p),
+                           SHTnsKit.energy_scalar_l_spectrum(cfg, A0); rtol=1e-12, atol=1e-13)
+            @test isapprox(SHTnsKit.energy_scalar_m_spectrum(cfg, A_p),
+                           SHTnsKit.energy_scalar_m_spectrum(cfg, A0); rtol=1e-12, atol=1e-13)
+
+            S0 = 0.3 .* A0
+            T0 = -0.2im .* A0
+            S_p = scatter_field(pen_spec, S0)
+            T_p = scatter_field(pen_spec, T0)
+            Vr, Vt, Vp = SHTnsKit.synthesis_qst(cfg, A0, S0, T0; real_output=true)
+            got_point = SHTnsKit.dist_SHqst_to_point(cfg, A_p, S_p, T_p, cost, phi)
+            @test isapprox(collect(got_point), [Vr[iθ, jφ], Vt[iθ, jφ], Vp[iθ, jφ]];
+                           rtol=1e-9, atol=1e-10)
+            got_lat = SHTnsKit.dist_SHqst_to_lat(cfg, A_p, S_p, T_p, cost; nphi=nlon)
+            @test isapprox(collect(got_lat[1]), vec(Vr[iθ, :]); rtol=1e-9, atol=1e-10)
+            @test isapprox(collect(got_lat[2]), vec(Vt[iθ, :]); rtol=1e-9, atol=1e-10)
+            @test isapprox(collect(got_lat[3]), vec(Vp[iθ, :]); rtol=1e-9, atol=1e-10)
+            @test isapprox(SHTnsKit.energy_vector_l_spectrum(cfg, S_p, T_p),
+                           SHTnsKit.energy_vector_l_spectrum(cfg, S0, T0); rtol=1e-12, atol=1e-13)
+            @test isapprox(SHTnsKit.energy_vector_m_spectrum(cfg, S_p, T_p),
+                           SHTnsKit.energy_vector_m_spectrum(cfg, S0, T0); rtol=1e-12, atol=1e-13)
+            @test isapprox(SHTnsKit.enstrophy_l_spectrum(cfg, T_p),
+                           SHTnsKit.enstrophy_l_spectrum(cfg, T0); rtol=1e-12, atol=1e-13)
+            @test isapprox(SHTnsKit.enstrophy_m_spectrum(cfg, T_p),
+                           SHTnsKit.enstrophy_m_spectrum(cfg, T0); rtol=1e-12, atol=1e-13)
             root_println("    [PASS] distributed == serial for norm=$nrm cs_phase=$cs")
+        end
+    end
+
+    @testset "Y rotation convention and supported spectral decomposition" begin
+        lmax = mmax = 5
+        beta = 0.37
+        cfg_can = create_gauss_config(lmax, lmax + 2; nlon=2lmax + 1)
+        cfg_ext = create_gauss_config(lmax, lmax + 2; nlon=2lmax + 1,
+                                      norm=:schmidt, cs_phase=false, real_norm=true)
+        rng = MersenneTwister(717)
+        A_can = zeros(ComplexF64, lmax + 1, mmax + 1)
+        for m in 0:mmax, l in m:lmax
+            A_can[l + 1, m + 1] = randn(rng, ComplexF64)
+        end
+        A_can[:, 1] .= real.(A_can[:, 1])
+        A_ext = copy(A_can)
+        SHTnsKit._externalize_coefficients!(A_ext, cfg_ext)
+
+        # m-only distribution is supported. Rotating two representations of the
+        # same field must produce representations of the same rotated field.
+        pen_m = Pencil((lmax + 1, mmax + 1), comm)
+        R_can = similar(scatter_field(pen_m, A_can))
+        R_ext = similar(scatter_field(pen_m, A_ext))
+        SHTnsKit.dist_SH_Yrotate(cfg_can, scatter_field(pen_m, A_can), beta, R_can)
+        SHTnsKit.dist_SH_Yrotate(cfg_ext, scatter_field(pen_m, A_ext), beta, R_ext)
+        scales = SHTnsKit._ensure_norm_scale_matrix!(cfg_ext)
+        ranges = PencilArrays.range_local(pen_m)
+        local_err = 0.0
+        for (jm, gm) in enumerate(ranges[2]), (il, gl) in enumerate(ranges[1])
+            l, m = gl - 1, gm - 1
+            if l >= m
+                local_err = max(local_err,
+                    abs(parent(R_can)[il, jm] - scales[l + 1, m + 1] * parent(R_ext)[il, jm]))
+            end
+        end
+        @test MPI.Allreduce(local_err, max, comm) < 1e-10
+
+        # Public rotation signatures accept generic complex pencils and real
+        # angles; the optimized truncated-gather kernel must not narrow that
+        # contract to ComplexF64/Float64 internally.
+        A32_p = scatter_field(pen_m, ComplexF32.(A_can))
+        R32_p = similar(A32_p)
+        SHTnsKit.dist_SH_Yrotate(cfg_can, A32_p, Float32(beta), R32_p)
+        R32_ref = zeros(ComplexF32, size(A_can))
+        SHTnsKit.dist_SH_Yrotate(
+            cfg_can, ComplexF32.(A_can), Float32(beta), R32_ref)
+        @test max_local_error(R32_p, R32_ref) < 2e-6
+
+        # Y rotation performs collectives row-by-row and therefore cannot accept
+        # a pencil split across l rows. It must fail on every rank before entering
+        # the first collective instead of mixing rows or hanging.
+        if nprocs > 1
+            pen_l = Pencil((lmax + 1, mmax + 1), (1,), comm)
+            A_l = scatter_field(pen_l, A_can)
+            @test_throws ArgumentError SHTnsKit.dist_SH_Yrotate(cfg_can, A_l, beta, similar(A_l))
+        else
+            @test true
+        end
+
+        # Output buffers must match before either local @inbounds writes or the
+        # first row-wise collective. The old methods trusted R blindly.
+        wrong_pen = Pencil((lmax + 2, mmax + 1), (2,), comm)
+        wrong_R = scatter_field(wrong_pen, zeros(ComplexF64, lmax + 2, mmax + 1))
+        A_p = scatter_field(pen_m, A_can)
+        @test_throws DimensionMismatch SHTnsKit.dist_SH_Zrotate(cfg_can, A_p, beta, wrong_R)
+        @test_throws DimensionMismatch SHTnsKit.dist_SH_Yrotate(cfg_can, A_p, beta, wrong_R)
+
+        # A Y component mixes all orders and has no representation in an
+        # mres-strided coefficient space. Every Y-derived API must explain that
+        # restriction before indexing packed storage or entering MPI.
+        cfg_stride = create_gauss_config(lmax, lmax + 2;
+                                         mmax=mmax, mres=2, nlon=2lmax + 1)
+        pen_stride = Pencil((lmax + 1, mmax + 1), (2,), comm)
+        A_stride = scatter_field(pen_stride, zeros(ComplexF64, lmax + 1, mmax + 1))
+        R_stride = similar(A_stride)
+        err_y = try
+            SHTnsKit.dist_SH_Yrotate(cfg_stride, A_stride, beta, R_stride)
+            nothing
+        catch err
+            err
+        end
+        @test err_y isa ArgumentError
+        @test occursin("mres==1", sprint(showerror, err_y))
+
+        # Even the communication-free Z kernel produces one logical distributed
+        # spectrum. A rank-divergent cfg must be rejected collectively instead
+        # of letting different ranks apply different active-order masks.
+        if nprocs > 1
+            cfg_divergent = rank == nprocs - 1 ? cfg_stride : cfg_can
+            @test_throws ArgumentError SHTnsKit.dist_SH_Zrotate(
+                cfg_divergent, A_p, beta, similar(A_p))
+            @test_throws ArgumentError SHTnsKit.dist_SH_Zrotate(
+                cfg_can, A_p,
+                rank == nprocs - 1 ? beta + 0.1 : beta,
+                similar(A_p))
+        end
+
+        q_stride = zeros(ComplexF64, cfg_stride.nlm)
+        err_packed = try
+            SHTnsKit.dist_SH_Yrotate_packed(
+                cfg_stride, q_stride, beta; prototype_lm=A_stride)
+            nothing
+        catch err
+            err
+        end
+        @test err_packed isa ArgumentError
+        @test occursin("mres==1", sprint(showerror, err_packed))
+        root_println("    [PASS] Y rotation convention/decomposition contract")
+    end
+
+    @testset "Euler rotation matches the serial ZYZ convention" begin
+        lmax = mmax = 5
+        cfg = create_gauss_config(lmax, lmax + 2; nlon=2lmax + 1)
+        rng = MersenneTwister(20260904)
+        A = zeros(ComplexF64, lmax + 1, mmax + 1)
+        for m in 0:mmax, l in m:lmax
+            A[l + 1, m + 1] = randn(rng, ComplexF64)
+        end
+        A[:, 1] .= real.(A[:, 1])
+
+        α, β, γ = 0.31, 0.72, -0.43
+        q = SHTnsKit.pack_lm(cfg, A)
+        qref = similar(q)
+        rot = SHTRotation(lmax, mmax; α, β, γ, conv=:ZYZ)
+        shtns_rotation_apply_real(rot, q, qref)
+        Aref = SHTnsKit.unpack_lm(cfg, qref)
+
+        pen_m = Pencil((lmax + 1, mmax + 1), comm)
+        A_p = scatter_field(pen_m, A)
+        R_p = similar(A_p)
+        SHTnsKit.dist_SH_rotate_euler(cfg, A_p, α, β, γ, R_p)
+
+        @test max_local_error(R_p, Aref) < 1e-10
+
+        qxref = similar(q)
+        SH_Xrotate90(cfg, q, qxref)
+        Xref = SHTnsKit.unpack_lm(cfg, qxref)
+        X_p = similar(A_p)
+        SHTnsKit.dist_SH_Xrotate90(cfg, A_p, X_p)
+        @test max_local_error(X_p, Xref) < 1e-10
+        root_println("    [PASS] distributed Euler rotation matches serial ZYZ")
+    end
+
+    @testset "local evaluation ignores orders excluded by mres" begin
+        lmax = mmax = 6
+        cfg = create_gauss_config(lmax, lmax + 2;
+                                  mmax=mmax, mres=2, nlon=2mmax + 1)
+        excluded = zeros(ComplexF64, lmax + 1, mmax + 1)
+        excluded[4, 2] = 0.8 - 0.35im  # (l,m) = (3,1), absent when mres=2
+        pen_m = Pencil((lmax + 1, mmax + 1), comm)
+        Q_p = scatter_field(pen_m, excluded)
+        S_p = scatter_field(pen_m, 0.4 .* excluded)
+        T_p = scatter_field(pen_m, -0.7im .* excluded)
+        cost, phi = 0.23, 0.41
+
+        @test abs(SHTnsKit.dist_SH_to_point(cfg, Q_p, cost, phi)) < 1e-14
+        @test maximum(abs, SHTnsKit.dist_SH_to_lat(cfg, Q_p, cost; nphi=cfg.nlon)) < 1e-14
+
+        qst_point = SHTnsKit.dist_SHqst_to_point(cfg, Q_p, S_p, T_p, cost, phi)
+        @test maximum(abs, qst_point) < 1e-14
+        qst_lat = SHTnsKit.dist_SHqst_to_lat(cfg, Q_p, S_p, T_p, cost; nphi=cfg.nlon)
+        @test maximum(maximum(abs, component) for component in qst_lat) < 1e-14
+        root_println("    [PASS] local evaluation honors mres")
+    end
+
+    @testset "one-dimensional distributed spectral storage honors mres" begin
+        lmax = mmax = 6
+        mres = 2
+        plan = ParExt.create_distributed_spectral_plan(lmax, mmax, comm; mres)
+        dsa = ParExt.create_distributed_spectral_array(plan)
+
+        dense = fill(99.0 + 7.0im, lmax + 1, mmax + 1)
+        expected = zeros(ComplexF64, size(dense))
+        for m in 0:mres:mmax, l in m:lmax
+            expected[l + 1, m + 1] = complex(10l + m, l - m)
+            dense[l + 1, m + 1] = expected[l + 1, m + 1]
+        end
+
+        ParExt.scatter_from_dense!(dsa, dense)
+        gathered = ParExt.gather_to_dense(dsa)
+        @test gathered == expected
+        @test all(m % mres == 0 for (_, m) in plan.local_lm_indices)
+        @test length(plan.local_packed_indices) == length(unique(plan.local_packed_indices))
+        root_println("    [PASS] one-dimensional distributed spectral storage honors mres")
+    end
+
+    @testset "cfg-form distributed transforms ignore inactive mres columns" begin
+        lmax = mmax = 6
+        cfg = create_gauss_config(lmax, lmax + 2;
+                                  mmax=mmax, mres=2, nlon=2mmax + 1)
+        rng = MersenneTwister(2048)
+        F = randn(rng, cfg.nlat, cfg.nlon)
+        Vt = randn(rng, cfg.nlat, cfg.nlon)
+        Vp = randn(rng, cfg.nlat, cfg.nlon)
+        pen = Pencil((cfg.nlat, cfg.nlon), (1,), comm)
+        F_p = scatter_field(pen, F)
+        Vt_p = scatter_field(pen, Vt)
+        Vp_p = scatter_field(pen, Vp)
+
+        Aref = analysis(cfg, F)
+        Agot_otf = SHTnsKit.dist_analysis(cfg, F_p; use_tables=false)
+        @test isapprox(Agot_otf, Aref; rtol=1e-10, atol=1e-11)
+
+        Sref, Tref = analysis_sphtor(cfg, Vt, Vp)
+        Sgot_otf, Tgot_otf = SHTnsKit.dist_analysis_sphtor(
+            cfg, Vt_p, Vp_p; use_tables=false)
+        @test isapprox(Sgot_otf, Sref; rtol=1e-9, atol=1e-10)
+        @test isapprox(Tgot_otf, Tref; rtol=1e-9, atol=1e-10)
+
+        prepare_plm_tables!(cfg)
+        @test cfg.use_plm_tables
+        Agot_tbl = SHTnsKit.dist_analysis(cfg, F_p; use_tables=true)
+        @test isapprox(Agot_tbl, Aref; rtol=1e-10, atol=1e-11)
+        Sgot_tbl, Tgot_tbl = SHTnsKit.dist_analysis_sphtor(
+            cfg, Vt_p, Vp_p; use_tables=true)
+        @test isapprox(Sgot_tbl, Sref; rtol=1e-9, atol=1e-10)
+        @test isapprox(Tgot_tbl, Tref; rtol=1e-9, atol=1e-10)
+
+        inactive = zeros(ComplexF64, lmax + 1, mmax + 1)
+        inactive[4, 2] = 0.8 - 0.35im  # (l,m) = (3,1)
+        scalar_ref = synthesis(cfg, inactive; real_output=true)
+        scalar_got = SHTnsKit.dist_synthesis(cfg, inactive;
+                                              prototype_θφ=F_p, real_output=true)
+        @test max_local_error(scalar_got, scalar_ref, pen) < 1e-12
+
+        vector_ref = synthesis_sphtor(cfg, inactive, 0.6im .* inactive;
+                                      real_output=true)
+        vector_got = SHTnsKit.dist_synthesis_sphtor(
+            cfg, inactive, 0.6im .* inactive; prototype_θφ=F_p, real_output=true)
+        @test max_local_error(vector_got[1], vector_ref[1], pen) < 1e-12
+        @test max_local_error(vector_got[2], vector_ref[2], pen) < 1e-12
+        root_println("    [PASS] cfg-form distributed transforms honor mres")
+    end
+
+    @testset "transpose plans honor mres without shifting local FFT slots" begin
+        lmax = mmax = 6
+        cfg = create_gauss_config(lmax, lmax + 2;
+                                  mmax=mmax, mres=2, nlon=2mmax + 1)
+        plan = DistTransposePlan(cfg; comm, nlev=1, use_rfft=true, with_vector=true)
+        @test all(m % cfg.mres == 0 for m in plan.m_local)
+
+        rng = MersenneTwister(9191)
+        F = randn(rng, cfg.nlat, cfg.nlon)
+        Vt = randn(rng, cfg.nlat, cfg.nlon)
+        Vp = randn(rng, cfg.nlat, cfg.nlon)
+        f_p = allocate_spatial(plan)
+        vt_p = allocate_spatial(plan)
+        vp_p = allocate_spatial(plan)
+        spatial_ranges = PencilArrays.range_local(pencil(f_p))
+        for (iθ, gθ) in enumerate(spatial_ranges[2]),
+            (jφ, gφ) in enumerate(spatial_ranges[1])
+            parent(f_p)[jφ, iθ, 1] = F[gθ, gφ]
+            parent(vt_p)[jφ, iθ, 1] = Vt[gθ, gφ]
+            parent(vp_p)[jφ, iθ, 1] = Vp[gθ, gφ]
+        end
+
+        A_p = allocate_spectral(plan)
+        S_p = allocate_spectral(plan)
+        T_p = allocate_spectral(plan)
+        dist_analysis!(plan, A_p, f_p)
+        dist_analysis_sphtor!(plan, S_p, T_p, vt_p, vp_p)
+        Aref = analysis(cfg, F)
+        Sref, Tref = analysis_sphtor(cfg, Vt, Vp)
+        spectral_m = collect(PencilArrays.range_local(pencil(A_p))[2]) .- 1
+        local_err = 0.0
+        for (slot, m) in enumerate(spectral_m), l in 0:lmax
+            local_err = max(local_err,
+                abs(parent(A_p)[l + 1, slot, 1] - Aref[l + 1, m + 1]),
+                abs(parent(S_p)[l + 1, slot, 1] - Sref[l + 1, m + 1]),
+                abs(parent(T_p)[l + 1, slot, 1] - Tref[l + 1, m + 1]))
+        end
+        @test MPI.Allreduce(local_err, max, comm) < 1e-10
+
+        # Seed only the forbidden global m=1 bin.  Physical FFT slots are not
+        # compressed by mres, so the implementation needs an explicit slot map.
+        A_bad = allocate_spectral(plan)
+        S_bad = allocate_spectral(plan)
+        T_bad = allocate_spectral(plan)
+        fill!(parent(A_bad), 0); fill!(parent(S_bad), 0); fill!(parent(T_bad), 0)
+        for (slot, m) in enumerate(spectral_m)
+            if m == 1
+                parent(A_bad)[4, slot, 1] = 0.8 - 0.35im
+                parent(S_bad)[4, slot, 1] = -0.2 + 0.6im
+                parent(T_bad)[4, slot, 1] = 0.4 + 0.1im
+            end
+        end
+        f_bad = allocate_spatial(plan)
+        vt_bad = allocate_spatial(plan)
+        vp_bad = allocate_spatial(plan)
+        dist_synthesis!(plan, f_bad, A_bad)
+        dist_synthesis_sphtor!(plan, vt_bad, vp_bad, S_bad, T_bad)
+        bad_local = max(maximum(abs, parent(f_bad)),
+                        maximum(abs, parent(vt_bad)), maximum(abs, parent(vp_bad)))
+        @test MPI.Allreduce(bad_local, max, comm) < 1e-12
+        root_println("    [PASS] transpose plans honor mres")
+    end
+
+    @testset "distributed spectral operators preserve the triangular domain" begin
+        lmax = mmax = 6
+        cfg = create_gauss_config(lmax, lmax + 2; nlon=2mmax + 1)
+        rng = MersenneTwister(3331)
+        A = randn(rng, ComplexF64, lmax + 1, mmax + 1)
+        pen = Pencil((lmax + 1, mmax + 1), (2,), comm)
+
+        # The dense helpers define the contract for entries outside l >= m:
+        # Laplacian leaves them untouched; the out-of-place tridiagonal operator
+        # zeroes them. Distributed kernels must not manufacture coefficients
+        # below the spherical-harmonic triangle.
+        lap_ref = copy(A)
+        SHTnsKit.dist_apply_laplacian!(cfg, lap_ref)
+        lap_p = scatter_field(pen, A)
+        SHTnsKit.dist_apply_laplacian!(cfg, lap_p)
+        @test max_local_error(lap_p, lap_ref, pen) < 1e-12
+
+        mx = zeros(Float64, 2cfg.nlm)
+        mul_ct_matrix(cfg, mx)
+        op_ref = similar(A)
+        SHTnsKit.dist_SH_mul_mx!(cfg, mx, A, op_ref)
+        A_p = scatter_field(pen, A)
+        op_p = PencilArray{ComplexF64}(undef, pen)
+        SHTnsKit.dist_SH_mul_mx!(cfg, mx, A_p, op_p)
+        @test max_local_error(op_p, op_ref, pen) < 1e-12
+
+        # The out-of-place operator zeroes its destination before traversing the
+        # input.  Aliasing the two operands must therefore be rejected explicitly
+        # rather than silently returning an all-zero spectrum.
+        alias_p = scatter_field(pen, A)
+        @test_throws ArgumentError SHTnsKit.dist_SH_mul_mx!(
+            cfg, mx, alias_p, alias_p)
+        equivalent_pen = Pencil((lmax + 1, mmax + 1), (2,), comm)
+        shared_parent = PencilArray(equivalent_pen, parent(alias_p))
+        @test alias_p !== shared_parent
+        @test_throws ArgumentError SHTnsKit.dist_SH_mul_mx!(
+            cfg, mx, alias_p, shared_parent)
+
+        @test_throws DimensionMismatch SHTnsKit.dist_SH_mul_mx!(
+            cfg, mx[1:end-1], A_p, op_p)
+        root_println("    [PASS] distributed spectral operators preserve valid storage")
+    end
+
+    @testset "Robert form does not alter scalar synthesis" begin
+        lmax = mmax = 6
+        cfg = create_gauss_config(lmax, lmax + 2;
+                                  mmax=mmax, nlon=2mmax + 1, robert_form=true)
+        rng = MersenneTwister(1717)
+        A = zeros(ComplexF64, lmax + 1, mmax + 1)
+        for m in 0:mmax, l in m:lmax
+            A[l + 1, m + 1] = randn(rng, ComplexF64)
+        end
+        A[:, 1] .= real.(A[:, 1])
+        ref = synthesis(cfg, A; real_output=true)
+
+        pen_θ = Pencil((cfg.nlat, cfg.nlon), (1,), comm)
+        proto_θ = scatter_field(pen_θ, ref)
+        got = SHTnsKit.dist_synthesis(cfg, A; prototype_θφ=proto_θ, real_output=true)
+        @test max_local_error(got, ref, pen_θ) < 1e-10
+
+        # The optimized 2-D spectral-storage path had a second copy of the same
+        # scalar-only Robert scaling.  A φ decomposition gives every m-group the
+        # identical latitude range required by its m-communicator reduction.
+        pen_φ = Pencil((cfg.nlat, cfg.nlon), comm)
+        proto_φ = scatter_field(pen_φ, ref)
+        plan2d = ParExt.create_distributed_spectral_plan_2d(
+            lmax, mmax, comm; p_l=1, p_m=nprocs)
+        dsa2d = ParExt.create_distributed_spectral_array_2d(plan2d)
+        ParExt.scatter_from_dense_2d!(dsa2d, A)
+        got2d = ParExt.dist_synthesis_distributed_2d_optimized(
+            cfg, dsa2d; prototype_θφ=proto_φ, real_output=true)
+        @test max_local_error(got2d, ref, pen_φ) < 1e-10
+        close(plan2d)
+        root_println("    [PASS] Robert form remains vector-only")
+    end
+
+    @testset "2-D alignment validation rejects duplicated latitude slabs" begin
+        if nprocs >= 4 && iseven(nprocs)
+            lmax = mmax = 6
+            cfg = create_gauss_config(lmax, lmax + 2; nlon=2mmax + 1)
+            # Each latitude slab has multiple φ partners.  With p_m=1 the old
+            # validator compared singleton m-communicators and returned true,
+            # although an l_comm reduction would count every slab pφ times.
+            pθ, pφ = 2, nprocs ÷ 2
+            topo = MPITopology(comm, (pθ, pφ))
+            pen2 = Pencil(topo, (cfg.nlat, cfg.nlon), (1, 2))
+            proto = scatter_field(pen2, zeros(cfg.nlat, cfg.nlon))
+            plan2d = ParExt.create_distributed_spectral_plan_2d(
+                lmax, mmax, comm; p_l=nprocs, p_m=1)
+
+            aligned, message = ParExt.validate_2d_distribution_alignment(plan2d, proto)
+            @test !aligned
+            @test occursin("not", lowercase(message))
+            close(plan2d)
+
+            # Replicated full-latitude data are also valid: the aligned analysis
+            # detects that θ is not distributed and deliberately skips l_comm
+            # reduction.  The validator must distinguish this from duplicated
+            # partial slabs.
+            pen_φ = Pencil((cfg.nlat, cfg.nlon), comm)
+            proto_φ = scatter_field(pen_φ, zeros(cfg.nlat, cfg.nlon))
+            plan_replicated = ParExt.create_distributed_spectral_plan_2d(
+                lmax, mmax, comm; p_l=2, p_m=nprocs ÷ 2)
+            aligned_replicated, _ = ParExt.validate_2d_distribution_alignment(
+                plan_replicated, proto_φ)
+            @test aligned_replicated
+            close(plan_replicated)
+            root_println("    [PASS] duplicated θ slabs rejected by alignment validator")
+        else
+            @test true
+            root_println("    [SKIP] duplicated-slab alignment case needs an even rank count ≥ 4")
         end
     end
 end

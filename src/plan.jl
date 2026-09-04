@@ -260,7 +260,7 @@ function analysis_sphtor!(plan::SHTPlan, Slm_out::AbstractMatrix, Tlm_out::Abstr
         end
 
         xv = cfg.x; wv = cfg.w  # hoist field reads out of the i/l loops (cfg is mutable, so not auto-hoisted)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             for i in 1:nlat
                 Plm_norm_dPdtheta_over_sinth_row!(plan.P, plan.dPdtheta, plan.P_over_sinth, xv[i], lmax, m, plan.Pb)
@@ -326,7 +326,7 @@ function synthesis_sphtor!(plan::SHTPlan, Vt_out::AbstractMatrix, Vp_out::Abstra
         end
 
         xv = cfg.x  # hoist field reads out of the i/l loops (cfg is mutable, so not auto-hoisted)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             for i in 1:nlat
                 Plm_norm_dPdtheta_over_sinth_row!(plan.P, plan.dPdtheta, plan.P_over_sinth, xv[i], lmax, m, plan.Pb)
@@ -426,7 +426,7 @@ function analysis!(plan::SHTPlan, alm_out::AbstractMatrix, f::AbstractMatrix)
         end
         # Half-spectrum FFT — bins 0..mmax match full-FFT values for real input.
         mul!(plan.Fθk_r, plan.rfft_plan, plan.real_scratch)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             @inbounds for i in 1:nlat
                 _scalar_analysis_kernel_otf!(alm_out, cfg, plan.Fθk_r, plan.P, i, col, m, lmax, scaleφ)
@@ -437,7 +437,7 @@ function analysis!(plan::SHTPlan, alm_out::AbstractMatrix, f::AbstractMatrix)
             plan.Fθk[i,j] = f[i,j]
         end
         plan.fft_plan * plan.Fθk
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             @inbounds for i in 1:nlat
                 _scalar_analysis_kernel_otf!(alm_out, cfg, plan.Fθk, plan.P, i, col, m, lmax, scaleφ)
@@ -474,7 +474,7 @@ function synthesis!(plan::SHTPlan, f_out::AbstractMatrix, alm::AbstractMatrix; r
         fill!(plan.Fθk_r, zero(eltype(plan.Fθk_r)))
         # Fill only nonnegative m bins. Unlike the complex path below, no
         # Hermitian mirror is written because irfft_plan reconstructs it.
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             @inbounds for i in 1:nlat
                 plan.Fθk_r[i, col] = inv_scaleφ * _scalar_synthesis_kernel_otf(cfg, alm_int, plan.P, i, col, m, lmax)
@@ -489,7 +489,7 @@ function synthesis!(plan::SHTPlan, f_out::AbstractMatrix, alm::AbstractMatrix; r
     end
 
     fill!(plan.Fθk, zero(eltype(plan.Fθk)))
-    for m in 0:mmax
+    for m in 0:cfg.mres:mmax
         col = m + 1
         @inbounds for i in 1:nlat
             plan.Fθk[i, col] = inv_scaleφ * _scalar_synthesis_kernel_otf(cfg, alm_int, plan.P, i, col, m, lmax)

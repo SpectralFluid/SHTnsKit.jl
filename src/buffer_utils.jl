@@ -7,19 +7,48 @@ and provide consistent, optimized buffer management.
 """
 
 """
-    balanced_m_order(mmax::Int) -> Vector{Int}
+    balanced_m_order(mmax::Int, mres::Int=1) -> Vector{Int}
 
-Interleave (0, mmax, 1, mmax-1, …) so contiguous `@threads :static` chunks
-receive roughly equal total work when inner work per m is (lmax - m + 1).
-Returns a length-(mmax+1) vector of m values.
+Interleave the valid `m` values from `0:mres:mmax` from low and high ends so
+contiguous `@threads :static` chunks receive roughly equal total work when
+inner work per m is (lmax - m + 1).
 """
-function balanced_m_order(mmax::Int)
-    n = mmax + 1
+function balanced_m_order(mmax::Int, mres::Int=1)
+    mres >= 1 || throw(ArgumentError("mres must be >= 1"))
+    n = fld(mmax, mres) + 1
     order = Vector{Int}(undef, n)
-    @inbounds for i in 0:mmax
-        order[i+1] = iseven(i) ? div(i, 2) : mmax - div(i, 2)
+    @inbounds for i in 0:(n - 1)
+        im = iseven(i) ? div(i, 2) : (n - 1) - div(i, 2)
+        order[i+1] = im * mres
     end
     return order
+end
+
+"""
+    _use_internal_mloop_threads() -> Bool
+
+Return whether a transform may safely start its internal static m-mode loop.
+Static loops cannot be nested or started concurrently, so transforms invoked
+from an outer threaded region (or from a worker task) run their m-loop serially
+on that worker instead.
+"""
+@inline function _use_internal_mloop_threads()
+    return Threads.nthreads() > 1 &&
+           Threads.threadid() == 1 &&
+           ccall(:jl_in_threaded_region, Cint, ()) == 0
+end
+
+"""Run a `for` loop with static threading when safe, otherwise on the caller's thread."""
+macro _threads_or_serial(loop)
+    loop isa Expr && loop.head === :for ||
+        throw(ArgumentError("@_threads_or_serial requires a for loop"))
+    return esc(quote
+        if _use_internal_mloop_threads()
+            Threads.@threads :static $loop
+        else
+            $loop
+        end
+    end)
 end
 
 """
@@ -28,46 +57,62 @@ end
 Return the cfg's cached balanced m-ordering, building it on first use. Callers
 should not mutate the returned vector.
 """
+const _M_ORDER_LOCK = Threads.ReentrantLock()
+
 @inline function cached_m_order(cfg)
-    mo = cfg._m_order
-    if length(mo) != cfg.mmax + 1
-        # Fill the existing Vector in place rather than rebinding the field, so
-        # the cache works even when cfg is an immutable struct.
-        resize!(mo, cfg.mmax + 1)
-        copyto!(mo, balanced_m_order(cfg.mmax))
+    lock(_M_ORDER_LOCK)
+    try
+        mo = cfg._m_order
+        expected_length = fld(cfg.mmax, cfg.mres) + 1
+        valid = length(mo) == expected_length
+        if valid
+            @inbounds for m in mo
+                if m < 0 || m > cfg.mmax || m % cfg.mres != 0
+                    valid = false
+                    break
+                end
+            end
+        end
+        if !valid
+            # Build into a private vector and publish it only after complete.
+            cfg._m_order = balanced_m_order(cfg.mmax, cfg.mres)
+        end
+        return cfg._m_order
+    finally
+        unlock(_M_ORDER_LOCK)
     end
-    return mo
 end
 
 """
     _ensure_otf_scratch!(buffers::Vector{Vector{Float64}}, lmax::Int) -> Vector
 
-Lazily grow `buffers` so it has `Threads.maxthreadid()` entries, each length
-`lmax + 1`. Caller holds `buffers` across calls to skip per-call allocation.
-Safe to call repeatedly; resizes only when maxthreadid() increases.
+Lazily grow `buffers` so it has `Threads.maxthreadid()` entries, each with
+capacity for at least `lmax + 1` values. Caller holds `buffers` across calls to
+skip per-call allocation. Safe to call repeatedly and concurrently; buffers
+grow when needed and are never shrunk while another transform may be using one.
 """
 const _OTF_SCRATCH_LOCK = Threads.ReentrantLock()
 
 @inline function _ensure_otf_scratch!(buffers::Vector{Vector{Float64}}, lmax::Int)
-    # Fast path: common case, no resize needed — read-only check avoids lock
-    # on every transform call. Only lock when we actually have to mutate.
     n = Threads.maxthreadid()
-    cur = length(buffers)
-    if cur >= n && (cur == 0 || length(buffers[1]) == lmax + 1)
-        return buffers
-    end
-    lock(_OTF_SCRATCH_LOCK) do
-        cur2 = length(buffers)
-        if cur2 < n
+    required_length = lmax + 1
+
+    # The lock covers both inspection and mutation. In particular, `resize!`
+    # exposes unassigned slots until they are filled; an unlocked fast path can
+    # otherwise observe the new length and index one of those slots.
+    lock(_OTF_SCRATCH_LOCK)
+    try
+        cur = length(buffers)
+        if cur < n
             resize!(buffers, n)
-            @inbounds for i in (cur2 + 1):n
-                buffers[i] = Vector{Float64}(undef, lmax + 1)
-            end
-        elseif cur2 > 0 && length(buffers[1]) != lmax + 1
-            @inbounds for i in 1:n
-                buffers[i] = Vector{Float64}(undef, lmax + 1)
+        end
+        @inbounds for i in 1:n
+            if !isassigned(buffers, i) || length(buffers[i]) < required_length
+                buffers[i] = Vector{Float64}(undef, required_length)
             end
         end
+    finally
+        unlock(_OTF_SCRATCH_LOCK)
     end
     return buffers
 end
@@ -80,7 +125,7 @@ Eagerly populate every lazily-built cache on `cfg` up to the current
 to hit cached data and will not allocate to initialise scratch buffers,
 normalization matrices, or per-thread OTF Legendre storage. Call once after
 config construction in multi-threaded workflows to avoid first-iteration
-surprises and the (benign) races on concurrent first-touch lazy init.
+allocation surprises.
 """
 function warmup!(cfg::SHTConfig)
     _ensure_otf_scratch!(cfg._otf_scratch_P, cfg.lmax)

@@ -6,6 +6,86 @@ using MPI
 using PencilArrays
 using SHTnsKit
 
+"""Validate one distributed spectral input before entering an evaluation kernel."""
+function _require_local_eval_spectral_shape(cfg::SHTnsKit.SHTConfig,
+                                            A::PencilArray)
+    comm = communicator(A)
+    _validate_cfg_replicated(cfg, comm)
+    expected = (cfg.lmax + 1, cfg.mmax + 1)
+    local_ok = PencilArrays.size_global(A) == expected && ndims(A) == 2
+    # Make the decision collectively. A rank-local throw followed by another
+    # rank entering the evaluator's reduction would deadlock when configs differ.
+    all_ok = MPI.Allreduce(local_ok, &, comm)
+    all_ok || throw(DimensionMismatch(
+        "spectral pencil must have configured global size $expected"))
+    return comm,
+           axes(A, 1), axes(A, 2),
+           collect(Int, globalindices(A, 1)),
+           collect(Int, globalindices(A, 2))
+end
+
+"""Validate that Q, S and T describe the same distributed spectral modes."""
+function _require_matching_local_eval_spectra(cfg::SHTnsKit.SHTConfig,
+                                              Q::PencilArray,
+                                              S::PencilArray,
+                                              T::PencilArray)
+    comm = communicator(Q)
+    _validate_cfg_replicated(cfg, comm)
+    expected = (cfg.lmax + 1, cfg.mmax + 1)
+    q_l = collect(Int, globalindices(Q, 1))
+    q_m = collect(Int, globalindices(Q, 2))
+    q_perm = PencilArrays.permutation(Q)
+
+    local_ok = PencilArrays.size_global(Q) == expected && ndims(Q) == 2
+    for A in (S, T)
+        comm_ok = MPI.Comm_compare(comm, communicator(A)) != MPI.UNEQUAL
+        local_ok &= PencilArrays.size_global(A) == expected && ndims(A) == 2 &&
+                    collect(Int, globalindices(A, 1)) == q_l &&
+                    collect(Int, globalindices(A, 2)) == q_m &&
+                    PencilArrays.permutation(A) == q_perm &&
+                    size(parent(A)) == size(parent(Q)) && comm_ok
+    end
+    all_ok = MPI.Allreduce(local_ok, &, comm)
+    all_ok || throw(DimensionMismatch(
+        "Q/S/T spectral pencils must have configured global size $expected, " *
+        "identical local ranges and storage order, and the same communicator group"))
+    return comm, axes(Q, 1), axes(Q, 2), q_l, q_m
+end
+
+"""
+Require every rank participating in a modal reduction to evaluate the same
+point or latitude sweep. Different arguments would otherwise mix unrelated
+partial sums; a different `nphi` is worse because it gives `Allreduce!`
+different buffer lengths on different ranks.
+"""
+function _require_replicated_local_eval_arguments(
+        comm, operation::AbstractString, signature; nphi::Union{Nothing,Int}=nothing)
+    locally_valid = nphi === nothing || nphi > 0
+    if MPI.Comm_size(comm) == 1
+        locally_valid || throw(ArgumentError("$operation requires nphi > 0"))
+        return nothing
+    end
+
+    local_sig = hash(signature)
+    root_sig = MPI.bcast(local_sig, 0, comm)
+    local_bad = !locally_valid || local_sig != root_sig
+    nbad = MPI.Allreduce(local_bad ? 1 : 0, +, comm)
+    nbad == 0 || throw(ArgumentError(
+        "$operation requires identical evaluation arguments on every rank" *
+        (nphi === nothing ? "" : " and nphi > 0")))
+    return nothing
+end
+
+"""Apply the same latitude-truncation contract as the serial evaluators."""
+function _require_local_eval_truncation(cfg::SHTnsKit.SHTConfig,
+                                        ltr::Int, mtr::Int, comm)
+    local_ok = 0 <= ltr <= cfg.lmax && 0 <= mtr <= cfg.mmax
+    all_ok = MPI.Allreduce(local_ok, &, comm)
+    all_ok || throw(ArgumentError(
+        "ltr must be within [0, lmax] and mtr must be within [0, mmax]"))
+    return nothing
+end
+
 """
     dist_SH_to_lat(cfg, Alm_pencil::PencilArray, cost::Real;
                    nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax,
@@ -13,21 +93,25 @@ using SHTnsKit
 
 Evaluate along a latitude (cosθ = cost) from distributed Alm. All ranks receive the full vector.
 
-`Alm_pencil` holds ORTHONORMAL coefficients — the form `dist_analysis` returns,
-matching serial `analysis`/`synthesis_point`. It is NOT the packed `SH_to_lat`
-convention, which applies the cfg norm/CS scale.
+`Alm_pencil` holds coefficients in `cfg`'s public normalization and phase
+convention, matching serial `analysis` and `synthesis_point`.
+With `real_output=false`, only the stored nonnegative orders are evaluated,
+matching `synthesis(cfg, Alm; real_output=false)` rather than adding a Hermitian
+negative-order mirror.
 """
 function SHTnsKit.dist_SH_to_lat(cfg::SHTnsKit.SHTConfig, Alm_pencil::PencilArray, cost::Real;
                                  nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax,
                                  real_output::Bool=true)
-    comm = communicator(Alm_pencil)
+    comm, lloc, mloc, gl_l, gl_m =
+        _require_local_eval_spectral_shape(cfg, Alm_pencil)
+    _require_replicated_local_eval_arguments(
+        comm, "dist_SH_to_lat", (cost, nphi, ltr, mtr, real_output); nphi)
+    _require_local_eval_truncation(cfg, ltr, mtr, comm)
     lmax, mmax = cfg.lmax, cfg.mmax
     x = float(cost)
     P = Vector{Float64}(undef, lmax + 1)
     vals_local = zeros(ComplexF64, nphi)
-    lloc = axes(Alm_pencil, 1); mloc = axes(Alm_pencil, 2)
-    gl_l = collect(Int, globalindices(Alm_pencil, 1))
-    gl_m = collect(Int, globalindices(Alm_pencil, 2))
+    scales = SHTnsKit._ensure_norm_scale_matrix!(cfg)
     # m = 0 if present locally
     j0 = findfirst(==(1), gl_m)
     if j0 !== nothing
@@ -36,7 +120,7 @@ function SHTnsKit.dist_SH_to_lat(cfg::SHTnsKit.SHTConfig, Alm_pencil::PencilArra
         for (ii, il) in enumerate(lloc)
             lval = gl_l[ii] - 1
             if lval <= ltr
-                g0 += P[lval+1] * Alm_pencil[il, mloc[j0]]
+                g0 += P[lval+1] * scales[lval+1, 1] * Alm_pencil[il, mloc[j0]]
             end
         end
         vals_local .+= g0
@@ -44,17 +128,18 @@ function SHTnsKit.dist_SH_to_lat(cfg::SHTnsKit.SHTConfig, Alm_pencil::PencilArra
     # m > 0 columns owned by this rank
     for (jj, jm) in enumerate(mloc)
         mval = gl_m[jj] - 1
-        (mval > 0 && mval <= mtr) || continue
+        (mval > 0 && mval <= mtr && mval % cfg.mres == 0) || continue
         SHTnsKit.Plm_norm_row!(P, x, lmax, mval)
         gm = 0.0 + 0.0im
         for (ii, il) in enumerate(lloc)
             lval = gl_l[ii] - 1
             if mval <= lval <= ltr
-                gm += P[lval+1] * Alm_pencil[il, jm]
+                gm += P[lval+1] * scales[lval+1, mval+1] * Alm_pencil[il, jm]
             end
         end
         @inbounds for j in 0:(nphi-1)
-            vals_local[j+1] += 2 * real(gm * cis(2π * mval * j / nphi))
+            mode_value = gm * cis(2π * mval * j / nphi)
+            vals_local[j+1] += real_output ? 2 * real(mode_value) : mode_value
         end
     end
     MPI.Allreduce!(vals_local, +, comm)
@@ -67,16 +152,17 @@ end
 Evaluate spherical harmonic expansion at a single point for a real-valued field.
 Uses Hermitian symmetry: negative-m contribution added via 2*real(...) for m > 0.
 
-`Alm_pencil` holds orthonormal coefficients (see [`dist_SH_to_lat`](@ref)).
+`Alm_pencil` holds coefficients in `cfg`'s public convention.
 """
 function SHTnsKit.dist_SH_to_point(cfg::SHTnsKit.SHTConfig, Alm_pencil::PencilArray, cost::Real, phi::Real)
-    comm = communicator(Alm_pencil)
+    comm, lloc, mloc, gl_l, gl_m =
+        _require_local_eval_spectral_shape(cfg, Alm_pencil)
+    _require_replicated_local_eval_arguments(
+        comm, "dist_SH_to_point", (cost, phi))
     lmax, mmax = cfg.lmax, cfg.mmax
     x = float(cost)
     P = Vector{Float64}(undef, lmax + 1)
-    lloc = axes(Alm_pencil, 1); mloc = axes(Alm_pencil, 2)
-    gl_l = collect(Int, globalindices(Alm_pencil, 1))
-    gl_m = collect(Int, globalindices(Alm_pencil, 2))
+    scales = SHTnsKit._ensure_norm_scale_matrix!(cfg)
     s_local = 0.0
     # m=0
     j0 = findfirst(==(1), gl_m)
@@ -85,20 +171,20 @@ function SHTnsKit.dist_SH_to_point(cfg::SHTnsKit.SHTConfig, Alm_pencil::PencilAr
         g0 = 0.0
         for (ii, il) in enumerate(lloc)
             lval = gl_l[ii] - 1
-            g0 += P[lval+1] * real(Alm_pencil[il, mloc[j0]])
+            g0 += P[lval+1] * scales[lval+1, 1] * real(Alm_pencil[il, mloc[j0]])
         end
         s_local += g0
     end
     # m>0: add both +m and -m via 2*real(...)
     for (jj, jm) in enumerate(mloc)
         mval = gl_m[jj] - 1
-        mval > 0 || continue
+        (mval > 0 && mval % cfg.mres == 0) || continue
         SHTnsKit.Plm_norm_row!(P, x, lmax, mval)
         gm = 0.0 + 0.0im
         for (ii, il) in enumerate(lloc)
             lval = gl_l[ii] - 1
             if lval >= mval
-                gm += P[lval+1] * Alm_pencil[il, jm]
+                gm += P[lval+1] * scales[lval+1, mval+1] * Alm_pencil[il, jm]
             end
         end
         ph = cis(mval * phi)
@@ -111,18 +197,19 @@ end
 """
     dist_SHqst_to_point(cfg, Q_p::PencilArray, S_p::PencilArray, T_p::PencilArray, cost, phi) -> (vr, vt, vp)
 
-`Q_p`/`S_p`/`T_p` hold orthonormal coefficients (see [`dist_SH_to_lat`](@ref)).
+`Q_p`/`S_p`/`T_p` hold coefficients in `cfg`'s public convention.
 """
 function SHTnsKit.dist_SHqst_to_point(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S_p::PencilArray, T_p::PencilArray, cost::Real, phi::Real)
-    comm = communicator(Q_p)
+    comm, lloc, mloc, gl_l, gl_m =
+        _require_matching_local_eval_spectra(cfg, Q_p, S_p, T_p)
+    _require_replicated_local_eval_arguments(
+        comm, "dist_SHqst_to_point", (cost, phi))
     lmax, mmax = cfg.lmax, cfg.mmax
     x = float(cost)
     P = Vector{Float64}(undef, lmax + 1)
     dPdtheta = Vector{Float64}(undef, lmax + 1)
     P_over_sinth = Vector{Float64}(undef, lmax + 1)
-    lloc = axes(Q_p, 1); mloc = axes(Q_p, 2)
-    gl_l = collect(Int, globalindices(Q_p, 1))
-    gl_m = collect(Int, globalindices(Q_p, 2))
+    scales = SHTnsKit._ensure_norm_scale_matrix!(cfg)
     vr_local = 0.0 + 0.0im
     vt_local = 0.0 + 0.0im
     vp_local = 0.0 + 0.0im
@@ -134,7 +221,10 @@ function SHTnsKit.dist_SHqst_to_point(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray,
             lval = gl_l[ii] - 1
             Y = P[lval+1]
             dθY = dPdtheta[lval+1]
-                aQ = Q_p[il, mloc[j0]]; aS = S_p[il, mloc[j0]]; aT = T_p[il, mloc[j0]]
+            scale = scales[lval+1, 1]
+            aQ = scale * Q_p[il, mloc[j0]]
+            aS = scale * S_p[il, mloc[j0]]
+            aT = scale * T_p[il, mloc[j0]]
             vr_local += Y   * aQ
             vt_local += dθY * aS
             vp_local += dθY * aT  # Vφ = dθY * T for m=0
@@ -143,7 +233,7 @@ function SHTnsKit.dist_SHqst_to_point(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray,
     # m>0 (use pole-safe Legendre functions)
     for (jj, jm) in enumerate(mloc)
         mval = gl_m[jj] - 1
-        mval > 0 || continue
+        (mval > 0 && mval % cfg.mres == 0) || continue
         SHTnsKit.Plm_norm_dPdtheta_over_sinth_row!(P, dPdtheta, P_over_sinth, x, lmax, mval)
         gvr = 0.0 + 0.0im
         gvt = 0.0 + 0.0im
@@ -154,7 +244,10 @@ function SHTnsKit.dist_SHqst_to_point(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray,
                 Y = P[lval+1]
                 dθY = dPdtheta[lval+1]
                 Y_over_sθ = P_over_sinth[lval+1]
-                aQ = Q_p[il, jm]; aS = S_p[il, jm]; aT = T_p[il, jm]
+                scale = scales[lval+1, mval+1]
+                aQ = scale * Q_p[il, jm]
+                aS = scale * S_p[il, jm]
+                aT = scale * T_p[il, jm]
                 gvr += Y   * aQ
                 # Vθ = ∂S/∂θ - (im/sinθ) * T
                 gvt += dθY * aS - (0 + 1im) * mval * Y_over_sθ * aT
@@ -176,19 +269,21 @@ end
     dist_SHqst_to_lat(cfg, Q_p::PencilArray, S_p::PencilArray, T_p::PencilArray, cost::Real;
                       nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax) -> Vr, Vt, Vp
 
-`Q_p`/`S_p`/`T_p` hold orthonormal coefficients (see [`dist_SH_to_lat`](@ref)).
+`Q_p`/`S_p`/`T_p` hold coefficients in `cfg`'s public convention.
 """
 function SHTnsKit.dist_SHqst_to_lat(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S_p::PencilArray, T_p::PencilArray, cost::Real;
                                     nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax)
-    comm = communicator(Q_p)
+    comm, lloc, mloc, gl_l, gl_m =
+        _require_matching_local_eval_spectra(cfg, Q_p, S_p, T_p)
+    _require_replicated_local_eval_arguments(
+        comm, "dist_SHqst_to_lat", (cost, nphi, ltr, mtr); nphi)
+    _require_local_eval_truncation(cfg, ltr, mtr, comm)
     lmax = cfg.lmax
     x = float(cost)
     P = Vector{Float64}(undef, lmax + 1)
     dPdtheta = Vector{Float64}(undef, lmax + 1)
     P_over_sinth = Vector{Float64}(undef, lmax + 1)
-    lloc = axes(Q_p, 1); mloc = axes(Q_p, 2)
-    gl_l = collect(Int, globalindices(Q_p, 1))
-    gl_m = collect(Int, globalindices(Q_p, 2))
+    scales = SHTnsKit._ensure_norm_scale_matrix!(cfg)
     Vr_local = zeros(ComplexF64, nphi)
     Vt_local = zeros(ComplexF64, nphi)
     Vp_local = zeros(ComplexF64, nphi)
@@ -202,7 +297,10 @@ function SHTnsKit.dist_SHqst_to_lat(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S
             if lval <= ltr
                 Y = P[lval+1]
                 dθY = dPdtheta[lval+1]
-                aQ = Q_p[il, mloc[j0]]; aS = S_p[il, mloc[j0]]; aT = T_p[il, mloc[j0]]
+                scale = scales[lval+1, 1]
+                aQ = scale * Q_p[il, mloc[j0]]
+                aS = scale * S_p[il, mloc[j0]]
+                aT = scale * T_p[il, mloc[j0]]
                 g0  += Y * aQ
                 gθ0 += dθY * aS
                 gφ0 += dθY * aT  # Vφ = dθY * T for m=0
@@ -213,7 +311,7 @@ function SHTnsKit.dist_SHqst_to_lat(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S
     # m>0 (use pole-safe Legendre functions)
     for (jj, jm) in enumerate(mloc)
         mval = gl_m[jj] - 1
-        (mval > 0 && mval <= mtr) || continue
+        (mval > 0 && mval <= mtr && mval % cfg.mres == 0) || continue
         SHTnsKit.Plm_norm_dPdtheta_over_sinth_row!(P, dPdtheta, P_over_sinth, x, lmax, mval)
         g  = 0.0 + 0.0im
         gθ = 0.0 + 0.0im
@@ -224,7 +322,10 @@ function SHTnsKit.dist_SHqst_to_lat(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S
                 Y = P[lval+1]
                 dθY = dPdtheta[lval+1]
                 Y_over_sθ = P_over_sinth[lval+1]
-                aQ = Q_p[il, jm]; aS = S_p[il, jm]; aT = T_p[il, jm]
+                scale = scales[lval+1, mval+1]
+                aQ = scale * Q_p[il, jm]
+                aS = scale * S_p[il, jm]
+                aT = scale * T_p[il, jm]
                 g  += Y   * aQ
                 # Vθ = ∂S/∂θ - (im/sinθ) * T
                 gθ += dθY * aS - (0 + 1im) * mval * Y_over_sθ * aT
@@ -286,15 +387,12 @@ function SHTnsKit.dist_analysis_packed_cplx(cfg::SHTnsKit.SHTConfig, z::PencilAr
     # signs of m (see `synthesis_packed_cplx` / `SH_to_lat_cplx`), unlike the
     # Y_l^m convention where the Hermitian relation carries that factor.
     #
-    # A complex field is split into its real and imaginary parts rather than fed
-    # to `dist_analysis` directly: analysis is ℂ-linear in the field, so the two
-    # real transforms give BOTH halves at once —
+    # A complex field is split into its real and imaginary parts because the two
+    # real transforms give BOTH ±m halves at once —
     #     A(z) = A(Re z) + i·A(Im z),   A(conj z) = A(Re z) − i·A(Im z)
-    # — and, unlike a complex PencilArray, real data survives the φ-gather path
-    # (`_gather_phi_rows` packs into a `Vector{Float64}`, so a ComplexF64 array on
-    # a φ-decomposed pencil threw `InexactError` on every rank). A single-pass
-    # variant that kept the ±m φ-FFT bins `dist_analysis` discards would halve
-    # this again; that needs a distributed analysis returning both halves.
+    # A single-pass variant that kept the ±m φ-FFT bins `dist_analysis` discards
+    # would halve the transform count; that needs a distributed analysis API
+    # returning both halves.
     Aplus, Aminus = if eltype(z) <: Real
         A = SHTnsKit.dist_analysis(cfg, z; use_tables=cfg.use_plm_tables)
         A, A                        # conj(z) == z — one transform covers both

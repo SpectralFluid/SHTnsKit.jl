@@ -102,6 +102,35 @@ _partial(x::Dual) = partials(x, 1)
     end
 end
 
+@testset "Sphtor synthesis promotes both coefficient inputs" begin
+    lmax = 5
+    nlat = lmax + 2
+    nlon = 2*lmax + 1
+    cfg = create_gauss_config(lmax, nlat; nlon=nlon)
+    S32 = zeros(ComplexF32, lmax + 1, lmax + 1)
+    T64 = zeros(ComplexF64, lmax + 1, lmax + 1)
+    S32[3, 2] = 0.25f0 - 0.5f0im
+    T64[4, 3] = 1.0 + 1.0e-10im
+
+    for real_output in (true, false)
+        Vt, Vp = synthesis_sphtor(cfg, S32, T64; real_output)
+        Vt_ref, Vp_ref = synthesis_sphtor(cfg, ComplexF64.(S32), T64; real_output)
+        expected_type = real_output ? Float64 : ComplexF64
+        @test eltype(Vt) === expected_type
+        @test eltype(Vp) === expected_type
+        @test Vt ≈ Vt_ref
+        @test Vp ≈ Vp_ref
+
+        Vt_l, Vp_l = synthesis_sphtor_l(cfg, S32, T64, 4; real_output)
+        Vt_l_ref, Vp_l_ref = synthesis_sphtor_l(
+            cfg, ComplexF64.(S32), T64, 4; real_output)
+        @test eltype(Vt_l) === expected_type
+        @test eltype(Vp_l) === expected_type
+        @test Vt_l ≈ Vt_l_ref
+        @test Vp_l ≈ Vp_l_ref
+    end
+end
+
 @testset "Adjoint FFT allocations (copy+re-plan pattern)" begin
     using ChainRulesCore: rrule
     lmax = 64

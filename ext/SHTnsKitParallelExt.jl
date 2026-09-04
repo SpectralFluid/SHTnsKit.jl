@@ -90,9 +90,9 @@ using PencilFFTs: Transforms, PencilFFTPlan, allocate_input, allocate_output
 using FFTW                               # For 1D FFTs on local arrays
 using SHTnsKit                           # Core spherical harmonic functionality
 
-# `MPI.Comm_free` is present in MPI.jl 0.20.x but was removed from the public
-# API in some newer builds in favor of finalizer-driven cleanup. Use a shim so
-# subcomm cleanup doesn't crash either way.
+# `MPI.Comm_free` is present in MPI.jl 0.20.x; newer releases expose
+# `MPI.free(::Comm)` instead. Use a shim so subcommunicators are released
+# deterministically on either API rather than being left to a finalizer.
 @inline function _safe_comm_free(c)
     if isdefined(MPI, :Initialized)
         try
@@ -117,6 +117,12 @@ using SHTnsKit                           # Core spherical harmonic functionality
     if isdefined(MPI, :Comm_free)
         try
             getfield(MPI, :Comm_free)(c)
+        catch
+            # Communicator may already be freed or auto-finalized; ignore.
+        end
+    elseif isdefined(MPI, :free)
+        try
+            getfield(MPI, :free)(c)
         catch
             # Communicator may already be freed or auto-finalized; ignore.
         end
@@ -345,6 +351,23 @@ end
 
 # PencilArrays 0.19 is the package's declared compatibility target.
 @inline communicator(A) = PencilArrays.get_comm(A)
+
+"""
+    _require_unpermuted_pencil(A, operation)
+
+The cfg-form kernels index `parent(A)` in logical dimension order. Reject a
+PencilArrays memory permutation collectively instead of silently swapping axes
+or letting one rank fail inside a later collective.
+"""
+function _require_unpermuted_pencil(A::PencilArray, operation::AbstractString)
+    comm = communicator(A)
+    local_ok = PencilArrays.permutation(A) isa PencilArrays.NoPermutation
+    MPI.Allreduce(local_ok, &, comm) || throw(ArgumentError(
+        "$operation does not support permuted PencilArray parent storage; " *
+        "construct the pencil with NoPermutation()",
+    ))
+    return nothing
+end
 
 # Allocate PencilArray - simplified API for SHTnsKit needs
 """
@@ -631,8 +654,12 @@ function _gather_phi_rows(local_data::AbstractMatrix,
         φ_displs = cumsum([Int32(0); all_nlons[1:end-1]])
         sum(Int.(all_nlons)) == nlon || throw(ErrorException("_gather_phi_rows: row subcomm φ segments sum to $(sum(Int.(all_nlons))), expected nlon=$nlon."))
 
-        send_buf = Vector{Float64}(undef, nlat_local * nlon_local)
-        recv_buf = Vector{Float64}(undef, nlat_local * nlon)
+        # Preserve the distributed field's scalar type.  In particular, complex
+        # analysis must not route through Float64 buffers (which raises
+        # InexactError as soon as a non-real sample is packed).
+        T = eltype(local_data)
+        send_buf = Vector{T}(undef, nlat_local * nlon_local)
+        recv_buf = Vector{T}(undef, nlat_local * nlon)
 
         idx = 1
         @inbounds for j in 1:nlon_local
@@ -646,7 +673,7 @@ function _gather_phi_rows(local_data::AbstractMatrix,
         recv_displs = cumsum([0; recv_counts[1:end-1]])
         MPI.Allgatherv!(send_buf, VBuffer(recv_buf, recv_counts, recv_displs), row_comm)
 
-        out = Matrix{Float64}(undef, nlat_local, nlon)
+        out = Matrix{T}(undef, nlat_local, nlon)
         @inbounds for r in 1:row_nprocs
             offset = recv_displs[r]
             r_nlon = Int(all_nlons[r])

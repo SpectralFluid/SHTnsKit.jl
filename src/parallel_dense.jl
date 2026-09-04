@@ -20,14 +20,14 @@ end
 """
     dist_SH_Zrotate(cfg, Alm::AbstractMatrix, alpha::Real, Rlm::AbstractMatrix)
 
-Z-rotation by alpha (radians) on dense (l×m) coefficients; Rlm = e^{imα} Alm.
+Z-rotation by alpha (radians) on dense (l×m) coefficients; Rlm = e^{-imα} Alm.
 """
 function dist_SH_Zrotate(cfg::SHTnsKit.SHTConfig, Alm::AbstractMatrix, alpha::Real, Rlm::AbstractMatrix)
     lmax, mmax = cfg.lmax, cfg.mmax
     size(Alm,1)==lmax+1 && size(Alm,2)==mmax+1 || throw(DimensionMismatch("Alm dims"))
     size(Rlm,1)==lmax+1 && size(Rlm,2)==mmax+1 || throw(DimensionMismatch("Rlm dims"))
     @inbounds for m in 0:mmax
-        phase = cis(m*alpha)
+        phase = cis(-m*alpha)
         for l in m:lmax
             Rlm[l+1, m+1] = phase * Alm[l+1, m+1]
         end
@@ -102,4 +102,3 @@ function dist_SH_mul_mx!(cfg::SHTnsKit.SHTConfig, mx::AbstractVector{<:Real}, Al
     end
     return Rlm
 end
-

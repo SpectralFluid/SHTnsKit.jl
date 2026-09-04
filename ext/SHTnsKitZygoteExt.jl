@@ -247,11 +247,22 @@ end
 ## weight ⇒ standard-inner-product adjoint is Q̄ = W·R⁻¹·(W⁻¹ ȳ), W = diag(wm)).
 _zyg_rot_wm(cfg) = Float64[cfg.mi[k] == 0 ? 1.0 : 2.0 for k in 1:cfg.nlm]
 
+function _zyg_configured_rotation_adjoint!(cfg, r, ȳ, Q̄)
+    wm = _zyg_rot_wm(cfg)
+    ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
+    Q̄_canonical = SHTnsKit._uses_canonical_convention(cfg) ? Q̄ : similar(Q̄)
+    SHTnsKit.shtns_rotation_apply_real(r, ȳ_canonical ./ wm, Q̄_canonical)
+    Q̄_canonical .*= wm
+    if Q̄_canonical !== Q̄
+        SHTnsKit.convert_alm_norm!(Q̄, Q̄_canonical, cfg; to_internal=true)
+    end
+    return Q̄
+end
+
 Zygote.@adjoint function SHTnsKit.SH_Zrotate(cfg::SHTnsKit.SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real, Rlm::AbstractVector{<:Complex})
     y = SHTnsKit.SH_Zrotate(cfg, Qlm, alpha, Rlm)
     function back(ȳ)
-        # Diagonal Rlm = Qlm·e^{imα} ⇒ Q̄ = ȳ·e^{-imα} = SH_Zrotate(ȳ, -α).
-        # (Was conj.(SH_Zrotate(ȳ,+α)) — conjugated the cotangent, wrong for complex ȳ.)
+        # Diagonal Rlm = Qlm·e^{-imα} ⇒ Q̄ = ȳ·e^{imα} = SH_Zrotate(ȳ, -α).
         Q̄ = similar(Qlm)
         SHTnsKit.SH_Zrotate(cfg, ȳ, -alpha, Q̄)
         dα = 0.0
@@ -259,8 +270,8 @@ Zygote.@adjoint function SHTnsKit.SH_Zrotate(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
             (m % cfg.mres == 0) || continue
             for l in m:cfg.lmax
                 lm = SHTnsKit.LM_index(cfg.lmax, cfg.mres, l, m) + 1
-                Rval = Qlm[lm] * cis(m * alpha)
-                dα += real(conj(ȳ[lm]) * ((0 + 1im) * m * Rval))
+                Rval = Qlm[lm] * cis(-m * alpha)
+                dα += real(conj(ȳ[lm]) * ((0 - 1im) * m * Rval))
             end
         end
         return (nothing, Q̄, dα, nothing)
@@ -271,34 +282,35 @@ end
 Zygote.@adjoint function SHTnsKit.SH_Yrotate(cfg::SHTnsKit.SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real, Rlm::AbstractVector{<:Complex})
     y = SHTnsKit.SH_Yrotate(cfg, Qlm, alpha, Rlm)
     function back(ȳ)
-        # Q̄ = W·R(-α)·(W⁻¹ ȳ); bare R(-α) was off by the wm weighting.
-        wm = _zyg_rot_wm(cfg)
+        inverse = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
+        SHTnsKit.shtns_rotation_set_angles_ZYZ(inverse, 0.0, -alpha, 0.0)
         Q̄ = similar(Qlm)
-        SHTnsKit.SH_Yrotate(cfg, ȳ ./ wm, -alpha, Q̄)
-        Q̄ .*= wm
+        _zyg_configured_rotation_adjoint!(cfg, inverse, ȳ, Q̄)
         # angle gradient via derivative of Wigner-d at beta=alpha
         dα = 0.0
         lmax, mmax = cfg.lmax, cfg.mmax
+        Qlm_canonical = SHTnsKit._internal_coefficients(Qlm, cfg)
+        ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
         for l in 0:lmax
             mm = min(l, mmax)
-            b = zeros(eltype(ȳ), 2l+1)
+            b = zeros(eltype(ȳ_canonical), 2l+1)
             for mp in -mm:mm
                 idxp = SHTnsKit.LM_index(lmax, 1, l, abs(mp)) + 1
                 if mp == 0
-                    b[mp + l + 1] = Qlm[idxp]
+                    b[mp + l + 1] = Qlm_canonical[idxp]
                 elseif mp > 0
-                    b[mp + l + 1] = Qlm[idxp]
-                    b[-mp + l + 1] = (-1)^mp * conj(Qlm[idxp])
+                    b[mp + l + 1] = Qlm_canonical[idxp]
+                    b[-mp + l + 1] = (-1)^mp * conj(Qlm_canonical[idxp])
                 end
             end
             dd = SHTnsKit.wigner_d_matrix_deriv(l, float(alpha))
             for m in 0:mm
                 lm = SHTnsKit.LM_index(lmax, 1, l, m) + 1
-                s = zero(eltype(ȳ))
+                s = zero(eltype(ȳ_canonical))
                 for mp in -l:l
                     s += dd[m + l + 1, mp + l + 1] * b[mp + l + 1]
                 end
-                dα += real(conj(ȳ[lm]) * s)
+                dα += real(conj(ȳ_canonical[lm]) * s)
             end
         end
         return (nothing, Q̄, dα, nothing)

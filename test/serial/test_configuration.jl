@@ -51,6 +51,9 @@ using SHTnsKit
         @test_throws ArgumentError create_regular_config(
             lmax, nlat; nlon=nlon, include_poles=false, use_dh_weights=true,
         )
+        @test_throws ArgumentError create_regular_config(
+            lmax, nlat - 2; nlon=nlon, include_poles=true, use_dh_weights=true,
+        )
 
         # Regular grid without poles
         cfg_nopole = create_regular_config(lmax, nlat; nlon=nlon, include_poles=false)
@@ -75,6 +78,9 @@ using SHTnsKit
         # Test with mres
         cfg_mres = create_config(lmax; mres=2, nlat=nlat, nlon=nlon)
         @test cfg_mres.mres == 2
+
+        cfg_dh = create_config(lmax; grid_type=:driscoll_healy, nlon=nlon)
+        @test cfg_dh.nlat == 2 * (lmax + 1)
     end
 
     @testset "On-the-fly mode" begin

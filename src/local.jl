@@ -13,11 +13,12 @@ function SH_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, cost::Real; n
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm must have length $(cfg.nlm)"))
     (0 ≤ ltr ≤ cfg.lmax) || throw(ArgumentError("ltr must be within [0, lmax]"))
     (0 ≤ mtr ≤ cfg.mmax) || throw(ArgumentError("mtr must be within [0, mmax]"))
+    Qlm_int = _internal_coefficients(Qlm, cfg)
     x = float(cost)
     lmax = cfg.lmax
     # Accumulator/output eltype follows the input so AD types (e.g.
     # ForwardDiff.Dual) propagate; defaults to Float64 for ComplexF64 input.
-    CT = promote_type(eltype(Qlm), ComplexF64)
+    CT = promote_type(eltype(Qlm_int), ComplexF64)
     RT = real(CT)
     P = Vector{Float64}(undef, lmax + 1)
     vals = Vector{RT}(undef, nphi)
@@ -29,7 +30,7 @@ function SH_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, cost::Real; n
     g0 = zero(CT)
     @inbounds for l in 0:ltr
         lm = LM_index(lmax, cfg.mres, l, 0) + 1
-        a = Qlm[lm]
+        a = Qlm_int[lm]
         g0 += P[l+1] * a
     end
 
@@ -44,7 +45,7 @@ function SH_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, cost::Real; n
         gm = zero(CT)
         @inbounds for l in m:min(ltr, lmax)
             lm = LM_index(lmax, cfg.mres, l, m) + 1
-            a = Qlm[lm]
+            a = Qlm_int[lm]
             gm += P[l+1] * a
         end
         
@@ -66,8 +67,9 @@ function SH_to_lat_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex}, c
     # than silently returning wrong values for a strided (mres>1) configuration.
     cfg.mres == 1 || throw(ArgumentError("SH_to_lat_cplx supports mres==1 only; got mres=$(cfg.mres)"))
     length(alm_packed) == nlm_cplx_calc(lmax, mmax, 1) || throw(DimensionMismatch("alm_packed length"))
+    alm_int = _internal_coefficients(alm_packed, cfg)
     x = float(cost)
-    CT = promote_type(eltype(alm_packed), ComplexF64)
+    CT = promote_type(eltype(alm_int), ComplexF64)
     P = Vector{Float64}(undef, lmax + 1)
     vals = Vector{CT}(undef, nphi)
     fill!(vals, zero(CT))
@@ -76,7 +78,7 @@ function SH_to_lat_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex}, c
     g0 = zero(CT)
     @inbounds for l in 0:min(ltr, lmax)
         idx = LM_cplx_index(lmax, mmax, l, 0) + 1
-        a = alm_packed[idx]
+        a = alm_int[idx]
         g0 += P[l+1] * a
     end
 
@@ -91,9 +93,9 @@ function SH_to_lat_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex}, c
         @inbounds for l in m:min(ltr, lmax)
             Ylm = P[l+1]
             # positive m
-            ap = alm_packed[LM_cplx_index(lmax, mmax, l, m) + 1]
+            ap = alm_int[LM_cplx_index(lmax, mmax, l, m) + 1]
             # negative m
-            an = alm_packed[LM_cplx_index(lmax, mmax, l, -m) + 1]
+            an = alm_int[LM_cplx_index(lmax, mmax, l, -m) + 1]
             gm += Ylm * ap
             gn += Ylm * an
         end
@@ -115,6 +117,9 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm length"))
     length(Slm) == cfg.nlm || throw(DimensionMismatch("Slm length"))
     length(Tlm) == cfg.nlm || throw(DimensionMismatch("Tlm length"))
+    Qlm_int = _internal_coefficients(Qlm, cfg)
+    Slm_int = _internal_coefficients(Slm, cfg)
+    Tlm_int = _internal_coefficients(Tlm, cfg)
     x = float(cost)
     lmax = cfg.lmax; mmax = cfg.mmax
     P = Vector{Float64}(undef, lmax + 1)
@@ -122,7 +127,7 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
     P_over_sinth = Vector{Float64}(undef, lmax + 1)
     Pbuf = Vector{Float64}(undef, lmax + 2)  # scratch for the dθ recurrence
     sθ = sqrt(max(0.0, 1 - x*x))
-    CT = promote_type(eltype(Qlm), eltype(Slm), eltype(Tlm))
+    CT = promote_type(eltype(Qlm_int), eltype(Slm_int), eltype(Tlm_int))
     vr = zero(CT)
     vt = zero(CT)
     vp = zero(CT)
@@ -131,7 +136,7 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
     Plm_norm_and_dPdtheta_row!(P, dPdtheta, x, lmax, 0)
     for l in 0:lmax
         lm = LM_index(lmax, cfg.mres, l, 0) + 1
-        aQ = Qlm[lm]; aS = Slm[lm]; aT = Tlm[lm]
+        aQ = Qlm_int[lm]; aS = Slm_int[lm]; aT = Tlm_int[lm]
         Y = P[l+1]
         dθY = dPdtheta[l+1]
         vr += Y   * aQ
@@ -150,7 +155,7 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
         gvp = zero(CT)
         for l in m:lmax
             lm = LM_index(lmax, cfg.mres, l, m) + 1
-            aQ = Qlm[lm]; aS = Slm[lm]; aT = Tlm[lm]
+            aQ = Qlm_int[lm]; aS = Slm_int[lm]; aT = Tlm_int[lm]
             Y = P[l+1]
             dθY = dPdtheta[l+1]
             Y_over_sθ = P_over_sinth[l+1]
@@ -177,13 +182,14 @@ Evaluate gradient of a scalar field at a point. Vr is returned as 0.0.
 """
 function SH_to_grad_point(cfg::SHTConfig, ::AbstractVector{<:Complex}, Slm::AbstractVector{<:Complex}, cost::Real, phi::Real)
     length(Slm) == cfg.nlm || throw(DimensionMismatch("Slm length"))
+    Slm_int = _internal_coefficients(Slm, cfg)
     x = float(cost)
     lmax = cfg.lmax; mmax = cfg.mmax
     P = Vector{Float64}(undef, lmax + 1)
     dPdtheta = Vector{Float64}(undef, lmax + 1)
     P_over_sinth = Vector{Float64}(undef, lmax + 1)
     Pbuf = Vector{Float64}(undef, lmax + 2)  # scratch for the dθ recurrence
-    CT = promote_type(eltype(Slm), ComplexF64)
+    CT = promote_type(eltype(Slm_int), ComplexF64)
     vt = zero(CT)
     vp = zero(CT)
 
@@ -192,7 +198,7 @@ function SH_to_grad_point(cfg::SHTConfig, ::AbstractVector{<:Complex}, Slm::Abst
     Plm_norm_and_dPdtheta_row!(P, dPdtheta, x, lmax, 0)
     for l in 0:lmax
         lm = LM_index(lmax, cfg.mres, l, 0) + 1
-        aS = Slm[lm]
+        aS = Slm_int[lm]
         vt += dPdtheta[l+1] * aS
     end
 
@@ -204,7 +210,7 @@ function SH_to_grad_point(cfg::SHTConfig, ::AbstractVector{<:Complex}, Slm::Abst
         gvp = zero(CT)
         for l in m:lmax
             lm = LM_index(lmax, cfg.mres, l, m) + 1
-            aS = Slm[lm]
+            aS = Slm_int[lm]
             # Vθ = dθY*S, Vφ = (im/sinθ)*Y*S (T ≡ 0 for a scalar gradient)
             gvt += dPdtheta[l+1] * aS
             gvp += 1.0im * m * P_over_sinth[l+1] * aS
@@ -228,12 +234,15 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm length"))
     length(Slm) == cfg.nlm || throw(DimensionMismatch("Slm length"))
     length(Tlm) == cfg.nlm || throw(DimensionMismatch("Tlm length"))
+    Qlm_int = _internal_coefficients(Qlm, cfg)
+    Slm_int = _internal_coefficients(Slm, cfg)
+    Tlm_int = _internal_coefficients(Tlm, cfg)
     (0 ≤ ltr ≤ cfg.lmax) || throw(ArgumentError("ltr must be within [0, lmax]"))
     (0 ≤ mtr ≤ cfg.mmax) || throw(ArgumentError("mtr must be within [0, mmax]"))
     x = float(cost)
     lmax = cfg.lmax
     # Accumulator/output eltype follows the inputs so AD types propagate.
-    CT = promote_type(eltype(Qlm), eltype(Slm), eltype(Tlm), ComplexF64)
+    CT = promote_type(eltype(Qlm_int), eltype(Slm_int), eltype(Tlm_int), ComplexF64)
     RT = real(CT)
     P = Vector{Float64}(undef, lmax + 1)
     dPdtheta = Vector{Float64}(undef, lmax + 1)
@@ -253,7 +262,7 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
 
     @inbounds for l in 0:ltr
         lm = LM_index(lmax, cfg.mres, l, 0) + 1
-        aQ = Qlm[lm]; aS = Slm[lm]; aT = Tlm[lm]
+        aQ = Qlm_int[lm]; aS = Slm_int[lm]; aT = Tlm_int[lm]
         Y = P[l+1]
         dθY = dPdtheta[l+1]
         g0  += Y * aQ
@@ -276,7 +285,7 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
 
         @inbounds for l in m:min(ltr, lmax)
             lm = LM_index(lmax, cfg.mres, l, m) + 1
-            aQ = Qlm[lm]; aS = Slm[lm]; aT = Tlm[lm]
+            aQ = Qlm_int[lm]; aS = Slm_int[lm]; aT = Tlm_int[lm]
             Y = P[l+1]
             dθY = dPdtheta[l+1]
             Y_over_sθ = P_over_sinth[l+1]

@@ -398,7 +398,7 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
     end
 
     # m > 0 contributions: add both +m and -m via 2*real(...)
-    for m in 1:mmax
+    for m in cfg.mres:cfg.mres:mmax
         Plm_norm_row!(P, cost, lmax, m)  # P̄ already orthonormal-normalized
         phase = cis(m * phi)  # e^(imφ)
         gm = zero(CT)

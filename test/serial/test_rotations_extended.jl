@@ -30,6 +30,17 @@ using SHTnsKit
         @test_throws ArgumentError SHTnsKit.WignerCache(-1, β)
     end
 
+    @testset "Wigner-d remains orthogonal at l=64" begin
+        d = SHTnsKit.wigner_d_matrix(64, 0.7)
+        @test opnorm(transpose(d) * d - I, Inf) < 1e-10
+
+        # The derivative of an orthogonal matrix must be tangent to O(n):
+        # dᵀ ḋ + ḋᵀ d = 0. This also guards the high-l derivative path
+        # used by the rotation AD rules.
+        dβ = SHTnsKit.wigner_d_matrix_deriv(64, 0.7)
+        @test opnorm(transpose(d) * dβ + transpose(dβ) * d, Inf) < 1e-9
+    end
+
     @testset "wigner_d_matrix_deriv: finite-difference check" begin
         h = 1e-6
         for l in 0:3
@@ -99,6 +110,58 @@ using SHTnsKit
         @test isapprox(tmp4, Qlm; rtol=1e-8, atol=1e-10)
     end
 
+    @testset "Fast axis helpers use the general rotation orientation" begin
+        lmax = 4
+        cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
+        rng = MersenneTwister(405)
+        Qlm = randn(rng, ComplexF64, cfg.nlm)
+        Qlm[1:lmax + 1] .= real.(Qlm[1:lmax + 1])
+
+        α = 0.37
+        rz = SHTRotation(lmax, lmax)
+        shtns_rotation_set_angles_ZYZ(rz, α, 0.0, 0.0)
+        z_general = similar(Qlm)
+        z_fast = similar(Qlm)
+        shtns_rotation_apply_real(rz, Qlm, z_general)
+        SH_Zrotate(cfg, Qlm, α, z_fast)
+        @test z_fast ≈ z_general rtol=2e-13 atol=2e-13
+
+        rx = SHTRotation(lmax, lmax)
+        shtns_rotation_set_angle_axis(rx, π/2, 1.0, 0.0, 0.0)
+        x_general = similar(Qlm)
+        x_fast = similar(Qlm)
+        shtns_rotation_apply_real(rx, Qlm, x_general)
+        SH_Xrotate90(cfg, Qlm, x_fast)
+        @test x_fast ≈ x_general rtol=2e-13 atol=2e-13
+    end
+
+    @testset "Serial axis wrappers honor configured coefficient conventions" begin
+        lmax = 4
+        canonical_cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
+        cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1,
+                                  norm=:schmidt, real_norm=true, cs_phase=false)
+        rng = MersenneTwister(406)
+        Qcanonical = randn(rng, ComplexF64, canonical_cfg.nlm)
+        Qcanonical[1:lmax + 1] .= real.(Qcanonical[1:lmax + 1])
+        Qconfigured = similar(Qcanonical)
+        SHTnsKit.convert_alm_norm!(Qconfigured, Qcanonical, cfg; to_internal=false)
+
+        rotations = (
+            (q, out, c) -> SH_Yrotate(c, q, 0.41, out),
+            (q, out, c) -> SH_Yrotate90(c, q, out),
+            (q, out, c) -> SH_Xrotate90(c, q, out),
+        )
+        for rotate! in rotations
+            expected = similar(Qcanonical)
+            rotate!(Qcanonical, expected, canonical_cfg)
+            got_configured = similar(Qconfigured)
+            rotate!(Qconfigured, got_configured, cfg)
+            got_canonical = similar(Qcanonical)
+            SHTnsKit.convert_alm_norm!(got_canonical, got_configured, cfg; to_internal=true)
+            @test got_canonical ≈ expected rtol=2e-12 atol=2e-12
+        end
+    end
+
     @testset "Composition: two Y-rotations = single Y-rotation" begin
         lmax = 4
         cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
@@ -166,25 +229,34 @@ using SHTnsKit
             zeros(ComplexF64, nlmc), zeros(ComplexF64, nlmc - 1))
     end
 
-    @testset "ZXZ convention differs from ZYZ for β≠0" begin
-        # Sanity: setting same numerical (α,β,γ) under ZXZ vs ZYZ should (generally) give
-        # different rotated coefficients. Current code only treats the conv label; we still
-        # verify the label is stored and the rotation runs cleanly.
+    @testset "ZXZ convention is applied, not just stored" begin
         lmax = 3
+        α, β, γ = 0.3, 0.5, 0.2
         r_xz = SHTRotation(lmax, lmax)
-        shtns_rotation_set_angles_ZXZ(r_xz, 0.3, 0.5, 0.2)
+        shtns_rotation_set_angles_ZXZ(r_xz, α, β, γ)
         @test r_xz.conv == :ZXZ
+
+        # Rx(β) = Rz(-π/2) Ry(β) Rz(π/2), hence this is the
+        # equivalent ZYZ triple for Rz(α) Rx(β) Rz(γ).
+        r_equiv = SHTRotation(lmax, lmax)
+        shtns_rotation_set_angles_ZYZ(r_equiv, α - π/2, β, γ + π/2)
+        r_same_numbers = SHTRotation(lmax, lmax)
+        shtns_rotation_set_angles_ZYZ(r_same_numbers, α, β, γ)
 
         cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
         rng = MersenneTwister(404)
         Qlm = randn(rng, ComplexF64, cfg.nlm)
         Qlm[1:lmax + 1] .= real.(Qlm[1:lmax + 1])
 
-        Rlm = similar(Qlm)
-        shtns_rotation_apply_real(r_xz, Qlm, Rlm)
-        @test all(isfinite, Rlm)
-        # Energy still preserved
-        @test isapprox(energy_scalar_packed(cfg, Rlm),
+        R_xz = similar(Qlm)
+        R_equiv = similar(Qlm)
+        R_same_numbers = similar(Qlm)
+        shtns_rotation_apply_real(r_xz, Qlm, R_xz)
+        shtns_rotation_apply_real(r_equiv, Qlm, R_equiv)
+        shtns_rotation_apply_real(r_same_numbers, Qlm, R_same_numbers)
+        @test R_xz ≈ R_equiv rtol=2e-12 atol=2e-12
+        @test !isapprox(R_xz, R_same_numbers; rtol=1e-8, atol=1e-10)
+        @test isapprox(energy_scalar_packed(cfg, R_xz),
                        energy_scalar_packed(cfg, Qlm); rtol=1e-9)
     end
 end

@@ -61,7 +61,7 @@ jobs:
         run: |
           julia --project=. -e '
             using Pkg
-            Pkg.add(["MPI", "PencilArrays", "PencilFFTs"])
+            Pkg.add(["MPI", "PencilArrays", "PencilFFTs", "ChainRulesCore"])
             ENV["JULIA_MPI_BINARY"] = "system"
             Pkg.build("MPI")
           '
@@ -151,82 +151,49 @@ jobs:
           OMP_NUM_THREADS: "1"
           OPENBLAS_NUM_THREADS: "1"
 
-      - name: Test advanced optimizations (if available)
+      - name: Run MPI transpose convention tests (Linux only)
+        if: runner.os == 'Linux'
         run: |
-          julia --project=. -e '
-            using SHTnsKit
-            println(" Testing advanced optimizations...")
-            try
-              # Test LoopVectorization integration
-              using LoopVectorization
-              println(" LoopVectorization.jl available")
-            catch
-              println("  LoopVectorization.jl not available - skipping turbo tests")
-            end
-            
-            try
-              # Test AD extensions
-              using Zygote, ForwardDiff
-              println(" AD packages available")
-              
-              # Basic AD test
-              cfg = create_config(Float64, 10, 10, 1)
-              qlm = randn(ComplexF64, cfg.nlm)
-              
-              # Test Zygote AD
-              loss(x) = sum(abs2, synthesize(cfg, real.(x)))
-              grad_zygote = Zygote.gradient(loss, qlm)[1]
-              println(" Zygote AD working: gradient norm = $(norm(grad_zygote))")
-              
-              # Test ForwardDiff AD (simplified)
-              loss_real(x) = sum(abs2, synthesize(cfg, x))
-              grad_fd = ForwardDiff.gradient(loss_real, real.(qlm))
-              println(" ForwardDiff AD working: gradient norm = $(norm(grad_fd))")
-              
-            catch e
-              println("  AD testing failed: $(e)")
-              println("This is acceptable - AD extensions are optional")
-            end
-            
-            println(" Advanced optimization testing complete!")
-          '
-          
-      - name: Test performance optimizations
+          mpiexec -n 2 julia --project=. test/parallel/test_disttranspose_conventions.jl
+        env:
+          SHTNSKIT_TEST_VERBOSE: "1"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+
+      - name: Run focused MPI regression tests (Linux only)
+        if: runner.os == 'Linux'
         run: |
-          julia --project=. -e '
-            using SHTnsKit
-            println(" Testing performance optimizations...")
-            
-            cfg = create_config(Float64, 30, 30, 1)
-            qlm = randn(ComplexF64, cfg.nlm)
-            
-            try
-              # Test SIMD operations
-              qlm_copy = copy(qlm)
-              result = turbo_apply_laplacian!(cfg, qlm_copy)
-              println(" SIMD Laplacian working")
-              
-              # Test threading if available
-              if Threads.nthreads() > 1
-                qlm_out = similar(qlm)
-                threaded_apply_costheta_operator!(cfg, qlm, qlm_out)
-                println(" Threaded operations working with $(Threads.nthreads()) threads")
-              else
-                println("  Single-threaded environment - threading tests skipped")
-              end
-              
-              # Test advanced pooling
-              pool = get_advanced_pool(cfg, :test)
-              println(" Advanced memory pooling working")
-              
-            catch e
-              println("  Performance optimization test failed: $(e)")
-              println("This may indicate missing optimizations - check implementation")
-            end
-            
-            println(" Performance testing complete!")
-          '
-      
+          mpiexec -n 2 julia --project=. test/parallel/test_transpose_sht.jl
+          mpiexec -n 2 julia --project=. test/parallel/test_disttranspose_dealiased.jl
+          mpiexec -n 2 julia --project=. test/parallel/test_dist_plan_alloc.jl
+          mpiexec -n 2 julia --project=. test/parallel/test_mpi_parallel_diagnostics_regressions.jl
+          mpiexec -n 2 julia --project=. test/parallel/test_mpi_parallel_local_correctness.jl
+          mpiexec -n 2 julia --project=. test/parallel/test_mpi_plan_preflight.jl
+          mpiexec -n 2 julia --project=. test/parallel/test_mpi_transpose_operand_preflight.jl
+          mpiexec -n 2 julia --project=. test/parallel/test_mpi_comm_cleanup.jl
+        env:
+          SHTNSKIT_TEST_VERBOSE: "1"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+
+      - name: Run MPI audit regression tests (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          mpiexec -n 8 julia --project=. test/parallel/test_mpi_audit_fixes.jl
+        env:
+          SHTNSKIT_TEST_VERBOSE: "1"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+
+      - name: Run MPI AD tangent-space tests (Linux only)
+        if: runner.os == 'Linux'
+        run: |
+          mpiexec -n 2 julia --project=. test/parallel/test_mpi_ad_tangent_spaces.jl
+        env:
+          SHTNSKIT_TEST_VERBOSE: "1"
+          OMP_NUM_THREADS: "1"
+          OPENBLAS_NUM_THREADS: "1"
+
       - uses: julia-actions/julia-processcoverage@v1
       
       - uses: codecov/codecov-action@v7
@@ -237,6 +204,28 @@ jobs:
 
 
   # Removed duplicate docs job. See the 'Documentation' job below.
+
+  gpu-contracts:
+    name: CUDA Extension Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+
+      - uses: julia-actions/cache@v3
+
+      - name: Install CUDA extension dependencies
+        run: |
+          julia --project=. -e 'using Pkg; Pkg.add(["CUDA", "GPUArrays", "GPUArraysCore", "KernelAbstractions"]); Pkg.precompile()'
+
+      - name: Run CUDA extension contracts
+        run: |
+          julia --project=. test/gpu/runtests.jl
 
   benchmark:
     name: Performance Benchmarks

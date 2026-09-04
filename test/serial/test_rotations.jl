@@ -27,7 +27,7 @@ using SHTnsKit
         for m in 0:cfg.mmax
             for l in m:cfg.lmax
                 idx = LM_index(cfg.lmax, cfg.mres, l, m) + 1
-                expected = Qlm[idx] * cis(m * α)
+                expected = Qlm[idx] * cis(-m * α)
                 @test isapprox(Rlm[idx], expected; rtol=1e-12, atol=1e-14)
             end
         end

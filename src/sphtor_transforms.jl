@@ -175,7 +175,7 @@ function _synthesis_sphtor(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMat
     Tlm_int = _internal_coefficients(Tlm, cfg)
 
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = eltype(Slm_int)
+    CT = promote_type(eltype(Slm_int), eltype(Tlm_int))
 
     if use_rfft
         # Vector rfft synthesis mirrors scalar synthesis: write only
@@ -286,10 +286,11 @@ function _adjoint_analysis_sphtor(cfg::SHTConfig, Slm̄::AbstractMatrix, Tlm̄::
     nlat_local = length(θ_globals)
     Slm̄_int = _analysis_cotangent_to_canonical(Slm̄, cfg)
     Tlm̄_int = _analysis_cotangent_to_canonical(Tlm̄, cfg)
+    CT = complex(float(promote_type(eltype(Slm̄_int), eltype(Tlm̄_int))))
 
-    F̄θ = Matrix{ComplexF64}(undef, nlat_local, nlon)
-    F̄φ = Matrix{ComplexF64}(undef, nlat_local, nlon)
-    fill!(F̄θ, zero(ComplexF64)); fill!(F̄φ, zero(ComplexF64))
+    F̄θ = Matrix{CT}(undef, nlat_local, nlon)
+    F̄φ = Matrix{CT}(undef, nlat_local, nlon)
+    fill!(F̄θ, zero(CT)); fill!(F̄φ, zero(CT))
 
     P = Vector{Float64}(undef, lmax + 1)
     dPdtheta = Vector{Float64}(undef, lmax + 1)
@@ -297,12 +298,12 @@ function _adjoint_analysis_sphtor(cfg::SHTConfig, Slm̄::AbstractMatrix, Tlm̄::
     Pbuf = Vector{Float64}(undef, lmax + 2)   # scratch for extended P̄ row (avoids per-call alloc)
     φadj = 2π
 
-    for m in 0:mmax
+    for m in 0:cfg.mres:mmax
         col = m + 1
         for (ii, iglob) in pairs(θ_globals)
             Plm_norm_dPdtheta_over_sinth_row!(P, dPdtheta, P_over_sinth, cfg.x[iglob], lmax, m, Pbuf)
             wi = cfg.w[iglob]
-            sθ = zero(ComplexF64); sφ = zero(ComplexF64)
+            sθ = zero(CT); sφ = zero(CT)
             @inbounds for l in max(1, m):lmax
                 dθY = dPdtheta[l+1]          # already orthonormal-normalized
                 Y_over_sθ = P_over_sinth[l+1]
@@ -318,15 +319,28 @@ function _adjoint_analysis_sphtor(cfg::SHTConfig, Slm̄::AbstractMatrix, Tlm̄::
     end
 
     ifft_phi!(F̄θ, F̄θ); ifft_phi!(F̄φ, F̄φ)
-    if φ_window === nothing
-        return real.(F̄θ), real.(F̄φ)
+    # Robert-form analysis divides each spatial row by sin(θ) before the
+    # transform (using a factor of one at exact poles). Its adjoint applies that
+    # same guarded diagonal after the inverse Fourier transform.
+    if cfg.robert_form
+        @inbounds for (ii, iglob) in pairs(θ_globals)
+            sθ = sqrt(max(0.0, 1 - cfg.x[iglob]^2))
+            inv_sθ = sθ > 0 ? inv(sθ) : 1.0
+            for j in axes(F̄θ, 2)
+                F̄θ[ii, j] *= inv_sθ
+                F̄φ[ii, j] *= inv_sθ
+            end
+        end
     end
-    V̄t = Matrix{Float64}(undef, nlat_local, length(φ_window))
-    V̄p = Matrix{Float64}(undef, nlat_local, length(φ_window))
+    if φ_window === nothing
+        return F̄θ, F̄φ
+    end
+    V̄t = Matrix{CT}(undef, nlat_local, length(φ_window))
+    V̄p = Matrix{CT}(undef, nlat_local, length(φ_window))
     @inbounds for (jj, jglob) in pairs(φ_window)
         for i in 1:nlat_local
-            V̄t[i, jj] = real(F̄θ[i, jglob])
-            V̄p[i, jj] = real(F̄φ[i, jglob])
+            V̄t[i, jj] = F̄θ[i, jglob]
+            V̄p[i, jj] = F̄φ[i, jglob]
         end
     end
     return V̄t, V̄p
@@ -370,7 +384,7 @@ end
 
 @inline function _synthesis_sphtor_mloop_tbl!(Ftheta, Fphi, cfg, Slm, Tlm, m_order, ltr_eff, inv_scale_phi)
     nlat = cfg.nlat
-    @threads :static for idx in 1:length(m_order)
+    @_threads_or_serial for idx in 1:length(m_order)
         m = m_order[idx]
         col = m + 1
         NP = cfg.NP_tables[col]
@@ -390,7 +404,7 @@ end
     thread_dP = _ensure_otf_scratch!(cfg._otf_scratch_dP, lmax)
     thread_Ps = _ensure_otf_scratch!(cfg._otf_scratch_Ps, lmax)
     thread_Pb = _ensure_otf_scratch!(cfg._otf_scratch_Pb, lmax + 1)  # lmax+2 for extended P̄ row
-    @threads :static for idx in 1:length(m_order)
+    @_threads_or_serial for idx in 1:length(m_order)
         m = m_order[idx]
         col = m + 1
         tid = Threads.threadid()
@@ -431,7 +445,7 @@ end
     # caller and each m owns a distinct column (col=m+1), so this is race-free and
     # drops the per-call thread-accumulator allocation. The column views carry the
     # output eltype, so AD types (e.g. ForwardDiff.Dual) still propagate.
-    @threads :static for idx in 1:length(m_order)
+    @_threads_or_serial for idx in 1:length(m_order)
         m = m_order[idx]
         col = m + 1
         Sacc = view(Slm, :, col)
@@ -466,7 +480,7 @@ end
     thread_Pb = _ensure_otf_scratch!(cfg._otf_scratch_Pb, lmax + 1)  # lmax+2 for extended P̄ row
     # Accumulate directly into the output columns (see _analysis_sphtor_mloop_tbl!):
     # pre-zeroed, one m per column → race-free, alloc-free, AD eltype preserved.
-    @threads :static for idx in 1:length(m_order)
+    @_threads_or_serial for idx in 1:length(m_order)
         m = m_order[idx]
         col = m + 1
         tid = Threads.threadid()
@@ -654,7 +668,7 @@ function _synthesis_sphtor_l(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractM
     Tlm_int = _internal_coefficients(Tlm, cfg)
 
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = eltype(Slm_int)
+    CT = promote_type(eltype(Slm_int), eltype(Tlm_int))
     Ftheta = zeros(CT, nlat, nlon)
     Fphi = zeros(CT, nlat, nlon)
     _synthesis_sphtor_mloop!(Ftheta, Fphi, cfg, Slm_int, Tlm_int;

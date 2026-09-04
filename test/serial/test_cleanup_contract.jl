@@ -54,6 +54,7 @@ using SHTnsKit
         @test !occursin("inverse_plan::CUFFT.CuFFTPlan", extension_source)
         @test count("SHTnsKit._externalize_coefficients!", extension_source) >= 3
         @test count("SHTnsKit._internal_coefficients", extension_source) >= 3
+        @test occursin("_enable_gpu_loops!(_launch_sht_loop!)", extension_source)
     end
 
     @testset "Breaking release uses a major version" begin
@@ -62,5 +63,19 @@ using SHTnsKit
         changelog = read(joinpath(package_root, "CHANGELOG.md"), String)
         @test occursin(r"(?m)^version = \"2\.0\.0\"$", project)
         @test occursin("## Unreleased (v2.0.0)", changelog)
+    end
+
+    @testset "CI optimization smoke tests use supported APIs" begin
+        package_root = dirname(dirname(pathof(SHTnsKit)))
+        workflow = read(joinpath(package_root, ".github", "workflows", "ci.yml"), String)
+        @test !occursin(r"\bsynthesize\(", workflow)
+        @test !occursin("threaded_apply_costheta_operator!", workflow)
+        @test !occursin("get_advanced_pool", workflow)
+        # Missing optional packages may be skipped, but failures after a package
+        # loads must propagate and fail the job.
+        @test !occursin("AD testing failed", workflow)
+        @test !occursin("Performance optimization test failed", workflow)
+        @test occursin("test/parallel/test_mpi_audit_fixes.jl", workflow)
+        @test occursin("test/parallel/test_mpi_ad_tangent_spaces.jl", workflow)
     end
 end

@@ -196,12 +196,21 @@ macro sht_loop(args...)
     symT = [gensym() for _ in 1:length(names)]  # Generate type parameters
     symWtypes = joinsymtype(names, symT)        # Symbols with types: [a::A, b::B, ...]
 
-    @gensym kern_cpu dispatch_kern
+    @gensym kern_cpu dispatch_kern loop_item
+    bind_index = if I isa Symbol
+        :($I = $loop_item)
+    else
+        Expr(:block, [:( $(I.args[k]) = $loop_item[$k] ) for k in eachindex(I.args)]...)
+    end
 
     return quote
         # CPU path: SIMD loop
         function $kern_cpu($(symWtypes...), R) where {$(symT...)}
-            @simd for $I ∈ R
+            # `@simd` requires a single-symbol iteration variable. Bind the
+            # user-facing symbol or tuple inside the loop so documented forms
+            # such as `(i, j) ∈ CartesianIndices(...)` compile as well.
+            @simd for $loop_item ∈ R
+                $bind_index
                 @fastmath @inbounds $body
             end
         end
@@ -220,7 +229,10 @@ macro sht_loop(args...)
                 $kern_cpu($(names...), R)
             elseif $_GPU_LOOP_AVAILABLE[]
                 # GPU array - use GPU extension's kernel launcher
-                $_GPU_KERNEL_LAUNCHER[]($(names...), R, $I -> $body)
+                $_GPU_KERNEL_LAUNCHER[]($(names...), R, $loop_item -> begin
+                    $bind_index
+                    $body
+                end)
             else
                 # GPU array but extension not loaded - fall back to CPU
                 @warn "GPU array detected but GPU extension not loaded. Using CPU fallback." maxlog=1

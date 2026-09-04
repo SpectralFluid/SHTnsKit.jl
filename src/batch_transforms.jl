@@ -328,7 +328,7 @@ function analysis_batch(cfg::SHTConfig, fields::AbstractArray{<:Real,3}; use_rff
     if cfg.use_plm_tables && length(cfg.plm_tables) == mmax + 1
         # Use precomputed tables - most efficient path
         # plm_tables[m+1][l+1, i] = P̄_l^m(x_i) (already orthonormal-normalized; no Nlm multiply needed)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             tbl = cfg.plm_tables[m+1]
             for k in 1:nfields
@@ -345,7 +345,7 @@ function analysis_batch(cfg::SHTConfig, fields::AbstractArray{<:Real,3}; use_rff
         # Compute Legendre polynomials on the fly
         # Use maxthreadid() to handle all possible thread IDs
         thread_local_P = _ensure_otf_scratch!(cfg._otf_scratch_P, lmax)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             P = thread_local_P[Threads.threadid()]
 
@@ -418,7 +418,7 @@ function analysis_batch!(cfg::SHTConfig, alm_out::AbstractArray{<:Complex,3},
 
     if cfg.use_plm_tables && length(cfg.plm_tables) == mmax + 1
         # plm_tables[m+1][l+1, i] = P̄_l^m(x_i) (already orthonormal-normalized; no Nlm multiply needed)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             tbl = cfg.plm_tables[m+1]
             for k in 1:nfields
@@ -434,7 +434,7 @@ function analysis_batch!(cfg::SHTConfig, alm_out::AbstractArray{<:Complex,3},
     else
         # Use maxthreadid() to handle all possible thread IDs
         thread_local_P = _ensure_otf_scratch!(cfg._otf_scratch_P, lmax)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             P = thread_local_P[Threads.threadid()]
 
@@ -521,7 +521,7 @@ function _synthesis_batch(cfg::SHTConfig, alm_batch::AbstractArray{<:Complex,3},
 
     if cfg.use_plm_tables && length(cfg.plm_tables) == mmax + 1
         # plm_tables[m+1][l+1, i] = P̄_l^m(x_i) (already orthonormal-normalized; no Nlm multiply needed)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             tbl = cfg.plm_tables[m+1]
             @inbounds for k in 1:nfields
@@ -537,7 +537,7 @@ function _synthesis_batch(cfg::SHTConfig, alm_batch::AbstractArray{<:Complex,3},
     else
         # Use maxthreadid() to handle all possible thread IDs
         thread_local_P = _ensure_otf_scratch!(cfg._otf_scratch_P, lmax)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             P = thread_local_P[Threads.threadid()]
 
@@ -632,7 +632,7 @@ function synthesis_batch!(cfg::SHTConfig, f_out::AbstractArray,
 
     if cfg.use_plm_tables && length(cfg.plm_tables) == mmax + 1
         # plm_tables[m+1][l+1, i] = P̄_l^m(x_i) (already orthonormal-normalized; no Nlm multiply needed)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             tbl = cfg.plm_tables[m+1]
             @inbounds for k in 1:nfields
@@ -648,7 +648,7 @@ function synthesis_batch!(cfg::SHTConfig, f_out::AbstractArray,
     else
         # Use maxthreadid() to handle all possible thread IDs with static scheduling
         thread_local_P = _ensure_otf_scratch!(cfg._otf_scratch_P, lmax)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             P = thread_local_P[Threads.threadid()]
 

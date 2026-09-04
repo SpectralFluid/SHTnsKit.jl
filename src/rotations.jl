@@ -77,10 +77,10 @@ shtns_rotation_apply_real(rot, Qlm, Rlm)
 DEBUGGING
 ---------
 ```julia
-# Z-rotation should just multiply by exp(imα)
-# For m=2 mode, rotation by α should multiply by exp(2iα)
+# Z-rotation should just multiply by exp(-imα)
+# For m=2 mode, rotation by α should multiply by exp(-2iα)
 rot_coeff = Rlm[idx] / Qlm[idx]  # where idx is a mode with m=2
-@assert rot_coeff ≈ cis(2 * α)
+@assert rot_coeff ≈ cis(-2 * α)
 ```
 
 ================================================================================
@@ -104,7 +104,7 @@ function SH_Zrotate(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real,
     lmax = cfg.lmax; mres = cfg.mres
     @inbounds for m in 0:cfg.mmax
         (m % mres == 0) || continue
-        phase = cis(m * alpha)
+        phase = cis(-m * alpha)
         for l in m:lmax
             lm = LM_index(lmax, mres, l, m) + 1
             Rlm[lm] = Qlm[lm] * phase
@@ -134,6 +134,23 @@ function SHTRotation(lmax::Integer, mmax::Integer; α::Real=0.0, β::Real=0.0, �
     return SHTRotation(Int(lmax), Int(mmax), float(α), float(β), float(γ), conv)
 end
 
+"""Apply an orthonormal-basis rotation at a configured-coefficient boundary."""
+function _apply_configured_rotation_real(cfg::SHTConfig, r::SHTRotation,
+                                         Qlm::AbstractVector{<:Complex},
+                                         Rlm::AbstractVector{<:Complex})
+    if _uses_canonical_convention(cfg)
+        return shtns_rotation_apply_real(r, Qlm, Rlm)
+    end
+
+    # The Wigner engine acts on canonical orthonormal+CS coefficients. A rotation
+    # mixes m at fixed l, so m-dependent real-normalization and phase factors do
+    # not commute with it: convert on entry and undo the conversion on exit.
+    Qlm_int = _internal_coefficients(Qlm, cfg)
+    Rlm_int = similar(Rlm)
+    shtns_rotation_apply_real(r, Qlm_int, Rlm_int)
+    return convert_alm_norm!(Rlm, Rlm_int, cfg; to_internal=false)
+end
+
 """
     SH_Yrotate(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real, Rlm::AbstractVector{<:Complex})
 
@@ -143,7 +160,7 @@ Uses Wigner-d mixing per l; dispatches to the general rotation engine.
 function SH_Yrotate(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real, Rlm::AbstractVector{<:Complex})
     r = SHTRotation(cfg.lmax, cfg.mmax)
     shtns_rotation_set_angles_ZYZ(r, 0.0, float(alpha), 0.0)
-    return shtns_rotation_apply_real(r, Qlm, Rlm)
+    return _apply_configured_rotation_real(cfg, r, Qlm, Rlm)
 end
 
 """
@@ -156,12 +173,12 @@ end
 """
     SH_Xrotate90(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Rlm::AbstractVector{<:Complex})
 
-Rotate around X-axis by 90 degrees using ZYZ equivalence: Rz(π/2)·Ry(π/2)·Rz(-π/2).
+Rotate around X-axis by 90 degrees using ZYZ equivalence: Rz(-π/2)·Ry(π/2)·Rz(π/2).
 """
 function SH_Xrotate90(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Rlm::AbstractVector{<:Complex})
     r = SHTRotation(cfg.lmax, cfg.mmax)
-    shtns_rotation_set_angles_ZYZ(r, π/2, π/2, -π/2)
-    return shtns_rotation_apply_real(r, Qlm, Rlm)
+    shtns_rotation_set_angles_ZYZ(r, -π/2, π/2, π/2)
+    return _apply_configured_rotation_real(cfg, r, Qlm, Rlm)
 end
 
 """
@@ -215,40 +232,90 @@ top-left (2l+1)×(2l+1) block of `d`. Caller must ensure `size(d,1) ≥ 2l+1`.
 """
 function wigner_d_matrix!(d::AbstractMatrix{Float64}, l::Int, beta::Float64)
     l ≥ 0 || throw(ArgumentError("l must be ≥ 0"))
-    # Precompute log-factorials: lg[i+1] = loggamma(i+1) for i in 0:2l.
-    lg = [_loggamma(i + 1) for i in 0:(2l)]
-    return wigner_d_matrix!(d, l, beta, lg)
+    work = Matrix{Float64}(undef, size(d))
+    return _wigner_d_matrix_stable!(d, work, l, beta)
 end
 
 """
     wigner_d_matrix!(d, l, beta, lg)
 
-Scratch overload: `lg` is a caller-supplied buffer with `lg[i+1] = loggamma(i+1)`
-and `length(lg) ≥ 2l+1`. Lets a per-`l` rotation loop hoist the O(l) log-factorial
-table once (sized to `2*lmax+1`) instead of reallocating it every degree.
+Compatibility overload for callers that supplied the former log-factorial
+scratch buffer. The stable recurrence no longer consumes those values.
 """
 function wigner_d_matrix!(d::AbstractMatrix{Float64}, l::Int, beta::Float64,
                           lg::AbstractVector{Float64})
     l ≥ 0 || throw(ArgumentError("l must be ≥ 0"))
     length(lg) ≥ 2l + 1 || throw(ArgumentError("lg must have length ≥ 2l+1"))
-    cb = cos(beta/2)
-    sb = sin(beta/2)
-    for m in -l:l
-        for mp in -l:l
-            kmin = max(0, m - mp)
-            kmax = min(l + m, l - mp)
-            logpref = 0.5*(lg[l+m+1] + lg[l-m+1] + lg[l+mp+1] + lg[l-mp+1])
-            s = 0.0
-            for k in kmin:kmax
-                logden = lg[l+m-k+1] + lg[k+1] + lg[mp-m+k+1] + lg[l-mp-k+1]
-                p = 2l + m - mp - 2k
-                q = mp - m + 2k
-                term = (-1.0)^k * exp(logpref - logden) * (cb^p) * (sb^q)
-                s += term
+    work = Matrix{Float64}(undef, size(d))
+    return _wigner_d_matrix_stable!(d, work, l, beta)
+end
+
+"""Scratch-matrix overload used by repeated rotations."""
+function wigner_d_matrix!(d::AbstractMatrix{Float64}, l::Int, beta::Float64,
+                          work::AbstractMatrix{Float64})
+    l ≥ 0 || throw(ArgumentError("l must be ≥ 0"))
+    return _wigner_d_matrix_stable!(d, work, l, beta)
+end
+
+"""
+Build `dˡ(β)` by repeatedly coupling the current representation with spin 1/2.
+
+The Clebsch–Gordan recurrence only combines bounded rotation entries with
+coefficients in `[0,1]`; unlike the factorial formula, it never forms huge terms
+that must cancel to produce an O(1) answer.
+"""
+function _wigner_d_matrix_stable!(d::AbstractMatrix{Float64},
+                                  work::AbstractMatrix{Float64},
+                                  l::Int, beta::Float64)
+    n = 2l + 1
+    size(d, 1) ≥ n && size(d, 2) ≥ n ||
+        throw(DimensionMismatch("d must contain a (2l+1)×(2l+1) block"))
+    size(work, 1) ≥ n && size(work, 2) ≥ n ||
+        throw(DimensionMismatch("work must contain a (2l+1)×(2l+1) block"))
+
+    d[1, 1] = 1.0
+    l == 0 && return d
+
+    cb = cos(beta / 2)
+    sb = sin(beta / 2)
+    # Rows/columns are ordered s=-1/2,+1/2, matching this file's convention.
+    dhalf = (cb, sb, -sb, cb)
+    src = d
+    dest = work
+
+    # `two_j_new` grows 0 -> 1/2 -> 1 -> ... -> l. Coupling coefficients are
+    # sqrt((J ± M)/(2J)); doubled integer indices avoid half-integer arithmetic.
+    for two_j_new in 1:(2l)
+        two_j_old = two_j_new - 1
+        denom = 2two_j_new
+        @inbounds for i in 0:two_j_new
+            two_m = -two_j_new + 2i
+            for j in 0:two_j_new
+                two_mp = -two_j_new + 2j
+                acc = 0.0
+                for si in 1:2
+                    two_s = 2si - 3
+                    two_m_old = two_m - two_s
+                    abs(two_m_old) ≤ two_j_old || continue
+                    old_i = (two_m_old + two_j_old) ÷ 2 + 1
+                    ci = sqrt((two_j_new + two_s * two_m) / denom)
+                    for sj in 1:2
+                        two_sp = 2sj - 3
+                        two_mp_old = two_mp - two_sp
+                        abs(two_mp_old) ≤ two_j_old || continue
+                        old_j = (two_mp_old + two_j_old) ÷ 2 + 1
+                        cj = sqrt((two_j_new + two_sp * two_mp) / denom)
+                        dh = dhalf[2(si - 1) + sj]
+                        acc += ci * cj * src[old_i, old_j] * dh
+                    end
+                end
+                dest[i + 1, j + 1] = acc
             end
-            d[m + l + 1, mp + l + 1] = s
         end
+        src, dest = dest, src
     end
+
+    # There are 2l (an even number of) half-steps, so the final result is in d.
     return d
 end
 
@@ -304,35 +371,19 @@ Derivative d/dβ of little Wigner-d matrix d^l_{m m'}(β).
 function wigner_d_matrix_deriv(l::Int, beta::Float64)
     l ≥ 0 || throw(ArgumentError("l must be ≥ 0"))
     n = 2l + 1
+    d = wigner_d_matrix(l, beta)
     dβ = Matrix{Float64}(undef, n, n)
-    cb = cos(beta/2)
-    sb = sin(beta/2)
-    dcb = -0.5 * sb
-    dsb =  0.5 * cb
-    lg = [_loggamma(i + 1) for i in 0:(2l)]
-    for m in -l:l
-        for mp in -l:l
-            kmin = max(0, m - mp)
-            kmax = min(l + m, l - mp)
-            logpref = 0.5*(lg[l+m+1] + lg[l-m+1] + lg[l+mp+1] + lg[l-mp+1])
-            s = 0.0
-            for k in kmin:kmax
-                logden = lg[l+m-k+1] + lg[k+1] + lg[mp-m+k+1] + lg[l-mp-k+1]
-                p = 2l + m - mp - 2k
-                q = mp - m + 2k
-                amp = (-1.0)^k * exp(logpref - logden)
-                # derivative of cb^p * sb^q using direct powers (avoids 0/0 at beta=0,pi)
-                dterm = 0.0
-                if p != 0
-                    dterm += amp * p * dcb * (cb^(p-1)) * (sb^q)
-                end
-                if q != 0
-                    dterm += amp * q * dsb * (cb^p) * (sb^(q-1))
-                end
-                s += dterm
-            end
-            dβ[m + l + 1, mp + l + 1] = s
+    # d(β)=exp(βG), where G is the real skew-symmetric y-rotation
+    # generator. Therefore ḋ=Gd, which is stable and O(l²) once d is known.
+    @inbounds for m in -l:l, mp in -l:l
+        value = 0.0
+        if m > -l
+            value -= 0.5 * sqrt((l + m) * (l - m + 1)) * d[m + l, mp + l + 1]
         end
+        if m < l
+            value += 0.5 * sqrt((l - m) * (l + m + 1)) * d[m + l + 2, mp + l + 1]
+        end
+        dβ[m + l + 1, mp + l + 1] = value
     end
     return dβ
 end
@@ -356,6 +407,17 @@ end
 """shtns_rotation_set_angles_ZXZ(r, alpha, beta, gamma)"""
 function shtns_rotation_set_angles_ZXZ(r::SHTRotation, alpha::Real, beta::Real, gamma::Real)
     r.α = float(alpha); r.β = float(beta); r.γ = float(gamma); r.conv = :ZXZ; return nothing
+end
+
+"""Return the equivalent ZYZ angles consumed by the Wigner-d engine."""
+@inline function _rotation_zyz_angles(r::SHTRotation)
+    if r.conv === :ZYZ
+        return r.α, r.β, r.γ
+    elseif r.conv === :ZXZ
+        # Rx(β) = Rz(-π/2) Ry(β) Rz(π/2).
+        return r.α - π/2, r.β, r.γ + π/2
+    end
+    throw(ArgumentError("unsupported Euler convention $(r.conv)"))
 end
 
 """
@@ -407,14 +469,14 @@ function shtns_rotation_apply_cplx(r::SHTRotation, Zlm::AbstractVector{<:Complex
     mres = 1
     expected = nlm_cplx_calc(r.lmax, r.mmax, mres)
     length(Zlm) == expected || throw(DimensionMismatch("LM_cplx size mismatch"))
-    α, β, γ = r.α, r.β, r.γ
+    α, β, γ = _rotation_zyz_angles(r)
 
     # Pre-allocate working arrays at maximum size to avoid per-l allocations
     nmax = 2 * r.lmax + 1
     b = Vector{ComplexF64}(undef, nmax)
     c = Vector{ComplexF64}(undef, nmax)
     dl = Matrix{Float64}(undef, nmax, nmax)  # Reusable Wigner d-matrix buffer
-    lg = [_loggamma(i + 1) for i in 0:(2 * r.lmax)]  # hoisted log-factorial table (reused every l)
+    dwork = similar(dl)
 
     # Apply R = diag(e^{-i m α}) * d^l(β) * diag(e^{-i m γ}) for each l
     for l in 0:r.lmax
@@ -443,7 +505,7 @@ function shtns_rotation_apply_cplx(r::SHTRotation, Zlm::AbstractVector{<:Complex
             b[mp + l + 1] = (εp * Zlm[idx]) * cis(-mp * γ)
         end
         # Multiply with d^l(β) — computed in-place into pre-allocated buffer
-        wigner_d_matrix!(dl, l, β, lg)
+        wigner_d_matrix!(dl, l, β, dwork)
         fill!(view(c, 1:n), zero(ComplexF64))
         # c_m = sum_{m'} d_{m m'} b_{m'}
         for mi in -l:l

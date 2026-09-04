@@ -169,4 +169,81 @@ using Random
         @test isapprox(Vt_lat, Vt_ref[i, :]; rtol=1e-9, atol=1e-11)
         @test isapprox(Vp_lat, Vp_ref[i, :]; rtol=1e-9, atol=1e-11)
     end
+
+    @testset "configured coefficient conventions are honored" begin
+        lmax = 4
+        nlat = lmax + 2
+        nlon = 2lmax + 1
+        canonical_cfg = create_gauss_config(lmax, nlat; nlon=nlon)
+        configured_cfg = create_gauss_config(
+            lmax, nlat; nlon=nlon, norm=:fourpi, cs_phase=false, real_norm=true,
+        )
+        rng = MersenneTwister(46)
+
+        canonical_Q = zeros(ComplexF64, lmax + 1, lmax + 1)
+        canonical_S = zeros(ComplexF64, lmax + 1, lmax + 1)
+        canonical_T = zeros(ComplexF64, lmax + 1, lmax + 1)
+        for m in 0:lmax, l in m:lmax
+            canonical_Q[l + 1, m + 1] = randn(rng, ComplexF64)
+            if l > 0
+                canonical_S[l + 1, m + 1] = randn(rng, ComplexF64)
+                canonical_T[l + 1, m + 1] = randn(rng, ComplexF64)
+            end
+        end
+        canonical_Q[:, 1] .= real.(canonical_Q[:, 1])
+        canonical_S[:, 1] .= real.(canonical_S[:, 1])
+        canonical_T[:, 1] .= real.(canonical_T[:, 1])
+
+        configured_Q = similar(canonical_Q)
+        configured_S = similar(canonical_S)
+        configured_T = similar(canonical_T)
+        SHTnsKit.convert_alm_norm!(configured_Q, canonical_Q, configured_cfg; to_internal=false)
+        SHTnsKit.convert_alm_norm!(configured_S, canonical_S, configured_cfg; to_internal=false)
+        SHTnsKit.convert_alm_norm!(configured_T, canonical_T, configured_cfg; to_internal=false)
+
+        canonical_packed = map(
+            A -> SHTnsKit.pack_lm(canonical_cfg, A),
+            (canonical_Q, canonical_S, canonical_T),
+        )
+        configured_packed = map(
+            A -> SHTnsKit.pack_lm(configured_cfg, A),
+            (configured_Q, configured_S, configured_T),
+        )
+        cost = canonical_cfg.x[2]
+        phi = 0.7
+
+        @test SH_to_lat(configured_cfg, configured_packed[1], cost) ≈
+              SH_to_lat(canonical_cfg, canonical_packed[1], cost) rtol=1e-12 atol=1e-13
+
+        canonical_point = SHTnsKit.SHqst_to_point(canonical_cfg, canonical_packed..., cost, phi)
+        configured_point = SHTnsKit.SHqst_to_point(configured_cfg, configured_packed..., cost, phi)
+        for component in 1:3
+            @test configured_point[component] ≈ canonical_point[component] rtol=1e-12 atol=1e-13
+        end
+
+        canonical_grad = SHTnsKit.SH_to_grad_point(
+            canonical_cfg, canonical_packed[1], canonical_packed[2], cost, phi,
+        )
+        configured_grad = SHTnsKit.SH_to_grad_point(
+            configured_cfg, configured_packed[1], configured_packed[2], cost, phi,
+        )
+        for component in 1:3
+            @test configured_grad[component] ≈ canonical_grad[component] rtol=1e-12 atol=1e-13
+        end
+
+        canonical_lat = SHTnsKit.SHqst_to_lat(canonical_cfg, canonical_packed..., cost)
+        configured_lat = SHTnsKit.SHqst_to_lat(configured_cfg, configured_packed..., cost)
+        for component in 1:3
+            @test configured_lat[component] ≈ canonical_lat[component] rtol=1e-12 atol=1e-13
+        end
+
+        nlm_c = nlm_cplx_calc(lmax, lmax, 1)
+        canonical_cplx = randn(rng, ComplexF64, nlm_c)
+        configured_cplx = similar(canonical_cplx)
+        SHTnsKit.convert_alm_norm!(
+            configured_cplx, canonical_cplx, configured_cfg; to_internal=false,
+        )
+        @test SHTnsKit.SH_to_lat_cplx(configured_cfg, configured_cplx, cost) ≈
+              SHTnsKit.SH_to_lat_cplx(canonical_cfg, canonical_cplx, cost) rtol=1e-12 atol=1e-13
+    end
 end

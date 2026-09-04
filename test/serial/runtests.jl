@@ -17,6 +17,8 @@ using Test
     include("test_loop_utils.jl")
     include("test_spectral_diagnostics.jl")
     include("test_edge_cases.jl")
+    include("test_mres_transforms.jl")
+    include("test_mres_diagnostics.jl")
     include("test_basic_transforms.jl")
     include("test_truncated_transforms.jl")
     include("test_vector_transforms.jl")

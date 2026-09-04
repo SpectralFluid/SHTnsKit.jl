@@ -17,13 +17,34 @@ import SHTnsKit: gpu_analysis, gpu_synthesis, gpu_analysis_safe, gpu_synthesis_s
 
 # Import device utilities functions to override
 import SHTnsKit: on_device, _notify_cuda_loaded!
+import SHTnsKit: _enable_gpu_loops!
 
 # ============================================================================
 # CUDA Backend Integration with device_utils.jl
 # ============================================================================
 
+@kernel function _sht_loop_kernel!(body, range)
+    linear_index = @index(Global, Linear)
+    if linear_index <= length(range)
+        body(@inbounds range[linear_index])
+    end
+end
+
+"""Launch a body supplied by `@sht_loop` on the first operand's KA backend."""
+function _launch_sht_loop!(args...)
+    first_array = args[1]
+    range = args[end - 1]
+    body = args[end]
+    backend = KernelAbstractions.get_backend(first_array)
+    kernel! = _sht_loop_kernel!(backend)
+    kernel!(body, range; ndrange=length(range))
+    KernelAbstractions.synchronize(backend)
+    return nothing
+end
+
 # Notify the main module that CUDA is available
 function __init__()
+    _enable_gpu_loops!(_launch_sht_loop!)
     if CUDA.functional()
         _notify_cuda_loaded!()
     end
@@ -540,9 +561,14 @@ function gpu_analysis_sphtor(cfg::SHTConfig, vθ, vφ; device=get_device())
         return SHTnsKit.analysis_sphtor(cfg, vθ, vφ)
     end
 
-    backend = CUDABackend()
     nlat, nlon = cfg.nlat, cfg.nlon
     lmax, mmax = cfg.lmax, cfg.mmax
+    size(vθ) == (nlat, nlon) || throw(DimensionMismatch(
+        "vθ must have shape ($nlat, $nlon), got $(size(vθ))"))
+    size(vφ) == (nlat, nlon) || throw(DimensionMismatch(
+        "vφ must have shape ($nlat, $nlon), got $(size(vφ))"))
+
+    backend = CUDABackend()
 
     # Transfer input to GPU and compute FFT along φ
     gpu_vθ = CuArray(ComplexF64.(vθ))
@@ -691,9 +717,15 @@ function gpu_synthesis_sphtor(cfg::SHTConfig, sph_coeffs, tor_coeffs; device=get
         return SHTnsKit.synthesis_sphtor(cfg, sph_coeffs, tor_coeffs; real_output=real_output)
     end
 
-    backend = CUDABackend()
     nlat, nlon = cfg.nlat, cfg.nlon
     lmax, mmax = cfg.lmax, cfg.mmax
+    coeff_shape = (lmax + 1, mmax + 1)
+    size(sph_coeffs) == coeff_shape || throw(DimensionMismatch(
+        "sph_coeffs must have shape $coeff_shape, got $(size(sph_coeffs))"))
+    size(tor_coeffs) == coeff_shape || throw(DimensionMismatch(
+        "tor_coeffs must have shape $coeff_shape, got $(size(tor_coeffs))"))
+
+    backend = CUDABackend()
 
     Slm_int = SHTnsKit._internal_coefficients(sph_coeffs, cfg)
     Tlm_int = SHTnsKit._internal_coefficients(tor_coeffs, cfg)
@@ -930,7 +962,9 @@ function estimate_memory_usage(cfg::SHTConfig, operation::Symbol)
     elseif operation == :synthesis
         return coeff_size + spatial_size + legendre_size + spatial_size
     elseif operation == :vector
-        return 2 * spatial_size + 2 * coeff_size + legendre_size + 2 * spatial_size
+        # Plm and dPlm are real (2×), while S_contrib and T_contrib are
+        # ComplexF64 (4× the real tensor's bytes): 6× in total.
+        return 2 * spatial_size + 2 * coeff_size + 6 * legendre_size + 2 * spatial_size
     else
         return spatial_size + coeff_size
     end

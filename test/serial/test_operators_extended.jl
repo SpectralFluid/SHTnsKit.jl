@@ -97,6 +97,34 @@ using SHTnsKit
         end
     end
 
+    @testset "neighbor operators honor configured coefficient conventions" begin
+        lmax = 6
+        canonical_cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
+        cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1,
+                                  norm=:schmidt, real_norm=true, cs_phase=false)
+        rng = MersenneTwister(602)
+        Qcanonical = randn(rng, ComplexF64, canonical_cfg.nlm)
+        Qcanonical[1:lmax + 1] .= real.(Qcanonical[1:lmax + 1])
+        Qconfigured = similar(Qcanonical)
+        SHTnsKit.convert_alm_norm!(Qconfigured, Qcanonical, cfg; to_internal=false)
+
+        for build_matrix! in (mul_ct_matrix, st_dt_matrix)
+            canonical_mx = zeros(2 * canonical_cfg.nlm)
+            build_matrix!(canonical_cfg, canonical_mx)
+            expected_canonical = similar(Qcanonical)
+            SH_mul_mx(canonical_cfg, canonical_mx, Qcanonical, expected_canonical)
+            expected_configured = similar(Qconfigured)
+            SHTnsKit.convert_alm_norm!(expected_configured, expected_canonical, cfg;
+                                      to_internal=false)
+
+            configured_mx = zeros(2 * cfg.nlm)
+            build_matrix!(cfg, configured_mx)
+            got = similar(Qconfigured)
+            SH_mul_mx(cfg, configured_mx, Qconfigured, got)
+            @test got ≈ expected_configured rtol=2e-12 atol=2e-12
+        end
+    end
+
     @testset "SH_mul_mx dimension checks" begin
         cfg = create_gauss_config(3, 5; nlon=7)
         mx = zeros(2 * cfg.nlm)

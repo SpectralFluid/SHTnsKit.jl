@@ -135,10 +135,21 @@ function mul_ct_matrix(cfg::SHTConfig, mx::AbstractVector{<:Real})
         
         # Coupling coefficient to Y_{l-1}^m (downward in degree)
         # From recurrence: cos(θ) Y_l^m = a_l^m Y_{l-1}^m + b_l^m Y_{l+1}^m
-        a = (l == 0) ? 0.0 : sqrt(max(0.0, (l^2 - m^2) / ((2l - 1) * (2l + 1))))
+        s_lm = coefficient_scale_to_canonical(cfg, l, m)
+        a = if l > m
+            a_canonical = sqrt(max(0.0, (l^2 - m^2) / ((2l - 1) * (2l + 1))))
+            a_canonical * s_lm / coefficient_scale_to_canonical(cfg, l - 1, m)
+        else
+            0.0
+        end
         
         # Coupling coefficient to Y_{l+1}^m (upward in degree)  
-        b = (l == cfg.lmax) ? 0.0 : sqrt(max(0.0, ((l + 1)^2 - m^2) / ((2l + 1) * (2l + 3))))
+        b = if l < cfg.lmax
+            b_canonical = sqrt(max(0.0, ((l + 1)^2 - m^2) / ((2l + 1) * (2l + 3))))
+            b_canonical * s_lm / coefficient_scale_to_canonical(cfg, l + 1, m)
+        else
+            0.0
+        end
         
         # Store in packed format: [c_minus, c_plus] for each (l,m)
         mx[2*lm0 + 1] = a  # Coefficient for Y_{l-1}^m
@@ -163,8 +174,19 @@ function st_dt_matrix(cfg::SHTConfig, mx::AbstractVector{<:Real})
         m = cfg.mi[lm0+1]  # Order for this packed index
         
         # Base coupling coefficients (same as cos(θ) operator)
-        a = (l == 0) ? 0.0 : sqrt(max(0.0, (l^2 - m^2) / ((2l - 1) * (2l + 1))))
-        b = (l == cfg.lmax) ? 0.0 : sqrt(max(0.0, ((l + 1)^2 - m^2) / ((2l + 1) * (2l + 3))))
+        s_lm = coefficient_scale_to_canonical(cfg, l, m)
+        a = if l > m
+            a_canonical = sqrt(max(0.0, (l^2 - m^2) / ((2l - 1) * (2l + 1))))
+            a_canonical * s_lm / coefficient_scale_to_canonical(cfg, l - 1, m)
+        else
+            0.0
+        end
+        b = if l < cfg.lmax
+            b_canonical = sqrt(max(0.0, ((l + 1)^2 - m^2) / ((2l + 1) * (2l + 3))))
+            b_canonical * s_lm / coefficient_scale_to_canonical(cfg, l + 1, m)
+        else
+            0.0
+        end
         
         # Apply derivative operator weights
         # sin(θ) ∂/∂θ Y_l^m = l b_l^m Y_{l+1}^m - (l+1) a_l^m Y_{l-1}^m

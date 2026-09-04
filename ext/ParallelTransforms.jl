@@ -376,9 +376,9 @@ that allows Julia to generate specialized, allocation-free code.
 function _analysis_loop_no_tables!(temp_dense::Matrix{ComplexF64}, P::Vector{Float64},
                                    Fθm::Matrix{ComplexF64}, weights_cache::Vector{Float64},
                                    x_cache::Vector{Float64}, θ_globals::Vector{Int},
-                                   lmax::Int, mmax::Int)
+                                   lmax::Int, mmax::Int, mres::Int)
     nθ_local = length(θ_globals)
-    @inbounds for mval in 0:mmax
+    @inbounds for mval in 0:mres:mmax
         col = mval + 1
         m_fft = mval + 1
         for ii in 1:nθ_local
@@ -417,9 +417,9 @@ This is a "function barrier" - see _analysis_loop_no_tables! for explanation.
 function _analysis_loop_with_tables!(temp_dense::Matrix{ComplexF64},
                                      plm_tables::Vector{Matrix{Float64}},
                                      Fθm::Matrix{ComplexF64}, weights_cache::Vector{Float64},
-                                     θ_globals::Vector{Int}, lmax::Int, mmax::Int)
+                                     θ_globals::Vector{Int}, lmax::Int, mmax::Int, mres::Int)
     nθ_local = length(θ_globals)
-    @inbounds for mval in 0:mmax
+    @inbounds for mval in 0:mres:mmax
         col = mval + 1
         m_fft = mval + 1
         for ii in 1:nθ_local
@@ -478,7 +478,12 @@ println("Global indices φ: ", globalindices(fθφ, 2))
 ```
 """
 function dist_analysis_standard(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray; use_tables=cfg.use_plm_tables, use_rfft::Bool=false, use_packed_storage::Bool=false)
+    _validate_cfg_spatial_prototype(cfg, fθφ, "dist_analysis")
     comm = communicator(fθφ)
+    _validate_replicated_call_signature(
+        comm, "dist_analysis",
+        (use_tables, use_rfft, use_packed_storage, eltype(fθφ)),
+    )
     lmax, mmax = cfg.lmax, cfg.mmax
     nlon = cfg.nlon
     nlat = cfg.nlat
@@ -639,10 +644,12 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
         end
     elseif use_tbl
         # Use function barrier for tables path (zero allocation)
-        _analysis_loop_with_tables!(temp_dense, cfg.plm_tables, Fθm, weights_cache, θ_globals, lmax, mmax)
+        _analysis_loop_with_tables!(temp_dense, cfg.plm_tables, Fθm, weights_cache,
+                                    θ_globals, lmax, mmax, cfg.mres)
     else
         # Use function barrier for no-tables path (zero allocation)
-        _analysis_loop_no_tables!(temp_dense, P, Fθm, weights_cache, x_cache, θ_globals, lmax, mmax)
+        _analysis_loop_no_tables!(temp_dense, P, Fθm, weights_cache, x_cache,
+                                  θ_globals, lmax, mmax, cfg.mres)
     end
     
     # ===== STEP 5: MPI reduction to combine partial results =====
@@ -677,7 +684,7 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
             # Apply φ scaling (cphi = 2π/nlon). Nlm is NOT applied here: the
             # normalized recurrence Plm_norm_row! already bakes Nlm into P̄.
             cphi = cfg.cphi  # hoist field read out of the normalization loop (cfg is mutable)
-            @inbounds for m in 0:mmax
+            @inbounds for m in 0:cfg.mres:mmax
                 @simd ivdep for l in m:lmax
                     Alm_local[l+1, m+1] *= cphi
                 end
@@ -687,7 +694,7 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
         # θ is not distributed - no reduction needed, just apply φ scaling
         if !use_packed_storage
             cphi = cfg.cphi  # hoist field read out of the normalization loop (cfg is mutable)
-            @inbounds for m in 0:mmax
+            @inbounds for m in 0:cfg.mres:mmax
                 @simd ivdep for l in m:lmax
                     Alm_local[l+1, m+1] *= cphi
                 end
@@ -699,6 +706,17 @@ end
 
 function SHTnsKit.dist_analysis!(plan::DistAnalysisPlan, Alm_out::AbstractMatrix, fθφ::PencilArray; use_tables=plan.cfg.use_plm_tables)
     cfg = plan.cfg
+    comm = communicator(plan.prototype_θφ)
+    _validate_cached_plan_cfg(
+        cfg, plan.cfg_fingerprint, comm, "dist_analysis!",
+    )
+    _validate_spatial_pencil_against_prototype(
+        cfg, plan.prototype_θφ, fθφ, "dist_analysis!",
+    )
+    _validate_dense_spectral_shapes(cfg, comm, "dist_analysis!", (Alm_out,))
+    _validate_replicated_call_signature(
+        comm, "dist_analysis!", (use_tables, eltype(fθφ), eltype(Alm_out)),
+    )
     if plan.fallback_standard
         # φ-distributed layout: needs the longitude Allgather; reuse the
         # allocating standard path (it warns about anti-scaling already).
@@ -712,9 +730,6 @@ function SHTnsKit.dist_analysis!(plan::DistAnalysisPlan, Alm_out::AbstractMatrix
         throw(DimensionMismatch("fθφ local θ extent $(size(local_data, 1)) does not match plan ($(length(plan.θ_globals))); build the plan from a prototype with the same Pencil"))
     size(local_data, 2) == cfg.nlon ||
         throw(DimensionMismatch("fθφ local φ extent $(size(local_data, 2)) does not match cfg.nlon=$(cfg.nlon)"))
-    size(Alm_out) == (lmax + 1, mmax + 1) ||
-        throw(DimensionMismatch("Alm_out must be ($(lmax+1), $(mmax+1))"))
-
     # FFT along φ into the plan-owned buffer via the cached-plan helpers
     # (avoids both the per-call buffer and FFTW re-planning).
     if plan.use_rfft
@@ -731,10 +746,11 @@ function SHTnsKit.dist_analysis!(plan::DistAnalysisPlan, Alm_out::AbstractMatrix
               length(cfg.plm_tables) == mmax + 1 && size(cfg.plm_tables[1], 2) == cfg.nlat
     if use_tbl
         _analysis_loop_with_tables!(plan.Alm_work, cfg.plm_tables, plan.Fθm,
-                                    plan.weights_cache, plan.θ_globals, lmax, mmax)
+                                    plan.weights_cache, plan.θ_globals,
+                                    lmax, mmax, cfg.mres)
     else
         _analysis_loop_no_tables!(plan.Alm_work, plan.P, plan.Fθm, plan.weights_cache,
-                                  plan.x_cache, plan.θ_globals, lmax, mmax)
+                                  plan.x_cache, plan.θ_globals, lmax, mmax, cfg.mres)
     end
 
     # Sum partial θ contributions over the cached θ-column subcomm
@@ -744,7 +760,7 @@ function SHTnsKit.dist_analysis!(plan::DistAnalysisPlan, Alm_out::AbstractMatrix
 
     # φ scaling (Nlm already baked into the normalized Legendre rows)
     cphi = cfg.cphi
-    @inbounds for m in 0:mmax
+    @inbounds for m in 0:cfg.mres:mmax
         @simd ivdep for l in m:lmax
             plan.Alm_work[l+1, m+1] *= cphi
         end
@@ -770,34 +786,22 @@ function SHTnsKit.dist_synthesis(cfg::SHTnsKit.SHTConfig, Alm::AbstractMatrix; p
     lmax, mmax = cfg.lmax, cfg.mmax
     nlon = cfg.nlon
     nlat = cfg.nlat
-    if Aminus !== nothing
-        real_output && throw(ArgumentError("dist_synthesis with Aminus requires real_output=false"))
-        size(Aminus) == size(Alm) || throw(DimensionMismatch("Aminus must match Alm's shape"))
-    end
+    _validate_cfg_spatial_prototype(cfg, prototype_θφ, "dist_synthesis")
+    comm = communicator(prototype_θφ)
+    _validate_dense_spectral_shapes(
+        cfg, comm, "dist_synthesis", (Alm, Aminus),
+    )
+    _validate_replicated_dense_spectra(
+        cfg, comm, "dist_synthesis", (Alm, Aminus);
+        options=(real_output, use_rfft),
+        domains=((minimum_l=0, include_m0=true),
+                 (minimum_l=0, include_m0=false)),
+    )
+    Aminus !== nothing && real_output && throw(ArgumentError(
+        "dist_synthesis with Aminus requires real_output=false"))
 
     Alm = SHTnsKit._internal_coefficients(Alm, cfg)
     Aminus = Aminus === nothing ? nothing : SHTnsKit._internal_coefficients(Aminus, cfg)
-
-    # Contract: Alm must be replicated identically on every rank. Sample-hash a
-    # bounded prefix + a small tail slice instead of the full matrix so the check
-    # stays O(1) regardless of lmax.
-    comm = communicator(prototype_θφ)
-    if MPI.Comm_size(comm) > 1
-        n = length(Alm)
-        k = min(n, 128)
-        probe_head = n == 0 ? UInt64(0) : hash(view(Alm, 1:k))
-        probe_tail = n <= k ? UInt64(0) : hash(view(Alm, (n - k + 1):n))
-        # `Aminus` must be replicated too — it feeds the same collective-free
-        # local traversal, so a rank-varying copy would silently produce a
-        # different field per rank.
-        probe_minus = Aminus === nothing ? UInt64(0) :
-                      hash((hash(view(Aminus, 1:k)), n <= k ? UInt64(0) : hash(view(Aminus, (n - k + 1):n))))
-        local_sig = hash((size(Alm, 1), size(Alm, 2), probe_head, probe_tail, probe_minus))
-        rank0_sig = MPI.bcast(local_sig, 0, comm)
-        if local_sig != rank0_sig
-            throw(ArgumentError("dist_synthesis requires Alm replicated across ranks (signature mismatch on rank $(MPI.Comm_rank(comm)))."))
-        end
-    end
 
     # Get the local portion info from the prototype
     θ_globals = collect(globalindices(prototype_θφ, 1))  # Global θ indices this process owns
@@ -823,7 +827,7 @@ function SHTnsKit.dist_synthesis(cfg::SHTnsKit.SHTConfig, Alm::AbstractMatrix; p
     xv = cfg.x  # hoist field read out of the loops below (cfg is mutable, so not auto-hoisted)
 
     # Synthesis: for each m mode, compute Legendre series
-    for mval in 0:mmax
+    for mval in 0:cfg.mres:mmax
         col = mval + 1
 
         # Compute synthesized values for each local θ
@@ -894,19 +898,6 @@ function SHTnsKit.dist_synthesis(cfg::SHTnsKit.SHTConfig, Alm::AbstractMatrix; p
         SHTnsKitParallelExt.ifft_along_dim2!(fθφ_local, Fθm)
     end
 
-    # Apply Robert form scaling if enabled
-    if cfg.robert_form
-        @inbounds for (ii, iglob) in enumerate(θ_globals)
-            x = xv[iglob]
-            sθ = sqrt(max(0.0, 1 - x*x))
-            if sθ > 0
-                for j in 1:nlon
-                    fθφ_local[ii, j] *= sθ
-                end
-            end
-        end
-    end
-
     # If φ is distributed, we need to scatter results back
     if φ_is_local
         # Data is distributed along θ only - return local matrix wrapped properly
@@ -922,11 +913,23 @@ function SHTnsKit.dist_synthesis(cfg::SHTnsKit.SHTConfig, Alm::AbstractMatrix; p
 end
 
 function SHTnsKit.dist_synthesis(cfg::SHTnsKit.SHTConfig, Alm::PencilArray; prototype_θφ::PencilArray, real_output::Bool=true, use_rfft::Bool=false)
+    _validate_spectral_pencil(
+        cfg, Alm, prototype_θφ, "dist_synthesis(::PencilArray)",
+    )
     Alm_dense = SHTnsKit.spectral_pencil_to_matrix(cfg, Alm)
     return SHTnsKit.dist_synthesis(cfg, Alm_dense; prototype_θφ, real_output, use_rfft)
 end
 
 function SHTnsKit.dist_synthesis!(plan::DistPlan, fθφ_out::PencilArray, Alm::PencilArray; real_output::Bool=true)
+    _validate_spatial_pencil_against_prototype(
+        plan.cfg, plan.prototype_θφ, fθφ_out, "dist_synthesis!",
+    )
+    comm = communicator(plan.prototype_θφ)
+    _validate_replicated_call_signature(
+        comm, "dist_synthesis!",
+        (real_output, plan.use_rfft, eltype(fθφ_out)),
+    )
+
     # Rejected up front, before any collective — the test is on local eltypes,
     # identical on every rank, so all ranks throw together instead of deadlocking.
     #
@@ -955,7 +958,15 @@ end
 
 # Distributed vector analysis (spheroidal/toroidal)
 function SHTnsKit.dist_analysis_sphtor(cfg::SHTnsKit.SHTConfig, Vtθφ::PencilArray, Vpθφ::PencilArray; use_tables=cfg.use_plm_tables, use_rfft::Bool=false)
+    _validate_cfg_spatial_prototype(cfg, Vtθφ, "dist_analysis_sphtor")
+    _validate_spatial_pencil_against_prototype(
+        cfg, Vtθφ, Vpθφ, "dist_analysis_sphtor",
+    )
     comm = communicator(Vtθφ)
+    _validate_replicated_call_signature(
+        comm, "dist_analysis_sphtor",
+        (use_tables, use_rfft, eltype(Vtθφ), eltype(Vpθφ)),
+    )
     lmax, mmax = cfg.lmax, cfg.mmax
     nlon = cfg.nlon
     nlat = cfg.nlat
@@ -1053,7 +1064,8 @@ function SHTnsKit.dist_analysis_sphtor(cfg::SHTnsKit.SHTConfig, Vtθφ::PencilAr
     else
         _sphtor_analysis_loop_otf!(Slm_local, Tlm_local, P, dPdtheta, P_over_sth, Pbuf,
                                    Ftθm, Fpθm, x_cache, sθ_cache, inv_sθ_cache,
-                                   weights_cache, cfg.robert_form, scaleφ, lmax, mmax)
+                                   weights_cache, cfg.robert_form, scaleφ,
+                                   lmax, mmax, cfg.mres)
     end
 
     # Only reduce if θ is actually distributed across processes
@@ -1094,7 +1106,7 @@ function _sphtor_analysis_loop_tbl!(cfg::SHTnsKit.SHTConfig,
                                     sθ_cache::Vector{Float64}, weights_cache::Vector{Float64},
                                     robert_form::Bool, scaleφ::Float64, lmax::Int, mmax::Int)
     nθ_local = length(θ_globals)
-    for mval in 0:mmax
+    for mval in 0:cfg.mres:mmax
         col = mval + 1
         tblNP  = NP_tables[col]
         tblNdP = NdP_tables[col]
@@ -1129,9 +1141,10 @@ function _sphtor_analysis_loop_otf!(Slm::Matrix{ComplexF64}, Tlm::Matrix{Complex
                                     Ftθm::Matrix{ComplexF64}, Fpθm::Matrix{ComplexF64},
                                     x_cache::Vector{Float64}, sθ_cache::Vector{Float64},
                                     inv_sθ_cache::Vector{Float64}, weights_cache::Vector{Float64},
-                                    robert_form::Bool, scaleφ::Float64, lmax::Int, mmax::Int)
+                                    robert_form::Bool, scaleφ::Float64, lmax::Int, mmax::Int,
+                                    mres::Int)
     nθ_local = length(x_cache)
-    for mval in 0:mmax
+    for mval in 0:mres:mmax
         col = mval + 1
         for ii in 1:nθ_local
             sθ = sθ_cache[ii]
@@ -1161,6 +1174,24 @@ end
 function SHTnsKit.dist_analysis_sphtor!(plan::DistSphtorPlan, Slm_out::AbstractMatrix, Tlm_out::AbstractMatrix,
                                          Vtθφ::PencilArray, Vpθφ::PencilArray; use_tables=plan.cfg.use_plm_tables)
     cfg = plan.cfg
+    comm = communicator(plan.prototype_θφ)
+    _validate_cached_plan_cfg(
+        cfg, plan.cfg_fingerprint, comm, "dist_analysis_sphtor!",
+    )
+    _validate_spatial_pencil_against_prototype(
+        cfg, plan.prototype_θφ, Vtθφ, "dist_analysis_sphtor!",
+    )
+    _validate_spatial_pencil_against_prototype(
+        cfg, plan.prototype_θφ, Vpθφ, "dist_analysis_sphtor!",
+    )
+    _validate_dense_spectral_shapes(
+        cfg, comm, "dist_analysis_sphtor!", (Slm_out, Tlm_out),
+    )
+    _validate_replicated_call_signature(
+        comm, "dist_analysis_sphtor!",
+        (use_tables, eltype(Vtθφ), eltype(Vpθφ),
+         eltype(Slm_out), eltype(Tlm_out)),
+    )
     if plan.fallback_standard
         # φ-distributed layout: needs the longitude gather; reuse the allocating
         # cfg-form path.
@@ -1176,9 +1207,6 @@ function SHTnsKit.dist_analysis_sphtor!(plan::DistSphtorPlan, Slm_out::AbstractM
         throw(DimensionMismatch("Vt/Vp local θ extent does not match plan ($(nθ_local)); build the plan from a prototype with the same Pencil"))
     (size(local_Vt, 2) == cfg.nlon && size(local_Vp, 2) == cfg.nlon) ||
         throw(DimensionMismatch("Vt/Vp local φ extent does not match cfg.nlon=$(cfg.nlon)"))
-    (size(Slm_out) == (lmax + 1, mmax + 1) && size(Tlm_out) == (lmax + 1, mmax + 1)) ||
-        throw(DimensionMismatch("Slm_out/Tlm_out must be ($(lmax+1), $(mmax+1))"))
-
     if plan.use_rfft
         (eltype(local_Vt) <: Real && eltype(local_Vp) <: Real) ||
             throw(ArgumentError("plan was built with use_rfft=true; Vt/Vp must hold real data"))
@@ -1202,7 +1230,8 @@ function SHTnsKit.dist_analysis_sphtor!(plan::DistSphtorPlan, Slm_out::AbstractM
         _sphtor_analysis_loop_otf!(plan.Slm_work, plan.Tlm_work, plan.P, plan.dPdtheta,
                                    plan.P_over_sth, plan.Pbuf, plan.Ftθm, plan.Fpθm,
                                    plan.x_cache, plan.sθ_cache, plan.inv_sθ_cache,
-                                   plan.weights_cache, cfg.robert_form, cfg.cphi, lmax, mmax)
+                                   plan.weights_cache, cfg.robert_form, cfg.cphi,
+                                   lmax, mmax, cfg.mres)
     end
 
     if plan.θ_is_distributed
@@ -1223,8 +1252,17 @@ function SHTnsKit.dist_synthesis_sphtor(cfg::SHTnsKit.SHTConfig, Slm::AbstractMa
     nlon = cfg.nlon
     nlat = cfg.nlat
 
-    size(Slm, 1) == lmax + 1 && size(Slm, 2) == mmax + 1 || throw(DimensionMismatch("Slm dims"))
-    size(Tlm, 1) == lmax + 1 && size(Tlm, 2) == mmax + 1 || throw(DimensionMismatch("Tlm dims"))
+    _validate_cfg_spatial_prototype(cfg, prototype_θφ, "dist_synthesis_sphtor")
+    comm = communicator(prototype_θφ)
+    _validate_dense_spectral_shapes(
+        cfg, comm, "dist_synthesis_sphtor", (Slm, Tlm),
+    )
+    _validate_replicated_dense_spectra(
+        cfg, comm, "dist_synthesis_sphtor", (Slm, Tlm);
+        options=(real_output, use_rfft),
+        domains=((minimum_l=1, include_m0=true),
+                 (minimum_l=1, include_m0=true)),
+    )
 
     Slm = SHTnsKit._internal_coefficients(Slm, cfg)
     Tlm = SHTnsKit._internal_coefficients(Tlm, cfg)
@@ -1235,8 +1273,6 @@ function SHTnsKit.dist_synthesis_sphtor(cfg::SHTnsKit.SHTConfig, Slm::AbstractMa
     nθ_local = length(θ_globals)
     nlon_local = size(parent(prototype_θφ), 2)
     φ_is_local = (nlon_local == nlon)
-    comm = communicator(prototype_θφ)
-
     use_rfft_effective = use_rfft && real_output
     if use_rfft && !real_output && MPI.Comm_rank(comm) == 0
         @warn "use_rfft=true ignored — requires real_output=true." maxlog=1
@@ -1256,7 +1292,7 @@ function SHTnsKit.dist_synthesis_sphtor(cfg::SHTnsKit.SHTConfig, Slm::AbstractMa
     xv = cfg.x  # hoist field read out of the loops below (cfg is mutable, so not auto-hoisted)
 
     # Synthesis loop
-    for mval in 0:mmax
+    for mval in 0:cfg.mres:mmax
         col = mval + 1
 
         for (ii, iglobθ) in enumerate(θ_globals)
@@ -1337,6 +1373,16 @@ end
 
 # Convenience: spectral inputs as PencilArray (dense layout (:l,:m))
 function SHTnsKit.dist_synthesis_sphtor(cfg::SHTnsKit.SHTConfig, Slm::PencilArray, Tlm::PencilArray; prototype_θφ::PencilArray, real_output::Bool=true, use_rfft::Bool=false)
+    _validate_spectral_pencil(
+        cfg, Slm, prototype_θφ, "dist_synthesis_sphtor(::PencilArray)",
+    )
+    _validate_spectral_pencil(
+        cfg, Tlm, prototype_θφ, "dist_synthesis_sphtor(::PencilArray)";
+        validate_context=false,
+    )
+    _validate_matching_pencil_layout(
+        Slm, Tlm, "dist_synthesis_sphtor(::PencilArray)",
+    )
     Slm_dense = SHTnsKit.spectral_pencil_to_matrix(cfg, Slm)
     Tlm_dense = SHTnsKit.spectral_pencil_to_matrix(cfg, Tlm)
     return SHTnsKit.dist_synthesis_sphtor(cfg, Slm_dense, Tlm_dense; prototype_θφ, real_output, use_rfft)
@@ -1344,6 +1390,27 @@ end
 
 function SHTnsKit.dist_synthesis_sphtor!(plan::DistSphtorPlan, Vtθφ_out::PencilArray, Vpθφ_out::PencilArray,
                                          Slm::AbstractMatrix, Tlm::AbstractMatrix; real_output::Bool=true)
+    comm = communicator(plan.prototype_θφ)
+    _validate_cached_plan_cfg(
+        plan.cfg, plan.cfg_fingerprint, comm, "dist_synthesis_sphtor!",
+    )
+    _validate_spatial_pencil_against_prototype(
+        plan.cfg, plan.prototype_θφ, Vtθφ_out, "dist_synthesis_sphtor!",
+    )
+    _validate_spatial_pencil_against_prototype(
+        plan.cfg, plan.prototype_θφ, Vpθφ_out, "dist_synthesis_sphtor!",
+    )
+    _validate_dense_spectral_shapes(
+        plan.cfg, comm, "dist_synthesis_sphtor!", (Slm, Tlm),
+    )
+    _validate_replicated_dense_spectra(
+        plan.cfg, comm, "dist_synthesis_sphtor!", (Slm, Tlm);
+        options=(real_output, plan.use_rfft,
+                 eltype(Vtθφ_out), eltype(Vpθφ_out)),
+        domains=((minimum_l=1, include_m0=true),
+                 (minimum_l=1, include_m0=true)),
+    )
+
     # A complex field cannot be written into real output arrays. Rejected up front,
     # BEFORE any collective; the test is on local eltypes, which every rank agrees
     # on, so all ranks throw together and nothing deadlocks. See the twin in
@@ -1416,7 +1483,7 @@ function _dist_synthesis_sphtor_with_scratch!(cfg::SHTnsKit.SHTConfig, Slm::Abst
     xv = cfg.x  # hoist field read out of the loops below (cfg is mutable, so not auto-hoisted)
 
     # Synthesis loop - accumulate Fourier coefficients
-    for mval in 0:mmax
+    for mval in 0:cfg.mres:mmax
         col = mval + 1
 
         for (ii, iglobθ) in enumerate(θ_globals)
@@ -1507,6 +1574,16 @@ function SHTnsKit.dist_synthesis_qst(cfg::SHTnsKit.SHTConfig, Qlm::AbstractMatri
 end
 
 function SHTnsKit.dist_synthesis_qst(cfg::SHTnsKit.SHTConfig, Qlm::PencilArray, Slm::PencilArray, Tlm::PencilArray; prototype_θφ::PencilArray, real_output::Bool=true, use_rfft::Bool=false)
+    operation = "dist_synthesis_qst(::PencilArray)"
+    _validate_spectral_pencil(cfg, Qlm, prototype_θφ, operation)
+    _validate_spectral_pencil(
+        cfg, Slm, prototype_θφ, operation; validate_context=false,
+    )
+    _validate_spectral_pencil(
+        cfg, Tlm, prototype_θφ, operation; validate_context=false,
+    )
+    _validate_matching_pencil_layout(Qlm, Slm, operation)
+    _validate_matching_pencil_layout(Qlm, Tlm, operation)
     Qlm_dense = SHTnsKit.spectral_pencil_to_matrix(cfg, Qlm)
     Slm_dense = SHTnsKit.spectral_pencil_to_matrix(cfg, Slm)
     Tlm_dense = SHTnsKit.spectral_pencil_to_matrix(cfg, Tlm)
@@ -1571,7 +1648,8 @@ Distribution strategy:
 """
 struct DistributedSpectralPlan
     lmax::Int
-    mmax::Int 
+    mmax::Int
+    mres::Int
     comm::MPI.Comm
     nprocs::Int
     rank::Int
@@ -1588,6 +1666,13 @@ struct DistributedSpectralPlan
 end
 
 function create_distributed_spectral_plan(lmax::Int, mmax::Int, comm::MPI.Comm; mres::Int=1)
+    _validate_replicated_call_signature(
+        comm, "create_distributed_spectral_plan", (lmax, mmax, mres),
+    )
+    valid_dimensions = lmax >= 0 && 0 <= mmax <= lmax && mres > 0
+    MPI.Allreduce(valid_dimensions, &, comm) || throw(ArgumentError(
+        "create_distributed_spectral_plan requires lmax >= mmax >= 0 and mres > 0",
+    ))
     nprocs = MPI.Comm_size(comm)
     rank = MPI.Comm_rank(comm)
 
@@ -1597,7 +1682,7 @@ function create_distributed_spectral_plan(lmax::Int, mmax::Int, comm::MPI.Comm; 
 
     for l in 0:lmax
         if l % nprocs == rank  # This process owns this l
-            for m in 0:min(l, mmax)
+            for m in 0:mres:min(l, mmax)
                 push!(local_lm_indices, (l, m))
                 # Compute packed index for this coefficient (LM_index returns 0-based, add 1)
                 packed_idx = SHTnsKit.LM_index(lmax, mres, l, m) + 1
@@ -1615,7 +1700,7 @@ function create_distributed_spectral_plan(lmax::Int, mmax::Int, comm::MPI.Comm; 
     # This must be computed identically on ALL ranks (no conditional on current rank)
     for l in 0:lmax
         owner_rank = l % nprocs
-        coeff_count = min(l, mmax) + 1  # Number of m values for this l
+        coeff_count = length(0:mres:min(l, mmax))
         recv_counts[owner_rank + 1] += coeff_count
     end
 
@@ -1630,7 +1715,7 @@ function create_distributed_spectral_plan(lmax::Int, mmax::Int, comm::MPI.Comm; 
     send_displs = cumsum([0; send_counts[1:end-1]])
     recv_displs = cumsum([0; recv_counts[1:end-1]])
     
-    return DistributedSpectralPlan(lmax, mmax, comm, nprocs, rank,
+    return DistributedSpectralPlan(lmax, mmax, mres, comm, nprocs, rank,
                                   local_lm_indices, local_packed_indices,
                                   send_counts, recv_counts, send_displs, recv_displs)
 end
@@ -1817,7 +1902,7 @@ function gather_to_dense(dsa::DistributedSpectralArray{T}) where T
 
         for l in 0:lmax
             if l % plan.nprocs == owner_rank
-                for m in 0:min(l, mmax)
+                for m in 0:plan.mres:min(l, mmax)
                     coeff_idx += 1
                     result[l+1, m+1] = all_coefficients[rank_offset + coeff_idx]
                 end
@@ -1856,6 +1941,13 @@ This is more memory-efficient than dist_analysis for large problems.
 function dist_analysis_distributed(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
                                     plan::DistributedSpectralPlan,
                                     use_tables=cfg.use_plm_tables)
+    _validate_distributed_plan_preflight(
+        cfg, plan, fθφ, "dist_analysis_distributed",
+    )
+    _validate_replicated_call_signature(
+        plan.comm, "dist_analysis_distributed", (use_tables, eltype(fθφ)),
+    )
+
     # First do standard analysis to get local contributions
     comm = plan.comm
     lmax, mmax = cfg.lmax, cfg.mmax
@@ -1898,7 +1990,7 @@ function dist_analysis_distributed(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     P = Vector{Float64}(undef, lmax + 1)
 
     # Legendre integration
-    for mval in 0:mmax
+    for mval in 0:cfg.mres:mmax
         col = mval + 1
         for ii in 1:nθ_local
             iglob = θ_globals[ii]
@@ -1922,7 +2014,7 @@ function dist_analysis_distributed(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
 
     # Apply φ scaling only. Nlm is NOT applied here: the normalized recurrence /
     # NP_tables already bake Nlm into P̄.
-    @inbounds for m in 0:mmax
+    @inbounds for m in 0:cfg.mres:mmax
         @simd ivdep for l in m:lmax
             local_contrib[l+1, m+1] *= scaleφ
         end
@@ -1983,6 +2075,13 @@ Note: Internally gathers to dense for now. Future optimization could avoid this.
 """
 function dist_synthesis_distributed(cfg::SHTnsKit.SHTConfig, alm::DistributedSpectralArray;
                                      prototype_θφ::PencilArray, real_output::Bool=true)
+    _validate_distributed_plan_preflight(
+        cfg, alm.plan, prototype_θφ, "dist_synthesis_distributed",
+    )
+    _validate_replicated_call_signature(
+        alm.plan.comm, "dist_synthesis_distributed", (real_output,),
+    )
+
     # Gather to dense array (required for Legendre summation which needs all l for each m)
     alm_dense = gather_to_dense(alm)
 
@@ -2098,6 +2197,7 @@ mutable struct DistributedSpectralPlan2D
     # Pre-allocated scratch buffers (optional - set when with_scratch=true)
     with_scratch::Bool
     scratch::Union{Nothing, _DistributedSpectralPlan2DScratch}
+    scratch_context::Union{Nothing, NamedTuple}
     closed::Bool
 end
 
@@ -2258,6 +2358,41 @@ function create_distributed_spectral_plan_2d(lmax::Int, mmax::Int, comm::MPI.Com
                                               with_scratch::Bool=false,
                                               prototype_θφ::Union{Nothing, PencilArray}=nothing,
                                               cfg::Union{Nothing, SHTnsKit.SHTConfig}=nothing)
+    operation = "create_distributed_spectral_plan_2d"
+    has_prototype = prototype_θφ !== nothing
+    has_cfg = cfg !== nothing
+    _validate_replicated_call_signature(
+        comm, operation,
+        (lmax, mmax, p_l, p_m, mres, with_scratch, has_prototype, has_cfg),
+    )
+    valid_arguments = lmax >= 0 && 0 <= mmax <= lmax && mres > 0 &&
+                      p_l >= 0 && p_m >= 0
+    MPI.Allreduce(valid_arguments, &, comm) || throw(ArgumentError(
+        "$operation requires lmax >= mmax >= 0, mres > 0, and nonnegative process-grid dimensions",
+    ))
+
+    if cfg !== nothing
+        _validate_cfg_replicated(cfg, comm)
+        actual = (cfg.lmax, cfg.mmax, cfg.mres)
+        expected = (lmax, mmax, mres)
+        dimensions_match = MPI.Allreduce(actual == expected, &, comm)
+        dimensions_match || throw(ArgumentError(
+            "create_distributed_spectral_plan_2d configuration " *
+            "(lmax, mmax, mres)=$actual does not match requested plan $expected",
+        ))
+    end
+    if prototype_θφ !== nothing
+        _validate_prototype_communicator(
+            comm, prototype_θφ, operation,
+        )
+        _require_unpermuted_pencil(
+            prototype_θφ, operation,
+        )
+        cfg === nothing || _validate_spatial_shape(
+            cfg, prototype_θφ, comm, operation,
+        )
+    end
+
     nprocs = MPI.Comm_size(comm)
     rank = MPI.Comm_rank(comm)
 
@@ -2267,14 +2402,16 @@ function create_distributed_spectral_plan_2d(lmax::Int, mmax::Int, comm::MPI.Com
     end
 
     # Validate grid
-    if p_l * p_m != nprocs
-        error("Process grid p_l=$p_l × p_m=$p_m = $(p_l * p_m) does not match nprocs=$nprocs")
-    end
+    valid_grid = p_l > 0 && p_m > 0 && p_l * p_m == nprocs
+    MPI.Allreduce(valid_grid, &, comm) || throw(ArgumentError(
+        "Process grid p_l=$p_l × p_m=$p_m = $(p_l * p_m) does not match nprocs=$nprocs",
+    ))
 
     # Validate scratch requirements
-    if with_scratch && (prototype_θφ === nothing || cfg === nothing)
-        error("with_scratch=true requires both prototype_θφ and cfg to be provided")
-    end
+    scratch_arguments_valid = !with_scratch || (has_prototype && has_cfg)
+    MPI.Allreduce(scratch_arguments_valid, &, comm) || throw(ArgumentError(
+        "with_scratch=true requires both prototype_θφ and cfg to be provided",
+    ))
 
     # Compute grid position
     l_rank = rank % p_l      # Row (position within m-group)
@@ -2396,6 +2533,16 @@ function create_distributed_spectral_plan_2d(lmax::Int, mmax::Int, comm::MPI.Com
             nothing
         end
 
+        scratch_context = if with_scratch
+            (
+                cfg_fingerprint = _cfg_fingerprint(cfg),
+                spatial_ranges = PencilArrays.range_local(pencil(prototype_θφ)),
+                spatial_parent_size = Tuple(size(parent(prototype_θφ))),
+            )
+        else
+            nothing
+        end
+
         plan = DistributedSpectralPlan2D(
             lmax, mmax, mres,
             comm, nprocs, rank,
@@ -2405,7 +2552,7 @@ function create_distributed_spectral_plan_2d(lmax::Int, mmax::Int, comm::MPI.Com
             local_lm_indices, local_nlm,
             l_recv_counts, l_recv_displs,
             m_group_nlm,
-            with_scratch, scratch, false
+            with_scratch, scratch, scratch_context, false
         )
         finalizer(plan) do p
             try
@@ -2648,6 +2795,14 @@ function dist_analysis_distributed_2d(cfg::SHTnsKit.SHTConfig, fθφ::PencilArra
                                        plan::DistributedSpectralPlan2D,
                                        use_tables=cfg.use_plm_tables,
                                        assume_aligned::Bool=false)
+    _validate_distributed_plan_preflight(
+        cfg, plan, fθφ, "dist_analysis_distributed_2d",
+    )
+    _validate_replicated_call_signature(
+        plan.comm, "dist_analysis_distributed_2d",
+        (use_tables, assume_aligned, eltype(fθφ)),
+    )
+
     if assume_aligned
         return _dist_analysis_2d_aligned(cfg, fθφ; plan=plan, use_tables=use_tables)
     else
@@ -2702,7 +2857,7 @@ function _dist_analysis_2d_safe(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     local_contrib = zeros(ComplexF64, lmax + 1, mmax + 1)
 
     # Legendre integration for ALL m values
-    for mval in 0:mmax
+    for mval in 0:cfg.mres:mmax
         col = mval + 1
         m_fft = mval + 1
 
@@ -2744,7 +2899,7 @@ function _dist_analysis_2d_safe(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
 
     # Apply φ scaling only. Nlm is NOT applied here: the normalized recurrence /
     # NP_tables already bake Nlm into P̄.
-    @inbounds for m in 0:mmax
+    @inbounds for m in 0:cfg.mres:mmax
         @simd ivdep for l in m:lmax
             local_contrib[l+1, m+1] *= scaleφ
         end
@@ -2789,6 +2944,13 @@ use the specialized `dist_synthesis_distributed_2d_aligned` function.
 """
 function dist_synthesis_distributed_2d(cfg::SHTnsKit.SHTConfig, alm::DistributedSpectralArray2D;
                                         prototype_θφ::PencilArray, real_output::Bool=true)
+    _validate_distributed_plan_preflight(
+        cfg, alm.plan, prototype_θφ, "dist_synthesis_distributed_2d",
+    )
+    _validate_replicated_call_signature(
+        alm.plan.comm, "dist_synthesis_distributed_2d", (real_output,),
+    )
+
     # Gather to full dense array for correctness
     # This ensures correct results regardless of spatial/spectral distribution alignment
     alm_dense = gather_to_full_dense_2d(alm)
@@ -2830,6 +2992,13 @@ Without scratch buffers, each call returns a freshly allocated array.
 function dist_synthesis_distributed_2d_optimized(cfg::SHTnsKit.SHTConfig, alm::DistributedSpectralArray2D;
                                                   prototype_θφ::PencilArray, real_output::Bool=true)
     plan = alm.plan
+    _validate_distributed_plan_preflight(
+        cfg, plan, prototype_θφ, "dist_synthesis_distributed_2d_optimized",
+    )
+    _validate_replicated_call_signature(
+        plan.comm, "dist_synthesis_distributed_2d_optimized", (real_output,),
+    )
+
     lmax, mmax = plan.lmax, plan.mmax
     mres = plan.mres
     nlon = cfg.nlon
@@ -2955,19 +3124,6 @@ function dist_synthesis_distributed_2d_optimized(cfg::SHTnsKit.SHTConfig, alm::D
     # Perform inverse FFT along φ directly into output buffer
     SHTnsKitParallelExt.ifft_along_dim2!(output_buffer, Fθm)
 
-    # Apply Robert form scaling if enabled
-    if cfg.robert_form
-        for ii in 1:nθ_local
-            x_val = x_cache !== nothing ? x_cache[ii] : xv[θ_globals[ii]]
-            sθ = sqrt(max(0.0, 1 - x_val*x_val))
-            if sθ > 0
-                @inbounds for j in 1:nlon
-                    output_buffer[ii, j] *= sθ
-                end
-            end
-        end
-    end
-
     # Return result
     if φ_is_local
         if real_output
@@ -3054,7 +3210,35 @@ function validate_2d_distribution_alignment(plan::DistributedSpectralPlan2D,
     # If all ranks in m_comm have the same θ_hash, distributions are aligned
     all_hashes = MPI.Allgather(UInt64(local_θ_hash), plan.m_comm)
 
-    aligned = all(h == all_hashes[1] for h in all_hashes)
+    same_θ_within_m_row = all(h == all_hashes[1] for h in all_hashes)
+
+    # Analysis reduces latitude contributions within each l_comm.  Those ranks
+    # must therefore partition the global latitude axis exactly once.  Merely
+    # checking m_comm peers is insufficient: when p_m == 1 every m_comm is a
+    # singleton, so a θ×φ spatial pencil used to pass even though each θ slab
+    # appeared once per φ partner and the l_comm reduction over-counted it.
+    θ_counts = collect(Int, MPI.Allgather(length(θ_globals), plan.l_comm))
+    θ_all = Vector{Int}(undef, sum(θ_counts))
+    MPI.Allgatherv!(θ_globals, VBuffer(θ_all, θ_counts), plan.l_comm)
+    nlat = PencilArrays.size_global(prototype_θφ)[1]
+    coverage = zeros(Int, nlat)
+    valid_indices = true
+    for iθ in θ_all
+        if 1 <= iθ <= nlat
+            coverage[iθ] += 1
+        else
+            valid_indices = false
+        end
+    end
+    partitions_θ_within_l_column = valid_indices && all(==(1), coverage)
+    replicated_full_θ = valid_indices &&
+        all(==(nlat), θ_counts) && all(==(length(θ_counts)), coverage)
+
+    # Return one rank-symmetric verdict even if only one process-grid row or
+    # column exposes the mismatch.
+    aligned = MPI.Allreduce(
+        same_θ_within_m_row &&
+            (partitions_θ_within_l_column || replicated_full_θ), &, plan.comm)
 
     if aligned
         return (true, "Spatial and spectral distributions are aligned. " *

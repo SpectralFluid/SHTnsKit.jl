@@ -22,6 +22,56 @@ function _thread_rand_real_alm(rng, lmax, mmax)
     return alm
 end
 
+function _threaded_collect(f, nitems)
+    out = Vector{Any}(undef, nitems)
+    err = try
+        @threads for k in 1:nitems
+            out[k] = f(k)
+        end
+        nothing
+    catch caught
+        caught
+    end
+    return out, err
+end
+
+function _simultaneous_threaded_collect(f)
+    nitems = Threads.nthreads()
+    out = Vector{Any}(undef, nitems)
+    ready = Threads.Atomic{Int}(0)
+    err = try
+        @threads :static for k in 1:nitems
+            Threads.atomic_add!(ready, 1)
+            while ready[] < nitems
+                GC.safepoint()
+            end
+            out[k] = f(k)
+        end
+        nothing
+    catch caught
+        caught
+    end
+    return out, err
+end
+
+_thread_result_isapprox(actual, expected; kwargs...) =
+    isapprox(actual, expected; kwargs...)
+
+function _thread_result_isapprox(actual::Tuple, expected::Tuple; kwargs...)
+    return length(actual) == length(expected) &&
+           all(_thread_result_isapprox(actual[i], expected[i]; kwargs...)
+               for i in eachindex(actual))
+end
+
+function _test_threaded_matches(f, refs; kwargs...)
+    out, err = _threaded_collect(f, length(refs))
+    @test err === nothing
+    if err === nothing
+        @test all(_thread_result_isapprox(out[k], refs[k]; kwargs...)
+                  for k in eachindex(refs))
+    end
+end
+
 @testset "Threading / parallel CPU" begin
     nt = Threads.nthreads()
     VERBOSE && @info "Threads available" nt
@@ -122,9 +172,8 @@ end
     end
 
     @testset "Sequential unrelated configs don't interfere" begin
-        # `analysis` itself uses `@threads :static` internally, which disallows
-        # nesting inside another task. This test verifies that switching cfg
-        # between calls doesn't leak state — not concurrent safety.
+        # Verify that switching cfg between calls doesn't leak cached state.
+        # Concurrent allocating-transform coverage lives in the testsets below.
         lmax_a, lmax_b = 5, 7
         cfg_a = create_gauss_config(lmax_a, lmax_a + 2; nlon=2*lmax_a + 1)
         cfg_b = create_gauss_config(lmax_b, lmax_b + 2; nlon=2*lmax_b + 1)
@@ -143,6 +192,97 @@ end
         @test got_a == ref_a
         @test got_b == ref_b
         @test got_a2 == ref_a
+    end
+
+    @testset "Allocating transforms compose with outer threading" begin
+        lmax = 6
+        config_builders = [
+            ("on-the-fly", () -> create_gauss_config(
+                lmax, lmax + 2; nlon=2*lmax + 1, norm=:schmidt,
+                real_norm=true, cs_phase=false)),
+            ("tables", () -> prepare_plm_tables!(create_gauss_config(
+                lmax, lmax + 2; nlon=2*lmax + 1, norm=:schmidt,
+                real_norm=true, cs_phase=false))),
+        ]
+
+        for (mode, build_config) in config_builders
+            @testset "$mode Legendre evaluation" begin
+                # Compute references with a different config so the config used
+                # by the outer threaded calls retains cold lazy caches.
+                cfg = build_config()
+                ref_cfg = build_config()
+                ntasks = max(2, 2 * nt)
+                rng = MersenneTwister(mode == "tables" ? 1450 : 1475)
+
+                fields = [randn(rng, cfg.nlat, cfg.nlon) for _ in 1:ntasks]
+                analysis_refs = [analysis(ref_cfg, fields[k]) for k in 1:ntasks]
+                @testset "scalar analysis" begin
+                    _test_threaded_matches(k -> analysis(cfg, fields[k]), analysis_refs;
+                                           rtol=1e-12, atol=1e-14)
+                end
+
+                alms = [_thread_rand_real_alm(rng, lmax, lmax) for _ in 1:ntasks]
+                synthesis_refs = [synthesis(ref_cfg, alms[k]; real_output=true)
+                                  for k in 1:ntasks]
+                @testset "scalar synthesis" begin
+                    _test_threaded_matches(
+                        k -> synthesis(cfg, alms[k]; real_output=true), synthesis_refs;
+                        rtol=1e-12, atol=1e-14)
+                end
+
+                Ss = [_thread_rand_real_alm(rng, lmax, lmax) for _ in 1:ntasks]
+                Ts = [_thread_rand_real_alm(rng, lmax, lmax) for _ in 1:ntasks]
+                vector_refs = [synthesis_sphtor(ref_cfg, Ss[k], Ts[k]; real_output=true)
+                               for k in 1:ntasks]
+                @testset "vector synthesis" begin
+                    _test_threaded_matches(
+                        k -> synthesis_sphtor(cfg, Ss[k], Ts[k]; real_output=true),
+                        vector_refs; rtol=1e-11, atol=1e-13)
+                end
+
+                vector_analysis_refs = [analysis_sphtor(ref_cfg, vector_refs[k]...)
+                                        for k in 1:ntasks]
+                @testset "vector analysis" begin
+                    _test_threaded_matches(
+                        k -> analysis_sphtor(cfg, vector_refs[k]...), vector_analysis_refs;
+                        rtol=1e-11, atol=1e-13)
+                end
+            end
+        end
+    end
+
+    @testset "Cold OTF scratch initialization is concurrent-safe" begin
+        # This is the intermediate state produced by `resize!` before its new
+        # slots are populated. The cache initializer must never expose or choke
+        # on such slots when several transforms first touch a config together.
+        partial = Vector{Vector{Float64}}(undef, Threads.maxthreadid())
+        @test SHTnsKit._ensure_otf_scratch!(partial, 8) === partial
+        @test all(i -> isassigned(partial, i) && length(partial[i]) == 9,
+                  eachindex(partial))
+
+        large = [Vector{Float64}(undef, 101) for _ in 1:Threads.maxthreadid()]
+        @test SHTnsKit._ensure_otf_scratch!(large, 10) === large
+        @test all(buffer -> length(buffer) == 101, large)
+
+        for trial in 1:(nt == 1 ? 1 : 8)
+            cfg = create_gauss_config(8, 10; nlon=17, norm=:schmidt,
+                                      real_norm=true, cs_phase=false)
+            ref_cfg = create_gauss_config(8, 10; nlon=17, norm=:schmidt,
+                                          real_norm=true, cs_phase=false)
+            rng = MersenneTwister(1600 + trial)
+            Ss = [_thread_rand_real_alm(rng, cfg.lmax, cfg.mmax) for _ in 1:nt]
+            Ts = [_thread_rand_real_alm(rng, cfg.lmax, cfg.mmax) for _ in 1:nt]
+            refs = [synthesis_sphtor(ref_cfg, Ss[k], Ts[k]; real_output=true)
+                    for k in 1:nt]
+
+            out, err = _simultaneous_threaded_collect(
+                k -> synthesis_sphtor(cfg, Ss[k], Ts[k]; real_output=true))
+            @test err === nothing
+            if err === nothing
+                @test all(_thread_result_isapprox(out[k], refs[k]; rtol=1e-11, atol=1e-13)
+                          for k in eachindex(refs))
+            end
+        end
     end
 
     @testset "Per-thread sphtor plan: concurrent vector synthesis" begin

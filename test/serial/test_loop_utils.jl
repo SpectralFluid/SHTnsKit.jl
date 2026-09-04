@@ -6,6 +6,17 @@ using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
+# Minimal array wrapper whose type name exercises the GPU dispatch branch without
+# requiring a CUDA-capable host. The injected launcher below executes the body on
+# the CPU; the contract under test is the macro-to-extension handoff.
+struct TestCuArray{T,N} <: AbstractArray{T,N}
+    data::Array{T,N}
+end
+
+Base.size(a::TestCuArray) = size(a.data)
+Base.getindex(a::TestCuArray, I...) = getindex(a.data, I...)
+Base.setindex!(a::TestCuArray, value, I...) = setindex!(a.data, value, I...)
+
 @testset "Loop Utilities" begin
     @testset "loop_backend" begin
         @test SHTnsKit.loop_backend() isa String
@@ -137,5 +148,39 @@ using SHTnsKit
         s2 = collect(1.0:5.0)
         SHTnsKit.@sht_loop d2[i] = s2[i] + s2[i] over i ∈ 1:5
         @test d2 ≈ 2 .* s2
+    end
+
+    @testset "@sht_loop GPU launcher contract" begin
+        old_available = SHTnsKit._GPU_LOOP_AVAILABLE[]
+        old_launcher = SHTnsKit._GPU_KERNEL_LAUNCHER[]
+        old_backend = SHTnsKit.loop_backend()
+        launches = Ref(0)
+
+        launcher = function (args...)
+            range = args[end - 1]
+            body = args[end]
+            launches[] += 1
+            foreach(body, range)
+            return nothing
+        end
+
+        try
+            SHTnsKit.set_loop_backend("auto")
+            SHTnsKit._enable_gpu_loops!(launcher)
+
+            src = TestCuArray(reshape(collect(1.0:6.0), 2, 3))
+            dest = TestCuArray(zeros(2, 3))
+            holder = (scale = 2.5,)
+            offset = -0.25
+
+            SHTnsKit.@sht_loop dest[i, j] = holder.scale * src[i, j] + offset over (i, j) ∈ CartesianIndices(dest)
+
+            @test launches[] == 1
+            @test dest.data ≈ holder.scale .* src.data .+ offset
+        finally
+            SHTnsKit._GPU_LOOP_AVAILABLE[] = old_available
+            SHTnsKit._GPU_KERNEL_LAUNCHER[] = old_launcher
+            SHTnsKit.set_loop_backend(old_backend)
+        end
     end
 end
