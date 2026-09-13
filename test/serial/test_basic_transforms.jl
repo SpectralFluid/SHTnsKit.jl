@@ -8,7 +8,54 @@ using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
+# Allocation budgets below are calibrated for a SINGLE-THREADED run, where they
+# are exact. The shared m-loop orchestrators start `@threads` tasks whenever
+# threads are available, and each threaded region costs a few hundred bytes to
+# spawn — a constant independent of problem size, and not the kind of regression
+# these budgets exist to catch (a per-row temporary or a dense zero spectrum
+# costs tens of KB and grows with lmax). Allow a per-thread slack rather than
+# letting the whole suite go red on any multi-core machine; note this makes the
+# budgets coarse at `nthreads > 1`, so the tight check is the 1-thread run.
+@isdefined(_thread_alloc_slack) ||
+    (_thread_alloc_slack() = Threads.nthreads() > 1 ? 4_096 * Threads.nthreads() : 0)
+
 @testset "Basic Scalar Transforms" begin
+    @testset "Real coefficient matrices" begin
+        for T in (Float32, Float64, Int), norm in (:orthonormal, :schmidt)
+            T === Int && norm !== :orthonormal && continue
+            cfg = create_gauss_config(3, 5; norm)
+            alm = zeros(T, cfg.lmax + 1, cfg.mmax + 1)
+            alm[2, 1] = 1
+            alm[3, 2] = 2
+            alm[4, 3] = -1
+            original = copy(alm)
+            complex_alm = complex.(float.(alm))
+            expected = synthesis(cfg, complex_alm)
+            expected_cplx = synthesis_cplx(cfg, complex_alm)
+            tolerance = T === Float32 ? 1e-5 : 1e-12
+
+            @test synthesis(cfg, alm) ≈ expected rtol=tolerance
+            @test synthesis_cplx(cfg, alm) ≈ expected_cplx rtol=tolerance
+            @test synthesis(cfg, alm; real_output=false) ≈ expected_cplx rtol=tolerance
+            for use_rfft in (false, true)
+                @test synthesis(cfg, alm; use_rfft) ≈ expected rtol=tolerance
+                out = similar(expected)
+                @test synthesis!(cfg, out, alm; use_rfft) === out
+                @test out ≈ expected rtol=tolerance
+            end
+            out_cplx = similar(expected_cplx)
+            @test synthesis!(cfg, out_cplx, alm; real_output=false) === out_cplx
+            @test out_cplx ≈ expected_cplx rtol=tolerance
+
+            # QST degree truncation reuses the scalar synthesis helper.
+            zero_coeffs = zeros(eltype(complex_alm), size(alm))
+            expected_l = synthesis_qst_l(cfg, complex_alm, zero_coeffs, zero_coeffs, 2)[1]
+            @test synthesis_qst_l(cfg, alm, zero_coeffs, zero_coeffs, 2)[1] ≈
+                  expected_l rtol=tolerance
+            @test alm == original
+        end
+    end
+
     @testset "Analysis-synthesis roundtrip" begin
         lmax = 10
         nlat = lmax + 2
@@ -259,7 +306,7 @@ using SHTnsKit
             # Julia/FFTW patch versions can impose a small constant allocation
             # floor around plan execution. Keep the budget below scratch-sized
             # allocations while allowing the observed Julia 1.10 Linux floor.
-            rfft_alloc_budget = 2_048
+            rfft_alloc_budget = 2_048 + _thread_alloc_slack()
             @test @allocated(analysis!(cfg, alm_out, f; fft_scratch=rfft_scratch, use_rfft=true)) <= rfft_alloc_budget
             @test @allocated(synthesis!(cfg, f_out, alm_c; real_output=true, fft_scratch=rfft_scratch, use_rfft=true)) <= rfft_alloc_budget
 

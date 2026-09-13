@@ -30,6 +30,34 @@ end
 _wmat(lmax) = Float64[(m == 0 ? 1.0 : 2.0) for l in 0:lmax, m in 0:lmax]
 
 @testset "Vorticity inverse-problem diagnostics" begin
+    @testset "inverse gradients include synthesis phi scaling" begin
+        rng = MersenneTwister(910)
+        for norm in (:orthonormal, :schmidt), scaling in (:configured_quad, :environment_quad, :environment_dft)
+            cfg = create_gauss_config(3, 5; norm, real_norm=true, cs_phase=false)
+            cfg.phi_scale = scaling === :environment_quad ? :dft : :quad
+            override = scaling === :configured_quad ? nothing :
+                       scaling === :environment_quad ? "quad" : "dft"
+            withenv("SHTNSKIT_PHI_SCALE" => override) do
+                T0 = _rand_Tlm(rng, cfg.lmax)
+                target = randn(rng, cfg.nlat, cfg.nlon)
+                # Check m=0 separately from the Hermitian-weighted m>0 modes.
+                for m in (0, 1)
+                    h = zeros(ComplexF64, size(T0))
+                    h[3, m + 1] = m == 0 ? 1 : 0.7 + 0.4im
+                    epsilon = 1e-6
+                    fd = (loss_vorticity_grid(cfg, T0 .+ epsilon .* h, target) -
+                          loss_vorticity_grid(cfg, T0 .- epsilon .* h, target)) / (2epsilon)
+                    g = grad_loss_vorticity_Tlm(cfg, T0, target)
+                    loss, combined_g = loss_and_grad_vorticity_Tlm(cfg, T0, target)
+                    W = _wmat(cfg.lmax)
+                    @test real(sum(W .* conj(g) .* h)) ≈ fd rtol=2e-5 atol=2e-7
+                    @test real(sum(W .* conj(combined_g) .* h)) ≈ fd rtol=2e-5 atol=2e-7
+                    @test loss ≈ loss_vorticity_grid(cfg, T0, target)
+                end
+            end
+        end
+    end
+
     lmax = 6
     nlat = lmax + 2
     nlon = 2 * lmax + 1

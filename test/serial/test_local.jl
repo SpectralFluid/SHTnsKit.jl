@@ -8,6 +8,45 @@ using Random
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
 @testset "Local Evaluations" begin
+    @testset "Robert-form local vector evaluations match grid synthesis" begin
+        for grid in (:gauss, :regular_poles), mres in (1, 2)
+            cfg = create_config(3; grid_type=grid, nlat=5, mres,
+                                robert_form=true, norm=:schmidt,
+                                real_norm=true, cs_phase=false)
+            Q = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+            S = copy(Q)
+            T = copy(Q)
+            Q[1, 1] = 0.8
+            S[2, 1] = 0.7
+            S[4, 1] = -0.3
+            S[3, mres + 1] = 0.4 + 0.2im
+            T[4, mres + 1] = -0.2 + 0.6im
+            packed = map(A -> SHTnsKit.pack_lm(cfg, A), (Q, S, T))
+            fields = synthesis_qst(cfg, Q, S, T)
+            grad_fields = synthesis_sph(cfg, S)
+
+            for i in (1, 2, cfg.nlat)
+                x = cfg.x[i]
+                lat = SHqst_to_lat(cfg, packed..., x)
+                point = SHTnsKit.SHqst_to_point(cfg, packed..., x, cfg.φ[2])
+                grad = SHTnsKit.SH_to_grad_point(cfg, packed[1], packed[2], x, cfg.φ[2])
+                for component in 1:3
+                    @test lat[component] ≈ fields[component][i, :] rtol=1e-11 atol=1e-12
+                    @test point[component] ≈ fields[component][i, 2] rtol=1e-11 atol=1e-12
+                end
+                @test grad[1] == 0
+                @test grad[2] ≈ grad_fields[1][i, 2] rtol=1e-11 atol=1e-12
+                @test grad[3] ≈ grad_fields[2][i, 2] rtol=1e-11 atol=1e-12
+
+                truncated = SHqst_to_lat(cfg, packed..., x; ltr=2)
+                truncated_fields = synthesis_qst_l(cfg, Q, S, T, 2)
+                for component in 1:3
+                    @test truncated[component] ≈ truncated_fields[component][i, :] rtol=1e-11 atol=1e-12
+                end
+            end
+        end
+    end
+
     @testset "SH_to_lat matches synthesis at grid latitudes" begin
         lmax = 8
         nlat = lmax + 2

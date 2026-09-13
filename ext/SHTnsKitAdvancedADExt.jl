@@ -317,8 +317,7 @@ import SHTnsKit: wigner_d_matrix_deriv
 # STANDARD packed inner product ⟨a,b⟩=Σ conj(a)b, so the correct adjoint of a
 # rotation R is Q̄ = W·R⁻¹·(W⁻¹ ȳ) with W = diag(wm), wm = 2 for m>0. (For the
 # diagonal Z-rotation W cancels.) All four Q̄ formulas below are FD-verified in
-# test/serial/test_rotation_gradients.jl; the angle (dα) gradients were already
-# correct and are unchanged.
+# test/serial/test_rotation_gradients.jl, along with the angle (dα) gradients.
 _rot_wm(cfg) = Float64[cfg.mi[k] == 0 ? 1.0 : 2.0 for k in 1:cfg.nlm]
 
 function _configured_rotation_adjoint!(cfg, r, ȳ, Q̄)
@@ -337,6 +336,9 @@ end
 
 function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Zrotate), cfg::SHTnsKit.SHTConfig, Qlm, alpha::Real, Rlm)
     y = SHTnsKit.SH_Zrotate(cfg, Qlm, alpha, Rlm)
+    # In-place rotation overwrites Qlm, and callers may reuse either buffer
+    # before the pullback. Preserve the primal values needed for dR/dα.
+    rotated = copy(y)
     function pullback(ȳ)
         # Diagonal rotation Rlm = Qlm·e^{-imα} ⇒ Q̄ = ȳ·e^{imα} = SH_Zrotate(ȳ, -α).
         Q̄ = similar(Qlm)
@@ -347,9 +349,7 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Zrotate), cfg::SHTnsKit.SHTCo
             (m % cfg.mres == 0) || continue
             for l in m:cfg.lmax
                 lm = LM_index(cfg.lmax, cfg.mres, l, m) + 1
-                # R = Q * e^{-i m α}
-                Rval = Qlm[lm] * cis(-m * alpha)
-                dα += real(conj(ȳ[lm]) * ((0 - 1im) * m * Rval))
+                dα += real(conj(ȳ[lm]) * ((0 - 1im) * m * rotated[lm]))
             end
         end
         return NoTangent(), NoTangent(), Q̄, dα, ZeroTangent()
@@ -358,16 +358,20 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Zrotate), cfg::SHTnsKit.SHTCo
 end
 
 function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Yrotate), cfg::SHTnsKit.SHTConfig, Qlm, alpha::Real, Rlm)
+    # Snapshot BEFORE the primal: an in-place rotation (Rlm === Qlm) overwrites
+    # Qlm, and callers may reuse either buffer before the pullback runs. The dα
+    # formula needs the *input* coefficients, so they must be preserved here.
+    Qlm_saved = copy(Qlm)
     y = SHTnsKit.SH_Yrotate(cfg, Qlm, alpha, Rlm)
     function pullback(ȳ)
         inverse = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
         SHTnsKit.shtns_rotation_set_angles_ZYZ(inverse, 0.0, -alpha, 0.0)
-        Q̄ = similar(Qlm)
+        Q̄ = similar(Qlm_saved)
         _configured_rotation_adjoint!(cfg, inverse, ȳ, Q̄)
         # angle gradient via d/dβ of Wigner-d at β=alpha
         dα = 0.0
         lmax, mmax = cfg.lmax, cfg.mmax
-        Qlm_canonical = SHTnsKit._internal_coefficients(Qlm, cfg)
+        Qlm_canonical = SHTnsKit._internal_coefficients(Qlm_saved, cfg)
         ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
         for l in 0:lmax
             mm = min(l, mmax)
@@ -428,10 +432,14 @@ end
 
 # Adjoint for complex rotation using conjugate-transpose of Wigner-D
 function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_cplx), r::SHTnsKit.SHTRotation, Zlm, Rlm)
+    # Snapshot BEFORE the primal — the per-l blocks are read then written, so an
+    # in-place call (Rlm === Zlm) is legal and overwrites the input the angle
+    # gradients below depend on. See the same fix on SH_Zrotate / SH_Yrotate.
+    Zlm_saved = copy(Zlm)
     y = SHTnsKit.shtns_rotation_apply_cplx(r, Zlm, Rlm)
     function pullback(ȳ)
         lmax, mmax = r.lmax, r.mmax
-        Z̄ = similar(Zlm)
+        Z̄ = similar(Zlm_saved)
         fill!(Z̄, zero(eltype(Z̄)))
         α, β, γ = SHTnsKit._rotation_zyz_angles(r)
         # This pullback reimplements the Wigner engine, which works in the Y_l^m
@@ -446,7 +454,7 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_cplx), r::S
         # `ȳ` is the closure's own argument and would be safe, but is renamed too
         # so the pair reads the same way.
         ε = SHTnsKit._lmcplx_ybasis_signs(lmax, mmax)
-        Zε = ε .* Zlm
+        Zε = ε .* Zlm_saved
         ȳε = ε .* ȳ
         gα = 0.0; gβ = 0.0; gγ = 0.0
         for l in 0:lmax
@@ -522,11 +530,16 @@ end
 
 # Adjoint for real packed rotation: extend to full, apply cplx adjoint, fold back
 function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_real), r::SHTnsKit.SHTRotation, Qlm, Rlm)
+    # Snapshot BEFORE the primal: the input is fully expanded into a scratch
+    # LM_cplx buffer before anything is written back, so an in-place call
+    # (Rlm === Qlm) is legal and clobbers the coefficients the angle gradients
+    # below reconstruct `b` from. Same fix as SH_Zrotate / SH_Yrotate.
+    Qlm_saved = copy(Qlm)
     y = SHTnsKit.shtns_rotation_apply_real(r, Qlm, Rlm)
     function pullback(ȳ)
         lmax, mmax = r.lmax, r.mmax
         # Extend cotangent on packed to full complex
-        Zbar_full = zeros(eltype(Qlm), SHTnsKit.nlm_cplx_calc(lmax, mmax, 1))
+        Zbar_full = zeros(eltype(Qlm_saved), SHTnsKit.nlm_cplx_calc(lmax, mmax, 1))
         for l in 0:lmax
             mm = min(l, mmax)
             # m = 0
@@ -577,11 +590,11 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_real), r::S
                 b[mp + l + 1] = (SHTnsKit.LM_cplx_index(lmax, mmax, l, mp) >= 0) ? (begin
                     # reconstruct from packed Qlm
                     if mp == 0
-                        Qlm[SHTnsKit.LM_index(lmax, 1, l, 0) + 1]
+                        Qlm_saved[SHTnsKit.LM_index(lmax, 1, l, 0) + 1]
                     elseif mp > 0
-                        Qlm[SHTnsKit.LM_index(lmax, 1, l, mp) + 1]
+                        Qlm_saved[SHTnsKit.LM_index(lmax, 1, l, mp) + 1]
                     else
-                        (-1)^(-mp) * conj(Qlm[SHTnsKit.LM_index(lmax, 1, l, -mp) + 1])
+                        (-1)^(-mp) * conj(Qlm_saved[SHTnsKit.LM_index(lmax, 1, l, -mp) + 1])
                     end
                 end) : 0
                 b[mp + l + 1] *= cis(-mp * γ)
@@ -603,7 +616,7 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_real), r::S
             end
         end
         # Fold back to packed positive-m: q̄(m) = Z̄(m) + (-1)^m conj(Z̄(-m))
-        Q̄ = zeros(eltype(Qlm), length(Qlm))
+        Q̄ = zeros(eltype(Qlm_saved), length(Qlm_saved))
         for l in 0:lmax
             mm = min(l, mmax)
             # m=0

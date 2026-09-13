@@ -97,6 +97,23 @@ Currently supports fast rotation around the Z-axis by angle `alpha` in radians.
 
 Rotate a real-field SH expansion around the Z-axis by angle `alpha`.
 Input and output are packed `Qlm` vectors (LM order, m ≥ 0). In-place supported if `Rlm === Qlm`.
+
+# Sign convention
+
+`R_lm = Q_lm · exp(-i m α)`. This is the **active** rotation of the field by `+α`
+about `ẑ`: the rotated field is `g(θ, φ) = f(θ, φ - α)`. Equivalently, a feature
+at longitude `φ₀` moves to `φ₀ + α`.
+
+Three things pin this sign and would all break if it were flipped to `+imα`
+(which is the *passive* convention, `f(θ, φ + α)`):
+
+  * the spatial rotation above, verified directly in
+    `test/serial/test_rotations.jl` against an FFT-grid φ shift;
+  * the general Wigner engine — `shtns_rotation_apply_real` with
+    `ZYZ(α, 0, 0)` (or `ZYZ(0, 0, α)`) must equal this function, and it builds
+    `diag(e^{-imα}) · d(β) · diag(e^{-imγ})`;
+  * the distributed twins `dist_SH_Zrotate` in `src/parallel_dense.jl` and
+    `ext/ParallelRotationsPencil.jl`, and every rotation `rrule`.
 """
 function SH_Zrotate(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real, Rlm::AbstractVector{<:Complex})
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm length must be nlm=$(cfg.nlm)"))
@@ -527,14 +544,35 @@ function shtns_rotation_apply_cplx(r::SHTRotation, Zlm::AbstractVector{<:Complex
 end
 
 """
+    _rotation_packed_length_check(v, expected, name)
+
+Length guard for the packed rotation inputs, with an `mres`-aware message.
+"""
+function _rotation_packed_length_check(v::AbstractVector, expected::Int,
+                                       name::AbstractString, r::SHTRotation)
+    length(v) == expected && return nothing
+    throw(DimensionMismatch(
+        "$name has length $(length(v)), expected $expected for the packed (mres=1) " *
+        "layout at lmax=$(r.lmax), mmax=$(r.mmax). A Y/X rotation mixes azimuthal " *
+        "orders, so it cannot be represented in an mres-strided layout at all — an " *
+        "mres>1 config produces a shorter packed vector and lands here. Use mres=1 " *
+        "for rotations other than SH_Zrotate."))
+end
+
+"""
     shtns_rotation_apply_real(r::SHTRotation, Qlm::AbstractVector{<:Complex}, Rlm::AbstractVector{<:Complex})
 
 Apply rotation to real-field SH coefficients in packed LM layout (m ≥ 0). Requires `mres==1`.
 """
 function shtns_rotation_apply_real(r::SHTRotation, Qlm::AbstractVector{<:Complex}, Rlm::AbstractVector{<:Complex})
     expected = nlm_calc(r.lmax, r.mmax, 1)
-    length(Qlm) == expected || throw(DimensionMismatch("LM packed size mismatch"))
-    length(Rlm) == expected || throw(DimensionMismatch("LM packed size mismatch"))
+    # A length mismatch here is almost always an `mres > 1` config reaching a
+    # rotation that mixes orders, which no mres-strided layout can represent.
+    # Say that, rather than reporting a bare size mismatch the caller has to
+    # reverse-engineer. (`dist_SH_Yrotate` and the packed distributed rotations
+    # state the same restriction up front.)
+    _rotation_packed_length_check(Qlm, expected, "Qlm", r)
+    _rotation_packed_length_check(Rlm, expected, "Rlm", r)
     # Build LM_cplx array Zlm from real-packed Qlm using this layout's Hermitian
     # rule a_{-m} = conj(a_m) — NO (-1)^m; see the note at the write below and
     # `_lmcplx_ybasis_signs` for why the CS factor lives inside apply_cplx now.

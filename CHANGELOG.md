@@ -37,6 +37,38 @@ coefficient was `1/2π` too small — they inverted neither `synthesis_axisym` n
 the m=0 column of the full `analysis`. They now agree with both. Anything that
 compensated for the old scale downstream must drop that compensation.
 
+**Z-axis and X-axis rotations now rotate in the documented direction; `SH_Zrotate`
+and `SH_Xrotate90` return different values.**
+Through v2.0.0 the package disagreed with itself about the sign of a rotation.
+`SH_Zrotate` applied `R_lm = Q_lm · exp(+imα)` while the general Wigner engine
+behind `shtns_rotation_apply_real` / `shtns_rotation_apply_cplx` — and therefore
+`SH_Yrotate` — applied `exp(-imα)`, so `SH_Zrotate(cfg, Qlm, α, Rlm)` and
+`shtns_rotation_apply_real` with `ZYZ(α, 0, 0)` were *different rotations* of the
+same field. `SH_Xrotate90` had the matching defect in its Euler triple: it used
+`ZYZ(π/2, π/2, -π/2)`, which is `Rx(-π/2)` — the inverse of the +90° rotation its
+name promises.
+
+Everything now uses the **active** convention: `R_lm = Q_lm · exp(-imα)`, meaning
+the field is rotated by `+α` about the axis, `g(θ, φ) = f(θ, φ - α)`, so a feature
+at longitude `φ₀` moves to `φ₀ + α`. This is pinned against three independent
+references — a real φ shift on the FFT grid, the ZYZ engine, and the distributed
+twins — and matches the old `exp(+imα)` result only at `α = 0` (at `lmax = 6` the
+two differ by 1.46 in relative norm; `SH_Xrotate90`'s old and new results differ
+by 1.34).
+
+Affected: `SH_Zrotate`, `SH_Xrotate90`, and both distributed Z-rotations
+(`dist_SH_Zrotate` in `src/parallel_dense.jl` and in the PencilArray extension,
+which had followed `SH_Zrotate`'s old sign). `SH_Yrotate`, `SH_Yrotate90`,
+`shtns_rotation_apply_real` and `shtns_rotation_apply_cplx` are **unchanged** —
+they were already on the new convention, which is why the two disagreed.
+
+*Porting:* to reproduce the old output, negate the angle —
+`SH_Zrotate(cfg, Qlm, -α, Rlm)` and `dist_SH_Zrotate(cfg, Alm, -α, Rlm)`. For
+`SH_Xrotate90`, apply the new one three times, or call
+`shtns_rotation_apply_real` with `ZXZ(0, -π/2, 0)`. Code that mixed `SH_Zrotate`
+with `SH_Yrotate` or the Euler-angle API was getting inconsistent results before
+and needs no compensation now.
+
 ### Fixed
 
 - **Silent precision loss in batch QST/sphtor transforms.** `analysis_qst_batch`,

@@ -198,6 +198,8 @@ end
     dist_SHqst_to_point(cfg, Q_p::PencilArray, S_p::PencilArray, T_p::PencilArray, cost, phi) -> (vr, vt, vp)
 
 `Q_p`/`S_p`/`T_p` hold coefficients in `cfg`'s public convention.
+When `cfg.robert_form` is enabled, the tangential components include the
+`sin(θ)` factor used by full-grid vector synthesis; the radial component is unchanged.
 """
 function SHTnsKit.dist_SHqst_to_point(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S_p::PencilArray, T_p::PencilArray, cost::Real, phi::Real)
     comm, lloc, mloc, gl_l, gl_m =
@@ -262,6 +264,11 @@ function SHTnsKit.dist_SHqst_to_point(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray,
     end
     # One batched collective instead of three separate round-trips (vr,vt,vp).
     red = MPI.Allreduce!(ComplexF64[vr_local, vt_local, vp_local], +, comm)
+    if cfg.robert_form
+        sθ = sqrt(max(0.0, 1 - x * x))
+        red[2] *= sθ
+        red[3] *= sθ
+    end
     return real(red[1]), real(red[2]), real(red[3])
 end
 
@@ -270,6 +277,8 @@ end
                       nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax) -> Vr, Vt, Vp
 
 `Q_p`/`S_p`/`T_p` hold coefficients in `cfg`'s public convention.
+When `cfg.robert_form` is enabled, the tangential components include the
+`sin(θ)` factor used by full-grid vector synthesis; the radial component is unchanged.
 """
 function SHTnsKit.dist_SHqst_to_lat(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S_p::PencilArray, T_p::PencilArray, cost::Real;
                                     nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax)
@@ -343,6 +352,12 @@ function SHTnsKit.dist_SHqst_to_lat(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S
     # One batched collective over the stacked (Vr,Vt,Vp) buffer instead of three.
     combined = vcat(Vr_local, Vt_local, Vp_local)
     MPI.Allreduce!(combined, +, comm)
+    if cfg.robert_form
+        sθ = sqrt(max(0.0, 1 - x * x))
+        @inbounds for j in (nphi + 1):3nphi
+            combined[j] *= sθ
+        end
+    end
     return real.(@view combined[1:nphi]),
            real.(@view combined[nphi+1:2nphi]),
            real.(@view combined[2nphi+1:3nphi])

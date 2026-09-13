@@ -112,6 +112,7 @@ end
         -> vr::Float64, vt::Float64, vp::Float64
 
 Evaluate 3D field at a single point using packed real spectra.
+Tangential components use Robert-form scaling when configured, as in grid synthesis.
 """
 function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::AbstractVector{<:Complex}, Tlm::AbstractVector{<:Complex}, cost::Real, phi::Real)
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm length"))
@@ -170,6 +171,10 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
         vt += 2 * real(gvt * ph)
         vp += 2 * real(gvp * ph)
     end
+    if cfg.robert_form
+        vt *= sθ
+        vp *= sθ
+    end
     return real(vr), real(vt), real(vp)
 end
 
@@ -179,6 +184,7 @@ end
 
 Evaluate gradient of a scalar field at a point. Vr is returned as 0.0.
 `DrSlm` is ignored for this pure-Julia core.
+Tangential components use Robert-form scaling when configured.
 """
 function SH_to_grad_point(cfg::SHTConfig, ::AbstractVector{<:Complex}, Slm::AbstractVector{<:Complex}, cost::Real, phi::Real)
     length(Slm) == cfg.nlm || throw(DimensionMismatch("Slm length"))
@@ -219,6 +225,11 @@ function SH_to_grad_point(cfg::SHTConfig, ::AbstractVector{<:Complex}, Slm::Abst
         vt += 2 * real(gvt * ph)
         vp += 2 * real(gvp * ph)
     end
+    if cfg.robert_form
+        sθ = sqrt(max(0.0, 1 - x*x))
+        vt *= sθ
+        vp *= sθ
+    end
     return zero(real(CT)), real(vt), real(vp)
 end
 
@@ -228,6 +239,7 @@ end
 
 Evaluate 3D field along latitude (cosθ = cost) at `nphi` longitudes from packed real spectra.
 Inputs `Qlm, Slm, Tlm` are all packed (LM order) vectors for each component.
+Tangential components use Robert-form scaling when configured, as in grid synthesis.
 """
 function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::AbstractVector{<:Complex}, Tlm::AbstractVector{<:Complex}, cost::Real;
                       nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax)
@@ -301,6 +313,11 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
             Vt[j+1] += 2 * real(gθ * phase)
             Vp[j+1] += 2 * real(gφ * phase)
         end
+    end
+    if cfg.robert_form
+        sθ = sqrt(max(0.0, 1 - x*x))
+        Vt .*= sθ
+        Vp .*= sθ
     end
     return Vr, Vt, Vp
 end

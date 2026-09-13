@@ -756,27 +756,27 @@ function synthesis_tor_l_cplx(cfg::SHTConfig, Tlm::AbstractMatrix, ltr::Int)
 end
 
 """
-    synthesis_sph_ml(cfg::SHTConfig, im::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
+    synthesis_sph_ml(cfg::SHTConfig, mval::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
 
 Mode-limited spheroidal-only synthesis wrapper.
 """
-function synthesis_sph_ml(cfg::SHTConfig, im::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
+function synthesis_sph_ml(cfg::SHTConfig, mval::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
     # Mode-limited wrappers use zero-vector views for the missing component;
-    # this avoids an O(ltr-im) allocation on repeated per-mode calls.
+    # this avoids an O(ltr-mval) allocation on repeated per-mode calls.
     Tl_zero = _zero_spectral_vector(eltype(Sl), length(Sl))
-    return synthesis_sphtor_ml(cfg, im, Sl, Tl_zero, ltr)
+    return synthesis_sphtor_ml(cfg, mval, Sl, Tl_zero, ltr)
 end
 
 """
-    synthesis_tor_ml(cfg::SHTConfig, im::Int, Tl::AbstractVector{<:Complex}, ltr::Int)
+    synthesis_tor_ml(cfg::SHTConfig, mval::Int, Tl::AbstractVector{<:Complex}, ltr::Int)
 
 Mode-limited toroidal-only synthesis wrapper.
 """
-function synthesis_tor_ml(cfg::SHTConfig, im::Int, Tl::AbstractVector{<:Complex}, ltr::Int)
+function synthesis_tor_ml(cfg::SHTConfig, mval::Int, Tl::AbstractVector{<:Complex}, ltr::Int)
     # Mode-limited wrappers use zero-vector views for the missing component;
-    # this avoids an O(ltr-im) allocation on repeated per-mode calls.
+    # this avoids an O(ltr-mval) allocation on repeated per-mode calls.
     Sl_zero = _zero_spectral_vector(eltype(Tl), length(Tl))
-    return synthesis_sphtor_ml(cfg, im, Sl_zero, Tl, ltr)
+    return synthesis_sphtor_ml(cfg, mval, Sl_zero, Tl, ltr)
 end
 
 """
@@ -930,10 +930,10 @@ function synthesis_grad_l(cfg::SHTConfig, Slm::AbstractMatrix, ltr::Int; real_ou
 end
 
 """
-    synthesis_grad_ml(cfg::SHTConfig, im::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
+    synthesis_grad_ml(cfg::SHTConfig, mval::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
 
 Mode-limited gradient synthesis alias.
 """
-function synthesis_grad_ml(cfg::SHTConfig, im::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
-    return synthesis_sph_ml(cfg, im, Sl, ltr)
+function synthesis_grad_ml(cfg::SHTConfig, mval::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
+    return synthesis_sph_ml(cfg, mval, Sl, ltr)
 end

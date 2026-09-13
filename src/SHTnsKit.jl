@@ -101,7 +101,9 @@ ENVIRONMENT VARIABLES
 --------------------
 - SHTNSKIT_PHI_SCALE: "dft" or "quad" for φ scaling convention
 - SHTNSKIT_VERBOSE_STORAGE: "1" to print storage optimization info
-- SHTNSKIT_CACHE_PENCILFFTS: "0" to disable FFT plan caching (parallel ext)
+- SHTNSKIT_FFT_PLAN_CACHE: "0" to disable φ-FFT plan caching (serial and distributed)
+  (legacy alias: SHTNSKIT_CACHE_PENCILFFTS)
+- SHTNSKIT_FFT_PLAN_CACHE_MAX: cap on distinct cached plans (default 64; ≤0 = no cap)
 
 DEBUGGING TIPS
 --------------
@@ -308,52 +310,15 @@ export matrix_to_spectral_pencil, spectral_pencil_to_matrix                 # Di
 
 @inline _parallel_ext_module() = Base.get_extension(@__MODULE__, :SHTnsKitParallelExt)
 
-function fft_plan_cache_enabled()
-    ext = _parallel_ext_module()
-    return ext === nothing ? false : getproperty(ext, :_fft_plan_cache_enabled_impl)()
-end
-
-function set_fft_plan_cache!(flag::Bool; clear::Bool=true)
-    ext = _parallel_ext_module()
-    ext === nothing && error("Parallel extension not loaded")
-    return getproperty(ext, :_fft_plan_cache_set_impl)(flag; clear=clear)
-end
-
-function enable_fft_plan_cache!()
-    ext = _parallel_ext_module()
-    ext === nothing && error("Parallel extension not loaded")
-    return getproperty(ext, :_fft_plan_cache_enable_impl)()
-end
-
-function disable_fft_plan_cache!(; clear::Bool=true)
-    ext = _parallel_ext_module()
-    ext === nothing && error("Parallel extension not loaded")
-    return getproperty(ext, :_fft_plan_cache_disable_impl)(; clear=clear)
-end
-
-Base.@doc """
-    fft_plan_cache_enabled() -> Bool
-
-Return whether distributed FFT plan caching is currently enabled.
-""" fft_plan_cache_enabled
-
-Base.@doc """
-    set_fft_plan_cache!(flag::Bool; clear::Bool=true)
-
-Enable or disable caching of distributed FFT plans. When disabling and `clear=true`, cached plans are freed.
-""" set_fft_plan_cache!
-
-Base.@doc """
-    enable_fft_plan_cache!()
-
-Convenience wrapper to enable distributed FFT plan caching.
-""" enable_fft_plan_cache!
-
-Base.@doc """
-    disable_fft_plan_cache!(; clear::Bool=true)
-
-Disable distributed FFT plan caching. Pass `clear=false` to retain existing cache entries.
-""" disable_fft_plan_cache!
+# NOTE: the φ-FFT plan cache and its `fft_plan_cache_enabled` /
+# `set_fft_plan_cache!` / `enable_fft_plan_cache!` / `disable_fft_plan_cache!`
+# controls live in src/fftutils.jl. They used to forward to the parallel
+# extension, where the cache they addressed had no readers at all — `_get_or_plan`
+# was never called from anywhere, so every one of these knobs (and the
+# `SHTNSKIT_CACHE_PENCILFFTS` environment variable the distributed guide
+# advertises) was a no-op. The cache that every transform actually uses, serial
+# and distributed alike, is the one in fftutils.jl, so the controls now address
+# that and no longer require the extension to be loaded.
 
 # ===== PENCIL GRID SUGGESTION =====
 function _suggest_pencil_grid_fallback(comm_or_nprocs::Any, nlat::Integer, nlon::Integer;

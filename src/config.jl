@@ -1017,6 +1017,16 @@ Create an equiangular (regular) grid configuration. Regular grids use simple
 directly on the poles. By default associated Legendre tables are precomputed,
 which mirrors SHTns' regular-grid behaviour and improves performance.
 
+!!! warning "Not an exact quadrature"
+    Unless `use_dh_weights=true`, the latitude weights here are a plain
+    midpoint (`w = (π/nlat) sinθ`) or trapezoidal rule. Those do **not**
+    integrate products of associated Legendre functions exactly, so
+    `analysis(cfg, synthesis(cfg, alm))` does not return `alm`: the relative
+    error is ~10 % at `nlat = lmax+2` and still ~0.5 % at `nlat = 2.5(lmax+1)`,
+    shrinking only algebraically. Use [`create_gauss_config`](@ref), or this
+    constructor with `include_poles=true, use_dh_weights=true`, when round-trip
+    accuracy matters.
+
 # Driscoll-Healy Quadrature
 
 Set `use_dh_weights=true` to use Driscoll-Healy quadrature for exact spherical
@@ -1215,6 +1225,7 @@ function prepare_plm_tables!(cfg::SHTConfig)
     # Working arrays for computing one row at a time
     P = Vector{Float64}(undef, lmax + 1)      # P̄_l^m(x) normalized values
     dPdtheta = Vector{Float64}(undef, lmax + 1)  # dP̄_l^m/dθ normalized θ-derivatives
+    Pbuf = Vector{Float64}(undef, lmax + 2)   # extended P̄ row reused across all nlat*(mmax+1) calls
 
     # Compute tables for each azimuthal order m using bounded normalized recurrence
     # plm_tables[m+1][l+1, i]  = P̄_l^m(x_i)   (orthonormal; no overflow at high lmax)
@@ -1227,7 +1238,7 @@ function prepare_plm_tables!(cfg::SHTConfig)
         # Compute normalized Legendre polynomials at each latitude point
         for i in 1:nlat
             s_i = sqrt(max(0.0, 1.0 - cfg.x[i]^2))
-            Plm_norm_and_dPdtheta_row!(P, dPdtheta, cfg.x[i], lmax, m)
+            Plm_norm_and_dPdtheta_row!(P, dPdtheta, cfg.x[i], lmax, m, Pbuf)
 
             # Store normalized values — no Nlm multiply needed (P̄ already = Nlm * rawP)
             @inbounds @views tbl[:, i] .= P         # P̄_l^m(x_i) for l=0:lmax

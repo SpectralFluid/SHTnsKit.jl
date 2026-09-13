@@ -293,21 +293,27 @@ function synthesis_axisym_l(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, ltr:
 end
 
 """
-    analysis_packed_ml(cfg, im, Vr_m, ltr) -> Vector{ComplexF64}
+    analysis_packed_ml(cfg, mval, Vr_m, ltr) -> Vector{ComplexF64}
 
-Transform spatial field for specific azimuthal mode m to spherical harmonic coefficients.
-`im` is the m-index (0-based), `Vr_m` contains complex spatial values for that mode.
-Returns coefficients Q_l for degrees l = m..ltr.
+Transform spatial field for specific azimuthal mode `mval` to spherical harmonic
+coefficients. `Vr_m` contains complex spatial values for that mode; returns
+coefficients Q_l for degrees `l = mval..ltr`.
+
+Every mode-limited entry point names this argument `mval`, never `im`: a binding
+called `im` shadows Julia's imaginary unit, and `1.0im` is numeric-literal
+juxtaposition (`1.0 * im`), so any complex literal in the body would silently
+become real. That is exactly how `synthesis_sphtor_ml`'s S/T coupling once broke.
+Do not rename these back.
 """
-function analysis_packed_ml(cfg::SHTConfig, im::Int, Vr_m::AbstractVector{<:Complex}, ltr::Int)
+function analysis_packed_ml(cfg::SHTConfig, mval::Int, Vr_m::AbstractVector{<:Complex}, ltr::Int)
     nlat = cfg.nlat
     length(Vr_m) == nlat || throw(DimensionMismatch("Vr_m length must be nlat=$(nlat)"))
-    im >= 0 || throw(ArgumentError("im must be >= 0"))
-    im <= cfg.mmax || throw(ArgumentError("im must be <= mmax=$(cfg.mmax)"))
+    mval >= 0 || throw(ArgumentError("mval must be >= 0"))
+    mval <= cfg.mmax || throw(ArgumentError("mval must be <= mmax=$(cfg.mmax)"))
     ltr <= cfg.lmax || throw(ArgumentError("ltr must be <= lmax=$(cfg.lmax)"))
-    ltr >= im || throw(ArgumentError("ltr must be >= im=$(im)"))
+    ltr >= mval || throw(ArgumentError("ltr must be >= mval=$(mval)"))
 
-    num_l = ltr - im + 1
+    num_l = ltr - mval + 1
     CT = complex(float(real(eltype(Vr_m))))  # AD/Float32-safe output eltype
     Ql = Vector{CT}(undef, num_l)
     fill!(Ql, zero(CT))
@@ -318,38 +324,38 @@ function analysis_packed_ml(cfg::SHTConfig, im::Int, Vr_m::AbstractVector{<:Comp
 
     for i in 1:nlat
         x = xv[i]
-        Plm_norm_row!(P, x, ltr, im)  # P̄ already orthonormal-normalized
+        Plm_norm_row!(P, x, ltr, mval)  # P̄ already orthonormal-normalized
 
         weighted_Vr = Vr_m[i] * wv[i]
-        @inbounds for l in im:ltr
-            Ql[l-im+1] += weighted_Vr * P[l+1]
+        @inbounds for l in mval:ltr
+            Ql[l-mval+1] += weighted_Vr * P[l+1]
         end
     end
 
     # Apply phi scaling to match full transform normalization
     Ql .*= scaleφ
-    return _convert_mode_norm!(Ql, Ql, cfg, im, ltr; to_internal=false)
+    return _convert_mode_norm!(Ql, Ql, cfg, mval, ltr; to_internal=false)
 end
 
 """
-    synthesis_packed_ml(cfg, im, Ql, ltr) -> Vector{ComplexF64}
+    synthesis_packed_ml(cfg, mval, Ql, ltr) -> Vector{ComplexF64}
 
 Transform spherical harmonic coefficients for specific mode m to spatial field.
-`im` is the m-index, `Ql` contains coefficients for degrees l = im..ltr.
+`mval` is the m-index, `Ql` contains coefficients for degrees l = mval..ltr.
 Returns complex spatial values for that azimuthal mode.
 """
-function synthesis_packed_ml(cfg::SHTConfig, im::Int, Ql::AbstractVector{<:Complex}, ltr::Int)
+function synthesis_packed_ml(cfg::SHTConfig, mval::Int, Ql::AbstractVector{<:Complex}, ltr::Int)
     nlat = cfg.nlat
-    im >= 0 || throw(ArgumentError("im must be >= 0"))
-    im <= cfg.mmax || throw(ArgumentError("im must be <= mmax=$(cfg.mmax)"))
+    mval >= 0 || throw(ArgumentError("mval must be >= 0"))
+    mval <= cfg.mmax || throw(ArgumentError("mval must be <= mmax=$(cfg.mmax)"))
     ltr <= cfg.lmax || throw(ArgumentError("ltr must be <= lmax=$(cfg.lmax)"))
-    ltr >= im || throw(ArgumentError("ltr must be >= im=$(im)"))
+    ltr >= mval || throw(ArgumentError("ltr must be >= mval=$(mval)"))
 
-    expected_len = ltr - im + 1
+    expected_len = ltr - mval + 1
     length(Ql) == expected_len || throw(DimensionMismatch("Ql length must be $(expected_len)"))
 
     Ql_int = _uses_canonical_convention(cfg) ? Ql :
-             _convert_mode_norm!(similar(Ql), Ql, cfg, im, ltr; to_internal=true)
+             _convert_mode_norm!(similar(Ql), Ql, cfg, mval, ltr; to_internal=true)
     # Output eltype follows the input so AD types propagate.
     CT = promote_type(eltype(Ql_int), ComplexF64)
     Vr_m = Vector{CT}(undef, nlat)
@@ -359,11 +365,11 @@ function synthesis_packed_ml(cfg::SHTConfig, im::Int, Ql::AbstractVector{<:Compl
 
     for i in 1:nlat
         x = xv[i]
-        Plm_norm_row!(P, x, ltr, im)  # P̄ already orthonormal-normalized
+        Plm_norm_row!(P, x, ltr, mval)  # P̄ already orthonormal-normalized
 
         val = zero(CT)
-        @inbounds for l in im:ltr
-            val += Ql_int[l-im+1] * P[l+1]
+        @inbounds for l in mval:ltr
+            val += Ql_int[l-mval+1] * P[l+1]
         end
         Vr_m[i] = val * inv_scaleφ
     end

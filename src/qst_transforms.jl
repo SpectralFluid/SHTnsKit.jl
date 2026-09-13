@@ -207,28 +207,28 @@ function _synthesis_qst_l(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatr
 end
 
 """
-    analysis_qst_ml(cfg, im, Vr_m, Vt_m, Vp_m, ltr) -> (Ql, Sl, Tl)
+    analysis_qst_ml(cfg, mval, Vr_m, Vt_m, Vp_m, ltr) -> (Ql, Sl, Tl)
 
-Mode-limited transform for specific azimuthal mode im.
+Mode-limited transform for specific azimuthal mode mval.
 """
-function analysis_qst_ml(cfg::SHTConfig, im::Int, Vr_m::AbstractVector{<:Complex}, Vt_m::AbstractVector{<:Complex}, Vp_m::AbstractVector{<:Complex}, ltr::Int)
+function analysis_qst_ml(cfg::SHTConfig, mval::Int, Vr_m::AbstractVector{<:Complex}, Vt_m::AbstractVector{<:Complex}, Vp_m::AbstractVector{<:Complex}, ltr::Int)
     # Transform each component for this specific mode
-    Ql = analysis_packed_ml(cfg, im, Vr_m, ltr)
-    Sl, Tl = analysis_sphtor_ml(cfg, im, Vt_m, Vp_m, ltr)
+    Ql = analysis_packed_ml(cfg, mval, Vr_m, ltr)
+    Sl, Tl = analysis_sphtor_ml(cfg, mval, Vt_m, Vp_m, ltr)
     # Both fixed-mode sub-transforms already return configured coefficients.
 
     return Ql, Sl, Tl
 end
 
 """
-    synthesis_qst_ml(cfg, im, Ql, Sl, Tl, ltr) -> (Vr_m, Vt_m, Vp_m)
+    synthesis_qst_ml(cfg, mval, Ql, Sl, Tl, ltr) -> (Vr_m, Vt_m, Vp_m)
 
-Mode-limited synthesis for specific azimuthal mode im.
+Mode-limited synthesis for specific azimuthal mode mval.
 """
-function synthesis_qst_ml(cfg::SHTConfig, im::Int, Ql::AbstractVector{<:Complex}, Sl::AbstractVector{<:Complex}, Tl::AbstractVector{<:Complex}, ltr::Int)
+function synthesis_qst_ml(cfg::SHTConfig, mval::Int, Ql::AbstractVector{<:Complex}, Sl::AbstractVector{<:Complex}, Tl::AbstractVector{<:Complex}, ltr::Int)
     # Each fixed-mode sub-transform converts its component to canonical once.
-    Vr_m = synthesis_packed_ml(cfg, im, Ql, ltr)
-    Vt_m, Vp_m = synthesis_sphtor_ml(cfg, im, Sl, Tl, ltr)
+    Vr_m = synthesis_packed_ml(cfg, mval, Ql, ltr)
+    Vt_m, Vp_m = synthesis_sphtor_ml(cfg, mval, Sl, Tl, ltr)
 
     return Vr_m, Vt_m, Vp_m
 end

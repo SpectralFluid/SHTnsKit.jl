@@ -285,7 +285,8 @@ function _synthesis(cfg::SHTConfig, alm::AbstractMatrix, ::Val{real_output},
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
     alm_int = _internal_coefficients(alm, cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = eltype(alm)
+    # Fourier bins are complex even when all spectral coefficients are real.
+    CT = complex(float(eltype(alm)))
     if use_rfft
         # The rfft path returns real output by construction. Hermitian
         # symmetry is not materialized in Fph; irfft_phi! reconstructs it.
@@ -328,7 +329,7 @@ function _synthesis_l(cfg::SHTConfig, alm::AbstractMatrix, ltr::Int, ::Val{real_
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
     alm_int = _internal_coefficients(alm, cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = eltype(alm)
+    CT = complex(float(eltype(alm)))
     Fph = Matrix{CT}(undef, nlat, nlon)
     fill!(Fph, zero(CT))
     _synthesis_scalar_mloop!(Fph, cfg, alm_int; real_output=real_output, ltr=ltr)
@@ -367,7 +368,7 @@ function _synthesis!(cfg::SHTConfig, f_out::AbstractMatrix, alm::AbstractMatrix,
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
     alm_int = _internal_coefficients(alm, cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = eltype(alm)
+    CT = complex(float(eltype(alm)))
     if use_rfft
         real_output || throw(ArgumentError("use_rfft=true implies real_output"))
         eltype(f_out) <: Real || throw(ArgumentError("use_rfft=true requires real-valued f_out"))

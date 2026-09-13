@@ -113,5 +113,54 @@ else
             @test haskey(b, :synthesis_turbo)
             @test b.analysis_turbo > 0
         end
+
+        @testset "turbo honours cfg.mres" begin
+            # Regression: both turbo loops iterated a bare `0:mmax`, so for an
+            # mres>1 config `analysis_turbo` populated coefficient columns the
+            # transform has no storage for and `synthesis_turbo` summed them
+            # back in. The disagreement with `analysis`/`synthesis` was O(1),
+            # not roundoff.
+            for mres in (2, 3)
+                cfgm = create_gauss_config(6, 8; mres=mres, nlon=15)
+                rngm = MersenneTwister(9100 + mres)
+                fm = randn(rngm, cfgm.nlat, cfgm.nlon)
+
+                a_ref = analysis(cfgm, fm)
+                a_turbo = SHTnsKit.analysis_turbo(cfgm, fm)
+                @test a_turbo ≈ a_ref atol=1e-12
+
+                # Orders absent from the layout must stay exactly zero.
+                for m in 0:cfgm.mmax
+                    m % mres == 0 && continue
+                    @test all(iszero, @view a_turbo[:, m + 1])
+                end
+
+                # Feed a spectrum that DOES carry junk on the skipped columns:
+                # synthesis must ignore it, exactly as the core does.
+                dirty = copy(a_ref)
+                for m in 0:cfgm.mmax
+                    m % mres == 0 && continue
+                    for l in m:cfgm.lmax
+                        dirty[l + 1, m + 1] = 3.0 - 2.0im
+                    end
+                end
+                @test SHTnsKit.synthesis_turbo(cfgm, dirty) ≈ synthesis(cfgm, dirty) atol=1e-12
+                @test SHTnsKit.synthesis_turbo(cfgm, dirty) ≈ synthesis(cfgm, a_ref) atol=1e-12
+            end
+        end
+
+        @testset "turbo runs inside an outer threaded region" begin
+            # `@threads :static` cannot be nested; the turbo loops must fall back
+            # to the caller's thread the way the core orchestrators do.
+            cfgt = create_gauss_config(5, 7; nlon=11)
+            ft = randn(MersenneTwister(31), cfgt.nlat, cfgt.nlon)
+            ref = analysis(cfgt, ft)
+            out = Vector{Any}(undef, 2)
+            Threads.@threads for k in 1:2
+                out[k] = SHTnsKit.analysis_turbo(cfgt, ft)
+            end
+            @test out[1] ≈ ref atol=1e-12
+            @test out[2] ≈ ref atol=1e-12
+        end
     end
 end

@@ -28,6 +28,40 @@ end
     spectral_dims = (lmax + 1, mmax + 1)
     pen_m = Pencil(spectral_dims, comm)
 
+    @testset "local vector evaluations honor Robert form" begin
+        Q = zeros(ComplexF64, spectral_dims)
+        S = copy(Q)
+        T = copy(Q)
+        Q[1, 1] = 0.8
+        S[2, 1] = 0.7
+        S[3, 2] = -0.3 + 0.1im
+        T[4, 2] = 0.25 - 0.2im
+        S[5, 3] = 0.4 + 0.2im
+        T[6, 3] = -0.2 + 0.6im
+        Q_p, S_p, T_p = map(A -> scatter_spectral(pen_m, A), (Q, S, T))
+
+        for grid_type in (:gauss, :regular_poles), robert_form in (false, true)
+            local_cfg = create_config(lmax; mmax, nlat=lmax + 2,
+                                      nlon=2mmax + 1, grid_type, robert_form,
+                                      norm=:schmidt, real_norm=true, cs_phase=false)
+            fields = synthesis_qst(local_cfg, Q, S, T)
+            truncated_fields = synthesis_qst_l(local_cfg, Q, S, T, 3)
+            for ilat in (1, 3, local_cfg.nlat)
+                cost = local_cfg.x[ilat]
+                point = SHTnsKit.dist_SHqst_to_point(
+                    local_cfg, Q_p, S_p, T_p, cost, local_cfg.φ[2])
+                lat = SHTnsKit.dist_SHqst_to_lat(local_cfg, Q_p, S_p, T_p, cost)
+                truncated = SHTnsKit.dist_SHqst_to_lat(
+                    local_cfg, Q_p, S_p, T_p, cost; ltr=3)
+                for component in 1:3
+                    @test point[component] ≈ fields[component][ilat, 2] rtol=1e-11 atol=1e-12
+                    @test lat[component] ≈ fields[component][ilat, :] rtol=1e-11 atol=1e-12
+                    @test truncated[component] ≈ truncated_fields[component][ilat, :] rtol=1e-11 atol=1e-12
+                end
+            end
+        end
+    end
+
     @testset "complex latitude evaluation is one-sided complex synthesis" begin
         A = zeros(ComplexF64, spectral_dims)
         A[5, 3] = 0.7 - 0.4im # (l,m) = (4,2), deliberately non-real

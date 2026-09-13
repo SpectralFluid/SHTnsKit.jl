@@ -261,6 +261,9 @@ end
 
 Zygote.@adjoint function SHTnsKit.SH_Zrotate(cfg::SHTnsKit.SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real, Rlm::AbstractVector{<:Complex})
     y = SHTnsKit.SH_Zrotate(cfg, Qlm, alpha, Rlm)
+    # In-place rotation overwrites Qlm, and callers may reuse either buffer
+    # before the pullback. Preserve the primal values needed for dR/dα.
+    rotated = copy(y)
     function back(ȳ)
         # Diagonal Rlm = Qlm·e^{-imα} ⇒ Q̄ = ȳ·e^{imα} = SH_Zrotate(ȳ, -α).
         Q̄ = similar(Qlm)
@@ -270,8 +273,7 @@ Zygote.@adjoint function SHTnsKit.SH_Zrotate(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
             (m % cfg.mres == 0) || continue
             for l in m:cfg.lmax
                 lm = SHTnsKit.LM_index(cfg.lmax, cfg.mres, l, m) + 1
-                Rval = Qlm[lm] * cis(-m * alpha)
-                dα += real(conj(ȳ[lm]) * ((0 - 1im) * m * Rval))
+                dα += real(conj(ȳ[lm]) * ((0 - 1im) * m * rotated[lm]))
             end
         end
         return (nothing, Q̄, dα, nothing)
@@ -280,16 +282,20 @@ Zygote.@adjoint function SHTnsKit.SH_Zrotate(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
 end
 
 Zygote.@adjoint function SHTnsKit.SH_Yrotate(cfg::SHTnsKit.SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real, Rlm::AbstractVector{<:Complex})
+    # Snapshot BEFORE the primal: an in-place rotation (Rlm === Qlm) overwrites
+    # Qlm, and callers may reuse either buffer before the pullback runs. The dα
+    # formula needs the *input* coefficients, so they must be preserved here.
+    Qlm_saved = copy(Qlm)
     y = SHTnsKit.SH_Yrotate(cfg, Qlm, alpha, Rlm)
     function back(ȳ)
         inverse = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
         SHTnsKit.shtns_rotation_set_angles_ZYZ(inverse, 0.0, -alpha, 0.0)
-        Q̄ = similar(Qlm)
+        Q̄ = similar(Qlm_saved)
         _zyg_configured_rotation_adjoint!(cfg, inverse, ȳ, Q̄)
         # angle gradient via derivative of Wigner-d at beta=alpha
         dα = 0.0
         lmax, mmax = cfg.lmax, cfg.mmax
-        Qlm_canonical = SHTnsKit._internal_coefficients(Qlm, cfg)
+        Qlm_canonical = SHTnsKit._internal_coefficients(Qlm_saved, cfg)
         ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
         for l in 0:lmax
             mm = min(l, mmax)

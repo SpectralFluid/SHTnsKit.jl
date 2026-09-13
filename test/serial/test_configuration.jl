@@ -2,6 +2,7 @@
 # Tests for grid configuration, indexing, and normalization
 
 using Test
+using Random
 using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
@@ -321,32 +322,42 @@ using SHTnsKit
     end
 
     @testset "FFT plan cache control" begin
-        # FFT plan cache requires the parallel extension
-        # Skip if not available
-        try
-            # Save initial state
-            initial_state = fft_plan_cache_enabled()
-            @test typeof(initial_state) == Bool
+        # These knobs used to forward to a cache in the parallel extension that
+        # nothing ever read (`_get_or_plan` had no call sites), so the whole
+        # documented feature was a no-op and this testset was wrapped in a
+        # try/catch that skipped it whenever MPI was absent. They now control the
+        # φ-FFT plan cache every transform actually goes through, serial or
+        # distributed, so assert the behaviour rather than just the flag.
+        initial_state = fft_plan_cache_enabled()
+        @test typeof(initial_state) == Bool
 
-            # Test enable/disable
-            enable_fft_plan_cache!()
-            @test fft_plan_cache_enabled() == true
+        enable_fft_plan_cache!()
+        @test fft_plan_cache_enabled() == true
+        disable_fft_plan_cache!()
+        @test fft_plan_cache_enabled() == false
+        set_fft_plan_cache!(true)
+        @test fft_plan_cache_enabled() == true
+        set_fft_plan_cache!(false)
+        @test fft_plan_cache_enabled() == false
 
-            disable_fft_plan_cache!()
-            @test fft_plan_cache_enabled() == false
+        enable_fft_plan_cache!()
+        cfg_cache = create_gauss_config(4, 6)
+        field = randn(MersenneTwister(77), cfg_cache.nlat, cfg_cache.nlon)
+        ref = analysis(cfg_cache, field)
+        @test !isempty(SHTnsKit._LOCAL_FFT_PLAN_CACHE)
 
-            # Test set function
-            set_fft_plan_cache!(true)
-            @test fft_plan_cache_enabled() == true
+        disable_fft_plan_cache!()                        # clears by default
+        @test isempty(SHTnsKit._LOCAL_FFT_PLAN_CACHE)
+        @test analysis(cfg_cache, field) ≈ ref           # same answer, unplanned
+        @test isempty(SHTnsKit._LOCAL_FFT_PLAN_CACHE)    # and still bypassed
 
-            set_fft_plan_cache!(false)
-            @test fft_plan_cache_enabled() == false
+        enable_fft_plan_cache!()
+        @test analysis(cfg_cache, field) ≈ ref
+        @test !isempty(SHTnsKit._LOCAL_FFT_PLAN_CACHE)
 
-            # Restore initial state
-            set_fft_plan_cache!(initial_state)
-        catch e
-            @info "Skipping FFT plan cache tests (requires parallel extension)" exception=e
-        end
+        @test SHTnsKit.fft_plan_cache_max!(SHTnsKit.fft_plan_cache_max!(8)) == 8
+
+        set_fft_plan_cache!(initial_state)
     end
 
     @testset "Pencil grid suggestion" begin

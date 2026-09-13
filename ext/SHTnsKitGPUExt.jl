@@ -386,13 +386,13 @@ function gpu_analysis(cfg::SHTConfig, spatial_data; device=get_device())
     # Step 3: Fully parallel Legendre integration - ALL (l,m) pairs in one kernel.
     # Each thread computes one a_lm coefficient.
     # Plm already holds P̄_l^m (orthonormal-normalized); no separate Nlm factor needed.
-    @kernel function analysis_kernel!(coeffs, Fφ, Plm, weights, nlat, nlon, lmax, mmax, scale)
+    @kernel function analysis_kernel!(coeffs, Fφ, Plm, weights, nlat, nlon, lmax, mmax, mres, scale)
         l_idx, m_idx = @index(Global, NTuple)
         if l_idx <= lmax + 1 && m_idx <= mmax + 1
             l = l_idx - 1
             m = m_idx - 1
-            # Only compute for l >= m (triangular structure)
-            if l >= m && m <= nlon ÷ 2
+            # Only compute triangular entries for configured azimuthal orders.
+            if l >= m && m <= nlon ÷ 2 && m % mres == 0
                 result = ComplexF64(0, 0)
                 @inbounds for i_lat = 1:nlat
                     # Gauss-Legendre quadrature: weight * P̄_l^m * Fourier_mode
@@ -406,7 +406,7 @@ function gpu_analysis(cfg::SHTConfig, spatial_data; device=get_device())
 
     analysis_k! = analysis_kernel!(backend)
     analysis_k!(coeffs, gpu_data, Plm, weights,
-                cfg.nlat, cfg.nlon, cfg.lmax, cfg.mmax, scaleφ;
+                cfg.nlat, cfg.nlon, cfg.lmax, cfg.mmax, cfg.mres, scaleφ;
                 ndrange=(cfg.lmax+1, cfg.mmax+1))
     CUDA.synchronize()
 
@@ -459,9 +459,9 @@ function gpu_synthesis(cfg::SHTConfig, coeffs; device=get_device(), real_output=
     # Plm already holds P̄_l^m; no separate Nlm factor needed.
     fourier_modes = CUDA.zeros(ComplexF64, cfg.nlat, cfg.nlon)
 
-    @kernel function synthesis_kernel!(Fφ, coeffs, Plm, nlat, nlon, lmax, mmax, do_hermitian)
+    @kernel function synthesis_kernel!(Fφ, coeffs, Plm, nlat, nlon, lmax, mmax, mres, do_hermitian)
         i_lat, m_idx = @index(Global, NTuple)
-        if i_lat <= nlat && m_idx <= mmax + 1
+        if i_lat <= nlat && m_idx <= mmax + 1 && (m_idx - 1) % mres == 0
             m = m_idx - 1
             # Compute F_m(θ_i) = Σ_l a_lm * P̄_l^m(cos θ_i)
             result = ComplexF64(0, 0)
@@ -492,7 +492,7 @@ function gpu_synthesis(cfg::SHTConfig, coeffs; device=get_device(), real_output=
 
     synthesis_k! = synthesis_kernel!(backend)
     synthesis_k!(fourier_modes, gpu_coeffs, Plm,
-                 cfg.nlat, cfg.nlon, cfg.lmax, cfg.mmax, real_output;
+                 cfg.nlat, cfg.nlon, cfg.lmax, cfg.mmax, cfg.mres, real_output;
                  ndrange=(cfg.nlat, cfg.mmax+1))
     CUDA.synchronize()
 
@@ -600,15 +600,15 @@ function gpu_analysis_sphtor(cfg::SHTConfig, vθ, vφ; device=get_device())
 
     @kernel function vector_analysis_contrib_kernel!(S_out, T_out, Fθ, Fφ, Plm, dPlm,
                                                       x_vals, w_vals, Nlm_vals, scale,
-                                                      nlat, lmax, mmax, do_robert)
+                                                      nlat, lmax, mmax, mres, do_robert)
         i_lat, l_idx, m_idx = @index(Global, NTuple)
 
         if i_lat <= nlat && l_idx <= lmax + 1 && m_idx <= mmax + 1
             l = l_idx - 1
             m = m_idx - 1
 
-            # Only compute for valid (l, m) pairs where l >= max(1, m)
-            if l >= max(1, m)
+            # Only compute valid pairs for configured azimuthal orders.
+            if l >= max(1, m) && m % mres == 0
                 x = x_vals[i_lat]
                 sθ = sqrt(max(0.0, 1.0 - x * x))
                 is_pole = sθ < _GPU_POLE_TOL
@@ -683,7 +683,7 @@ function gpu_analysis_sphtor(cfg::SHTConfig, vθ, vφ; device=get_device())
     contrib_kernel! = vector_analysis_contrib_kernel!(backend)
     contrib_kernel!(S_contrib, T_contrib, gpu_vθ, gpu_vφ, Plm, dPlm,
                     x_values, weights, Nlm_values, scaleφ,
-                    nlat, lmax, mmax, robert_form;
+                    nlat, lmax, mmax, cfg.mres, robert_form;
                     ndrange=(nlat, lmax+1, mmax+1))
     CUDA.synchronize()
 
@@ -757,9 +757,9 @@ function gpu_synthesis_sphtor(cfg::SHTConfig, sph_coeffs, tor_coeffs; device=get
 
     # Kernel for spectral vector synthesis - compute Fourier modes for each (latitude, m).
     # Plm holds P̄_l^m and dPlm holds dP̄_l^m/dx (both orthonormal-normalized, no Nlm factor).
-    @kernel function vector_spectral_synthesis_kernel!(Ftheta, Fphi, Slm, Tlm, Plm, dPlm, sintheta, x_vals, Nlm_vals, nlat, nlon, lmax, mmax, inv_scale)
+    @kernel function vector_spectral_synthesis_kernel!(Ftheta, Fphi, Slm, Tlm, Plm, dPlm, sintheta, x_vals, Nlm_vals, nlat, nlon, lmax, mmax, mres, inv_scale)
         i, m_idx = @index(Global, NTuple)
-        if i <= nlat && m_idx <= mmax + 1
+        if i <= nlat && m_idx <= mmax + 1 && (m_idx - 1) % mres == 0
             m = m_idx - 1
             sθ = sintheta[i]
             x = x_vals[i]
@@ -803,7 +803,7 @@ function gpu_synthesis_sphtor(cfg::SHTConfig, sph_coeffs, tor_coeffs; device=get
     end
 
     synth_kernel! = vector_spectral_synthesis_kernel!(backend)
-    synth_kernel!(Fθ, Fφ, gpu_Slm, gpu_Tlm, Plm, dPlm, sintheta, x_values, Nlm_values, nlat, nlon, lmax, mmax, inv_scaleφ; ndrange=(nlat, mmax+1))
+    synth_kernel!(Fθ, Fφ, gpu_Slm, gpu_Tlm, Plm, dPlm, sintheta, x_values, Nlm_values, nlat, nlon, lmax, mmax, cfg.mres, inv_scaleφ; ndrange=(nlat, mmax+1))
     CUDA.synchronize()
 
     # Apply Hermitian symmetry for real output

@@ -7,9 +7,16 @@ using SHTnsKit
     lmax = 6
     cfg = create_gauss_config(lmax, lmax + 2; nlon=2lmax + 1, mres=2)
 
+    # `zero`, not `similar`: `similar` hands back UNINITIALIZED memory. Run
+    # standalone the pages are freshly mmap'd (all zero) and this passes, but
+    # late in the full suite the allocator recycles pages and these matrices
+    # come back full of denormal garbage. The diagnostics then agree exactly
+    # (`a == b`), yet `isapprox` still fails, because `LinearAlgebra.norm` of a
+    # matrix carrying such denormals overflows its scaling step to NaN and
+    # `0 <= NaN` is false. Zero them explicitly.
     Qclean = zeros(ComplexF64, lmax + 1, cfg.mmax + 1)
-    Sclean = similar(Qclean)
-    Tclean = similar(Qclean)
+    Sclean = zero(Qclean)
+    Tclean = zero(Qclean)
 
     # Representable orders for mres=2.
     Qclean[3, 1] = 0.25

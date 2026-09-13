@@ -8,6 +8,17 @@ using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
+# Allocation budgets below are calibrated for a SINGLE-THREADED run, where they
+# are exact. The shared m-loop orchestrators start `@threads` tasks whenever
+# threads are available, and each threaded region costs a few hundred bytes to
+# spawn — a constant independent of problem size, and not the kind of regression
+# these budgets exist to catch (a per-row temporary or a dense zero spectrum
+# costs tens of KB and grows with lmax). Allow a per-thread slack rather than
+# letting the whole suite go red on any multi-core machine; note this makes the
+# budgets coarse at `nthreads > 1`, so the tight check is the 1-thread run.
+@isdefined(_thread_alloc_slack) ||
+    (_thread_alloc_slack() = Threads.nthreads() > 1 ? 4_096 * Threads.nthreads() : 0)
+
 @testset "Vector Transforms (Spheroidal-Toroidal)" begin
     @testset "Sphtor roundtrip" begin
         lmax = 8
@@ -87,8 +98,8 @@ using SHTnsKit
         synthesis_tor(cfg, Tlm)
         GC.gc()
 
-        @test @allocated(synthesis_sph(cfg, Slm)) <= 15_000
-        @test @allocated(synthesis_tor(cfg, Tlm)) <= 15_000
+        @test @allocated(synthesis_sph(cfg, Slm)) <= 15_000 + _thread_alloc_slack()
+        @test @allocated(synthesis_tor(cfg, Tlm)) <= 15_000 + _thread_alloc_slack()
     end
 
     @testset "Gradient transform" begin
