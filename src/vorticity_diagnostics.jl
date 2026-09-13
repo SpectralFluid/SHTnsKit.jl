@@ -203,9 +203,14 @@ function grad_loss_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_target:
     
     # Backward pass: adjoint of vorticity calculation
     gζlm = analysis(cfg, residual)
-    # Analysis includes the loss's quadrature weights, but the adjoint also
-    # carries synthesis's inverse-FFT scale (1 for :dft, 1/2π for :quad).
-    synthesis_scale = phi_inv_scale(cfg) / cfg.nlon
+    # `analysis` is used here as a stand-in for the synthesis adjoint: with
+    # σ = phi_inv_scale(cfg)/nlon the spatial factor of synthesis, and
+    # g = ∂L/∂ζ_grid = cphi·w·r, the true adjoint is
+    #     ∂L/∂ζlm = σ · Λᴴ(g) = σ · analysis_dft(r),
+    # where `analysis_dft` is analysis with the fixed cphi factor. Analysis now
+    # carries cphi/σ instead, i.e. `analysis(r) = analysis_dft(r)/σ`, so the
+    # compensation picks up σ a second time. Exactly 1 in the default :dft mode.
+    synthesis_scale = (phi_inv_scale(cfg) / cfg.nlon)^2
     
     # Apply chain rule: ∂L/∂T_lm = ∂L/∂ζ_lm * ∂ζ_lm/∂T_lm
     lmax, mmax = cfg.lmax, cfg.mmax
@@ -236,7 +241,7 @@ function loss_and_grad_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_tar
     
     # Backward pass for gradient
     gζlm = analysis(cfg, residual)
-    synthesis_scale = phi_inv_scale(cfg) / cfg.nlon
+    synthesis_scale = (phi_inv_scale(cfg) / cfg.nlon)^2  # see grad_loss_vorticity_Tlm
     lmax, mmax = cfg.lmax, cfg.mmax
     gT = similar(Tlm)
     fill!(gT, 0.0)

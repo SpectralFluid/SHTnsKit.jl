@@ -20,6 +20,7 @@
 # - test_mpi_plan_preflight.jl : Rank-symmetric plan/configuration preflight (mpiexec)
 # - test_mpi_transpose_operand_preflight.jl : DistTransposePlan operand contracts (mpiexec)
 # - test_mpi_comm_cleanup.jl : MPI.jl-compatible subcommunicator cleanup (mpiexec)
+# - test_mpi_2d_alignment.jl : 2D spectral-plan alignment preconditions (mpiexec, 4 ranks)
 #
 # To run MPI tests:
 #   mpiexec -n 4 julia --project test/parallel/test_mpi_comprehensive.jl
@@ -35,6 +36,7 @@
 #   mpiexec -n 2 julia --project test/parallel/test_mpi_plan_preflight.jl
 #   mpiexec -n 2 julia --project test/parallel/test_mpi_transpose_operand_preflight.jl
 #   mpiexec -n 2 julia --project test/parallel/test_mpi_comm_cleanup.jl
+#   mpiexec -n 4 julia --project test/parallel/test_mpi_2d_alignment.jl
 
 using Test
 

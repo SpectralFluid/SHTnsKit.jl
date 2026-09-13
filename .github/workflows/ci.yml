@@ -171,6 +171,7 @@ jobs:
           mpiexec -n 2 julia --project=. test/parallel/test_mpi_plan_preflight.jl
           mpiexec -n 2 julia --project=. test/parallel/test_mpi_transpose_operand_preflight.jl
           mpiexec -n 2 julia --project=. test/parallel/test_mpi_comm_cleanup.jl
+          mpiexec -n 4 julia --project=. test/parallel/test_mpi_2d_alignment.jl
         env:
           SHTNSKIT_TEST_VERBOSE: "1"
           OMP_NUM_THREADS: "1"

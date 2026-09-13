@@ -315,7 +315,7 @@ import SHTnsKit: wigner_d_matrix_deriv
         CT = complex(float(eltype(ā_int)))
         F̄ = zeros(CT, nlat, nlon)
         P = Vector{Float64}(undef, lmax + 1)
-        scaleφ = cfg.cphi
+        scaleφ = SHTnsKit._analysis_phi_scale(cfg)
         xv = cfg.x; wv = cfg.w
         for am in 0:mmax
             colp = am + 1

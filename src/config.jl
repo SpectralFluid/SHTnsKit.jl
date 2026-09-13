@@ -209,7 +209,7 @@ end
     SHTConfig(; lmax, mmax, mres, nlat, nlon, θ, φ, x, w, Nlm, cphi, st,
               norm, cs_phase, real_norm, robert_form,
               nlm, li, mi, nspat,
-              grid_type=:gauss, phi_scale=:auto, on_the_fly=false,
+              grid_type=:gauss, phi_scale=:dft, on_the_fly=false,
               use_plm_tables=false, plm_tables=[], dplm_tables=[],
               NP_tables=[], NdP_tables=[], norm_scale_matrix=Matrix{Float64}(undef,0,0),
               _otf_scratch_P=[], _otf_scratch_dP=[], _otf_scratch_Ps=[], _otf_scratch_Pb=[], _m_order=[],
@@ -228,7 +228,7 @@ function SHTConfig(;
     nlm::Integer, li::AbstractVector{<:Integer}, mi::AbstractVector{<:Integer}, nspat::Integer,
     norm::Symbol, cs_phase::Bool, real_norm::Bool, robert_form::Bool,
     grid_type::Symbol = :gauss,
-    phi_scale::Symbol = :auto,
+    phi_scale::Symbol = :dft,
     on_the_fly::Bool = false,
     use_plm_tables::Bool = false,
     plm_tables::AbstractVector = Matrix{Float64}[],
@@ -1020,13 +1020,58 @@ The first nlat rows contain the actual data; remaining rows are padding.
 ```julia
 cfg = create_gauss_config(64, 66)
 set_allow_padding!(cfg)
-field = allocate_padded_spatial(cfg)
-# field has size (nlat_padded, nlon), use field[1:cfg.nlat, :] for data
+field = allocate_padded_spatial(cfg)          # (nlat_padded, nlon)
+copy_to_padded!(field, data, cfg)
+alm = analysis(cfg, spatial_view(cfg, field)) # transforms need exactly nlat rows
 ```
+
+The transforms require an array with exactly `nlat` rows, so a padded buffer must
+go through [`spatial_view`](@ref) (or an equivalent `view(field, 1:cfg.nlat, :)`).
+The view keeps the padded column stride, preserving what the padding is for.
 """
 function allocate_padded_spatial(cfg::SHTConfig, T::Type=Float64)
     nlat_p = get_nlat_padded(cfg)
     return zeros(T, nlat_p, cfg.nlon)
+end
+
+"""
+    spatial_view(cfg::SHTConfig, A::AbstractArray) -> SubArray
+
+The `(nlat, nlon)` (or `(nlat, nlon, nfields)`) window of a padded spatial buffer,
+in the form the transforms accept.
+
+`allocate_padded_spatial` deliberately returns an array whose first dimension is
+`nlat_padded ≥ nlat`, while every transform requires exactly `nlat` rows — so the
+padded buffer could not be handed to `analysis` at all, which left the whole
+padding API unusable. This is the missing bridge:
+
+```julia
+cfg = create_gauss_config(64, 66)
+set_allow_padding!(cfg)
+pad = allocate_padded_spatial(cfg)
+copy_to_padded!(pad, field, cfg)
+alm = analysis(cfg, spatial_view(cfg, pad))     # padded stride preserved
+```
+
+The view does not throw the padding away: a `SubArray` over the leading rows keeps
+the padded column stride (`nlat_padded`, not `nlat`), which is exactly the
+cache-conflict avoidance the padding exists for. Results are bit-identical to the
+unpadded layout.
+"""
+function spatial_view(cfg::SHTConfig, A::AbstractMatrix)
+    size(A, 1) >= cfg.nlat || throw(DimensionMismatch(
+        "padded spatial array needs ≥ nlat=$(cfg.nlat) rows, got $(size(A, 1))"))
+    size(A, 2) == cfg.nlon || throw(DimensionMismatch(
+        "spatial array second dim must be nlon=$(cfg.nlon), got $(size(A, 2))"))
+    return view(A, 1:cfg.nlat, 1:cfg.nlon)
+end
+
+function spatial_view(cfg::SHTConfig, A::AbstractArray{<:Any,3})
+    size(A, 1) >= cfg.nlat || throw(DimensionMismatch(
+        "padded spatial batch needs ≥ nlat=$(cfg.nlat) rows, got $(size(A, 1))"))
+    size(A, 2) == cfg.nlon || throw(DimensionMismatch(
+        "spatial batch second dim must be nlon=$(cfg.nlon), got $(size(A, 2))"))
+    return view(A, 1:cfg.nlat, 1:cfg.nlon, :)
 end
 
 """

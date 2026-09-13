@@ -228,9 +228,15 @@ end
 """
     set_batch_size!(cfg::SHTConfig, howmany::Int; spec_dist::Int=0)
 
-Configure batch processing for multiple fields. After calling this function,
-batch transform functions (`analysis_batch`, `synthesis_batch`, etc.) will
-process `howmany` fields simultaneously.
+Record the SHTns-style batched-layout descriptors on the configuration.
+
+!!! note "Advisory metadata"
+    `howmany` and `spec_dist` mirror the SHTns C API's batch descriptors and are
+    stored for interoperability, but the Julia batch entry points do **not**
+    consult them: `analysis_batch`, `synthesis_batch` and their sphtor/QST
+    siblings take the field count from `size(fields, 3)` of the array you pass.
+    Setting a batch size neither constrains nor accelerates those calls, and
+    passing a different number of fields is allowed and works.
 
 # Arguments
 - `cfg`: SHTConfig to modify
@@ -245,11 +251,10 @@ process `howmany` fields simultaneously.
 # Example
 ```julia
 cfg = create_gauss_config(32, 34)
-set_batch_size!(cfg, 4)  # Process 4 fields at once
+set_batch_size!(cfg, 4)   # recorded on cfg; does not bind the call below
 
-# Now use batch transforms
 fields = rand(cfg.nlat, cfg.nlon, 4)
-alms = analysis_batch(cfg, fields)
+alms = analysis_batch(cfg, fields)   # count comes from size(fields, 3)
 ```
 """
 function set_batch_size!(cfg::SHTConfig, howmany::Int; spec_dist::Int=0)
@@ -321,7 +326,7 @@ function analysis_batch(cfg::SHTConfig, fields::AbstractArray{<:Real,3}; use_rff
         _batch_fft_phi!(Fφ_batch, fields)
     end
 
-    scaleφ = cfg.cphi
+    scaleφ = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     # Hoist cfg field reads to locals: cfg is mutable, so reads inside the m/l loops below aren't auto-hoisted.
     w = cfg.w
 
@@ -412,7 +417,7 @@ function analysis_batch!(cfg::SHTConfig, alm_out::AbstractArray{<:Complex,3},
         _batch_fft_phi!(Fφ_batch, fields)
     end
 
-    scaleφ = cfg.cphi
+    scaleφ = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     # Hoist cfg field reads to locals: cfg is mutable, so reads inside the m/l loops below aren't auto-hoisted.
     w = cfg.w
 

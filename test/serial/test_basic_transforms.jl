@@ -385,4 +385,71 @@ using SHTnsKit
         @test isapprox(Ql_rec_l, Ql_rec_full[1:ltr+1]; rtol=1e-10, atol=1e-12)
     end
 
+
+    @testset "analysis inverts synthesis under every phi_scale" begin
+        # `synthesis` honoured `phi_scale` while `analysis` always applied a fixed
+        # `cphi`, so the two halves of the pair disagreed about the convention:
+        # under :quad `analysis(synthesis(alm))` came back as `alm/2π` exactly.
+        rng = MersenneTwister(7731)
+        for mode in (:dft, :quad)
+            cfg = create_gauss_config(6, 8)
+            cfg.phi_scale = mode
+            alm = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+            for m in 0:cfg.mmax, l in m:cfg.lmax
+                alm[l+1, m+1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+            end
+            S = copy(alm); T = 0.5 .* alm; S[1,1] = 0; T[1,1] = 0
+
+            @test analysis(cfg, synthesis(cfg, alm)) ≈ alm rtol=1e-10
+            Vt, Vp = synthesis_sphtor(cfg, S, T)
+            S2, T2 = analysis_sphtor(cfg, Vt, Vp)
+            @test S2 ≈ S rtol=1e-10
+            @test T2 ≈ T rtol=1e-10
+
+            f = synthesis(cfg, alm)
+            @test analysis_batch(cfg, reshape(f, size(f)..., 1))[:, :, 1] ≈ alm rtol=1e-10
+
+            # the planned path must agree with the cfg form in both modes
+            plan = SHTPlan(cfg)
+            out = similar(alm)
+            analysis!(plan, out, f)
+            @test out ≈ alm rtol=1e-10
+
+            # a hand-built config must not disagree with the constructor's
+            # for the same grid: `:auto` used to mean `:quad` for non-Gauss grids
+            @test SHTnsKit.phi_inv_scale(create_regular_config(6, 10; nlon=14)) ==
+                  Float64(14)
+        end
+    end
+
+    @testset "padded spatial buffers reach the transforms" begin
+        # `allocate_padded_spatial` returns nlat_padded rows and every transform
+        # demands exactly nlat, so the padding API had no usable path into a
+        # transform at all. `spatial_view` is that path, and it preserves the
+        # padded column stride the padding exists for.
+        cfg = create_gauss_config(16, 18)
+        set_allow_padding!(cfg)
+        @test get_nlat_padded(cfg) > cfg.nlat
+
+        rng = MersenneTwister(4477)
+        f = randn(rng, cfg.nlat, cfg.nlon)
+        pad = allocate_padded_spatial(cfg)
+        copy_to_padded!(pad, f, cfg)
+        v = spatial_view(cfg, pad)
+
+        @test size(v) == (cfg.nlat, cfg.nlon)
+        @test stride(v, 2) == get_nlat_padded(cfg)      # padding retained
+        @test analysis(cfg, v) == analysis(cfg, f)      # bit-identical
+
+        batch = allocate_padded_spatial_batch(cfg, 3)
+        fb = randn(rng, cfg.nlat, cfg.nlon, 3)
+        for k in 1:3
+            copy_to_padded!(view(batch, :, :, k), view(fb, :, :, k), cfg)
+        end
+        @test analysis_batch(cfg, spatial_view(cfg, batch)) == analysis_batch(cfg, fb)
+
+        @test_throws DimensionMismatch spatial_view(cfg, zeros(cfg.nlat - 1, cfg.nlon))
+        @test_throws DimensionMismatch spatial_view(cfg, zeros(cfg.nlat, cfg.nlon + 1))
+    end
+
 end

@@ -63,7 +63,7 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
     alm = Matrix{CT}(undef, lmax + 1, mmax + 1)
     fill!(alm, 0.0 + 0.0im)
 
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     # Bind cfg fields to locals so the @tturbo loops below operate on plain arrays.
     # LoopVectorization can't analyze property access (cfg.Nlm) inside @tturbo, and cfg is mutable.
     xv = cfg.x; wv = cfg.w

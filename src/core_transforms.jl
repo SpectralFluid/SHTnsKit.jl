@@ -588,7 +588,8 @@ function _adjoint_analysis(cfg::SHTConfig, Alm̄::AbstractMatrix;
     Fφ = Matrix{CT}(undef, nlat_local, nlon)
     fill!(Fφ, zero(eltype(Fφ)))
     lmax, mmax = cfg.lmax, cfg.mmax
-    φadj = 2π  # nlon (ifft adjoint) × cphi (2π/nlon) = 2π
+    # nlon (ifft adjoint) × the analysis φ factor. = 2π under :dft.
+    φadj = cfg.nlon * _analysis_phi_scale(cfg)
     use_tbl = has_fused_scalar_tables(cfg)
     P = use_tbl ? nothing : Vector{Float64}(undef, lmax + 1)
     for m in 0:cfg.mres:mmax
@@ -622,7 +623,7 @@ end
 """Scalar analysis orchestrator. Parallelizes Legendre integration over m-modes."""
 function _analysis_scalar_mloop!(alm::AbstractMatrix, cfg::SHTConfig, Fph::AbstractMatrix)
     lmax, mmax = cfg.lmax, cfg.mmax
-    scale_phi = cfg.cphi
+    scale_phi = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     m_order = cached_m_order(cfg)
     if has_fused_scalar_tables(cfg)
         _analysis_scalar_mloop_tbl!(alm, cfg, Fph, m_order, scale_phi)

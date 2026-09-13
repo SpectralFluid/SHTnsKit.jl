@@ -616,7 +616,7 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
     if use_packed_storage
         # Original inline loop for packed storage (not the hot path).
         # Uses normalized rows (Plm_norm_row! / NP_tables): Nlm is already baked in.
-        xv = cfg.x; cphi = cfg.cphi  # hoist field reads out of the loops below (cfg is mutable, so not auto-hoisted)
+        xv = cfg.x; cphi = SHTnsKit._analysis_phi_scale(cfg)  # hoisted; inverts synthesis under any phi_scale
         # Stride by mres: create_packed_storage_info only assigns lm_to_packed for
         # m % mres == 0, leaving every other entry 0. Walking all m under @inbounds
         # therefore wrote Alm_local[0] — one element before the buffer.
@@ -683,7 +683,7 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
         if !use_packed_storage
             # Apply φ scaling (cphi = 2π/nlon). Nlm is NOT applied here: the
             # normalized recurrence Plm_norm_row! already bakes Nlm into P̄.
-            cphi = cfg.cphi  # hoist field read out of the normalization loop (cfg is mutable)
+            cphi = SHTnsKit._analysis_phi_scale(cfg)  # hoisted; inverts synthesis under any phi_scale
             @inbounds for m in 0:cfg.mres:mmax
                 @simd ivdep for l in m:lmax
                     Alm_local[l+1, m+1] *= cphi
@@ -693,7 +693,7 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
     else
         # θ is not distributed - no reduction needed, just apply φ scaling
         if !use_packed_storage
-            cphi = cfg.cphi  # hoist field read out of the normalization loop (cfg is mutable)
+            cphi = SHTnsKit._analysis_phi_scale(cfg)  # hoisted; inverts synthesis under any phi_scale
             @inbounds for m in 0:cfg.mres:mmax
                 @simd ivdep for l in m:lmax
                     Alm_local[l+1, m+1] *= cphi
@@ -759,7 +759,7 @@ function SHTnsKit.dist_analysis!(plan::DistAnalysisPlan, Alm_out::AbstractMatrix
     end
 
     # φ scaling (Nlm already baked into the normalized Legendre rows)
-    cphi = cfg.cphi
+    cphi = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     @inbounds for m in 0:cfg.mres:mmax
         @simd ivdep for l in m:lmax
             plan.Alm_work[l+1, m+1] *= cphi
@@ -1052,7 +1052,7 @@ function SHTnsKit.dist_analysis_sphtor(cfg::SHTnsKit.SHTConfig, Vtθφ::PencilAr
     dPdtheta   = Vector{Float64}(undef, lmax + 1)
     P_over_sth = Vector{Float64}(undef, lmax + 1)
     Pbuf       = Vector{Float64}(undef, lmax + 2)  # scratch for normalized dθ recurrence
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     # Main vector analysis loop — via the same function barriers the planned
     # path uses (concrete argument types; the previous inline loop boxed its
@@ -1225,12 +1225,12 @@ function SHTnsKit.dist_analysis_sphtor!(plan::DistSphtorPlan, Slm_out::AbstractM
         _sphtor_analysis_loop_tbl!(cfg, plan.Slm_work, plan.Tlm_work, cfg.NP_tables, cfg.NdP_tables,
                                    plan.Ftθm, plan.Fpθm, plan.θ_globals,
                                    plan.sθ_cache, plan.weights_cache,
-                                   cfg.robert_form, cfg.cphi, lmax, mmax)
+                                   cfg.robert_form, SHTnsKit._analysis_phi_scale(cfg), lmax, mmax)
     else
         _sphtor_analysis_loop_otf!(plan.Slm_work, plan.Tlm_work, plan.P, plan.dPdtheta,
                                    plan.P_over_sth, plan.Pbuf, plan.Ftθm, plan.Fpθm,
                                    plan.x_cache, plan.sθ_cache, plan.inv_sθ_cache,
-                                   plan.weights_cache, cfg.robert_form, cfg.cphi,
+                                   plan.weights_cache, cfg.robert_form, SHTnsKit._analysis_phi_scale(cfg),
                                    lmax, mmax, cfg.mres)
     end
 
@@ -1975,7 +1975,7 @@ function dist_analysis_distributed(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
 
     # Compute local contributions to ALL coefficients (same as standard analysis)
     local_contrib = zeros(ComplexF64, lmax + 1, mmax + 1)
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     # Pre-cache weights
     weights_cache = Vector{Float64}(undef, nθ_local)
@@ -2826,6 +2826,10 @@ function dist_analysis_distributed_2d(cfg::SHTnsKit.SHTConfig, fθφ::PencilArra
     )
 
     if assume_aligned
+        # `assume_aligned` skips the per-m work, not the correctness precondition:
+        # on a misaligned grid this path returns a silently wrong answer (measured
+        # 1.15 relative error), so the cheap collective check is always worth it.
+        _require_2d_alignment(plan, fθφ, "dist_analysis_distributed_2d(assume_aligned=true)")
         return _dist_analysis_2d_aligned(cfg, fθφ; plan=plan, use_tables=use_tables)
     else
         return _dist_analysis_2d_safe(cfg, fθφ; plan=plan, use_tables=use_tables)
@@ -2869,7 +2873,7 @@ function _dist_analysis_2d_safe(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
         x_cache[ii] = cfg.x[iglob]
     end
 
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     # Use NP_tables (already normalized P̄) if available; fall back to OTF normalized rows.
     use_tbl = use_tables && cfg.use_plm_tables && !isempty(cfg.NP_tables)
     P = Vector{Float64}(undef, lmax + 1)
@@ -2982,6 +2986,34 @@ function dist_synthesis_distributed_2d(cfg::SHTnsKit.SHTConfig, alm::Distributed
 end
 
 """
+    _require_2d_alignment(plan, prototype_θφ, operation)
+
+Reject a θ/l-misaligned decomposition before an optimized 2D path acts on it.
+
+The optimized 2D routines reduce within `l_comm` (ranks sharing an `m_rank`)
+rather than over the whole communicator, which is only valid when every rank in
+such a group owns a *distinct* θ slab — i.e. when the spatial θ split lines up
+with the spectral l split. Where that holds these paths agree with the safe ones
+to ~1e-14; where it does not they silently return garbage. Measured on 4 ranks
+with a 2×2 process grid: `dist_synthesis_distributed_2d_optimized` was off by
+`max|err| = 84.4` against a field of O(10), and forcing
+`dist_analysis_distributed_2d(...; assume_aligned=true)` gave a relative error of
+1.15 — no exception, no warning.
+
+`validate_2d_distribution_alignment` already computes the verdict collectively
+and rank-symmetrically, so every rank throws together.
+"""
+function _require_2d_alignment(plan::DistributedSpectralPlan2D,
+                               prototype_θφ::PencilArray,
+                               operation::AbstractString)
+    aligned, message = validate_2d_distribution_alignment(plan, prototype_θφ)
+    aligned && return nothing
+    throw(ArgumentError(
+        "$operation requires the spatial θ decomposition to be aligned with the " *
+        "spectral l decomposition, and it is not. $message"))
+end
+
+"""
     dist_synthesis_distributed_2d_optimized(cfg::SHTConfig, alm::DistributedSpectralArray2D;
                                              prototype_θφ::PencilArray,
                                              real_output::Bool=true) -> Matrix
@@ -3020,6 +3052,7 @@ function dist_synthesis_distributed_2d_optimized(cfg::SHTnsKit.SHTConfig, alm::D
     _validate_replicated_call_signature(
         plan.comm, "dist_synthesis_distributed_2d_optimized", (real_output,),
     )
+    _require_2d_alignment(plan, prototype_θφ, "dist_synthesis_distributed_2d_optimized")
 
     lmax, mmax = plan.lmax, plan.mmax
     mres = plan.mres
@@ -3329,7 +3362,7 @@ function _dist_analysis_2d_aligned(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
         copyto!(Fθm, Fθm_temp)
     end
 
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     # Use NP_tables (already normalized P̄) if available; fall back to OTF normalized rows.
     use_tbl = use_tables && cfg.use_plm_tables && !isempty(cfg.NP_tables)
 

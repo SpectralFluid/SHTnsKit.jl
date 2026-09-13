@@ -117,7 +117,45 @@ truncation where their scalar twins already raised; `energy_scalar` /
 `energy_vector` indexed under `@inbounds` with no size check and returned a
 silently wrong number for a mis-sized spectrum. Both now raise.
 
+**`analysis` now honours `phi_scale`, making it the inverse of `synthesis` in every mode.**
+`synthesis` scaled its Fourier bins by `phi_inv_scale(cfg)` while `analysis` always
+applied a fixed `cphi = 2π/nlon`, so the two halves of the transform pair disagreed
+about the convention: under `:quad`, `analysis(synthesis(alm))` returned `alm/2π`
+exactly. Analysis (and every sibling — sphtor, batch, packed, axisym, mode-limited,
+the distributed and GPU paths, and the analysis adjoints) now carries `cphi/σ` with
+`σ = phi_inv_scale(cfg)/nlon`, so a round trip is the identity under both modes.
+
+**Default `:dft` behaviour is unchanged** — `σ = 1` there, and `cphi/σ = cphi`. Only
+configurations that explicitly select `:quad` (or set `SHTNSKIT_PHI_SCALE=quad`) see
+different `analysis` output, and what they saw before was not the inverse of their
+own `synthesis`.
+
+**An unset `phi_scale` no longer means `:quad` for non-Gauss grids.**
+The `:auto` fallback keyed on `grid_type`, handing every non-Gauss grid `nlon/2π`.
+Since the exported `SHTConfig(; ...)` keyword constructor defaulted to `:auto`, a
+regular grid built that way disagreed by 2π with the identical grid from
+`create_regular_config`, which sets `:dft`. Both constructors emit `:dft`, so an
+unset value now resolves to `:dft` and the keyword constructor defaults to it.
+
+**Optimized 2D distributed routines now verify their alignment precondition.**
+`dist_synthesis_distributed_2d_optimized` and
+`dist_analysis_distributed_2d(...; assume_aligned=true)` reduce within `l_comm`
+rather than over the whole communicator, which is only valid when the spatial θ
+split lines up with the spectral l split. On a misaligned decomposition they
+returned silent garbage — measured on 4 ranks with a 2×2 process grid,
+`max|err| = 84.4` against a field of O(10) for the synthesis, and a relative error
+of 1.15 for the analysis. Both now validate collectively and raise. Where the
+precondition holds they are unchanged and agree with the safe paths to ~1e-14.
+
 ### Fixed
+
+- **The padding API had no usable path into a transform.**
+  `allocate_padded_spatial` returns `nlat_padded ≥ nlat` rows and every transform
+  requires exactly `nlat`, so the padded buffer it hands you was rejected by
+  `analysis`. New exported `spatial_view(cfg, A)` bridges the two; it keeps the
+  padded column stride, so the cache-conflict avoidance the padding exists for is
+  preserved and results are bit-identical to the unpadded layout.
+
 
 - **QST transforms had no reverse-mode rule.** `synthesis_qst` and `analysis_qst`
   fell through to Zygote's source tracing and crashed inside FFTW. Both now have

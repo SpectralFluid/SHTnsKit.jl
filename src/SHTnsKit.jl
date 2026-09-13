@@ -147,12 +147,34 @@ function phi_inv_scale(cfg::SHTConfig)
     end
     if cfg.phi_scale === :quad
         return cfg.nlon / (2π)
-    elseif cfg.phi_scale === :dft
-        return Float64(cfg.nlon)
     else
-        return cfg.grid_type == :gauss ? Float64(cfg.nlon) : cfg.nlon / (2π)
+        # `:dft` and anything unset (`:auto`). The old fallback keyed on
+        # `grid_type` and handed every non-Gauss grid `nlon/2π` — so a regular
+        # grid built through the exported keyword constructor (which defaults to
+        # `:auto`) disagreed by 2π with the identical grid from
+        # `create_regular_config`, which sets `:dft` explicitly. Both constructors
+        # emit `:dft` today, so `:dft` is the right default for an unset value.
+        return Float64(cfg.nlon)
     end
 end
+
+"""
+    _analysis_phi_scale(cfg) -> Float64
+
+The φ quadrature factor `analysis` must apply so that it inverts `synthesis`.
+
+`synthesis` scales its Fourier bins by `phi_inv_scale(cfg)` and the inverse FFT
+divides by `nlon`, a net spatial factor of `σ = phi_inv_scale(cfg)/nlon`. For the
+pair to be mutually inverse, analysis must carry `cphi/σ`.
+
+Under the default `:dft` mode `σ = 1` and this is just `cphi = 2π/nlon`, exactly
+what analysis always used — so nothing changes for any configuration the
+`create_*_config` constructors produce. Under `:quad` (`σ = 1/2π`) the old fixed
+`cphi` made `analysis(synthesis(alm))` come back as `alm/2π`: the two halves of
+the transform pair simply disagreed about the convention, with synthesis honouring
+`phi_scale` and analysis ignoring it.
+"""
+@inline _analysis_phi_scale(cfg::SHTConfig) = cfg.cphi * cfg.nlon / phi_inv_scale(cfg)
 
 include("buffer_utils.jl")                   # Common buffer allocation patterns
 include("kernels.jl")                       # Legendre accumulation kernels
@@ -182,6 +204,7 @@ export set_allow_padding!, disable_padding!, is_padding_enabled       # Memory p
 export get_nlat_padded, get_spat_dist, compute_optimal_padding        # Padding queries
 export allocate_padded_spatial, allocate_padded_spatial_batch         # Padded array allocation
 export copy_to_padded!, copy_from_padded!, estimate_padding_overhead  # Padding utilities
+export spatial_view                                                   # Padded buffer → transform-shaped view
 
 # ===== BASIC TRANSFORMS =====
 # The `*_cplx` helpers are intentionally separate from `real_output=false`

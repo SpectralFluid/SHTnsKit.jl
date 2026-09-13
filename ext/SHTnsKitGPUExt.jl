@@ -381,7 +381,7 @@ function gpu_analysis(cfg::SHTConfig, spatial_data; device=get_device())
     gpu_fft!(gpu_data, 2)
 
     # Scaling factor for φ integration (matches CPU: cfg.cphi = 2π/nlon)
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     # Step 3: Fully parallel Legendre integration - ALL (l,m) pairs in one kernel.
     # Each thread computes one a_lm coefficient.
@@ -581,7 +581,7 @@ function gpu_analysis_sphtor(cfg::SHTConfig, vθ, vφ; device=get_device())
     x_values = CuArray(cfg.x)
     weights = CuArray(cfg.w)
     Nlm_values = CuArray(cfg.Nlm)
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     robert_form = cfg.robert_form
 
     # Compute ORTHONORMAL normalized P̄_l^m AND their dP̄/dx on GPU.

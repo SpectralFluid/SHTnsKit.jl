@@ -124,7 +124,7 @@ function analysis_axisym(cfg::SHTConfig, Vr::AbstractVector{<:Real})
     # applied explicitly here. Without it this is NOT the inverse of
     # `synthesis_axisym` (which matches `synthesis` exactly) and disagrees with
     # the m=0 column of `analysis` by 1/2π.
-    scaleφ = cfg.cphi * cfg.nlon
+    scaleφ = _analysis_phi_scale(cfg) * cfg.nlon  # inverts synthesis under any phi_scale (= cphi under :dft)
     @inbounds for l in 0:lmax
         Ql[l+1] *= scaleφ
     end
@@ -269,7 +269,7 @@ function analysis_axisym_l(cfg::SHTConfig, Vr::AbstractVector{<:Real}, ltr::Int)
     end
 
     # Same φ quadrature factor as `analysis_axisym` — see the comment there.
-    scaleφ = cfg.cphi * cfg.nlon
+    scaleφ = _analysis_phi_scale(cfg) * cfg.nlon  # inverts synthesis under any phi_scale (= cphi under :dft)
     @inbounds for l in eachindex(Ql)
         Ql[l] *= scaleφ
     end
@@ -337,7 +337,7 @@ function analysis_packed_ml(cfg::SHTConfig, mval::Int, Vr_m::AbstractVector{<:Co
     fill!(Ql, zero(CT))
 
     P = Vector{Float64}(undef, ltr + 1)
-    scaleφ = cfg.cphi  # Match full transform normalization
+    scaleφ = _analysis_phi_scale(cfg)  # Match full transform normalization
     xv = cfg.x; wv = cfg.w  # hoist field reads out of the i/l loops (cfg is mutable, so not auto-hoisted)
 
     for i in 1:nlat

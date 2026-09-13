@@ -296,7 +296,7 @@ function _adjoint_analysis_sphtor(cfg::SHTConfig, Slm̄::AbstractMatrix, Tlm̄::
     dPdtheta = Vector{Float64}(undef, lmax + 1)
     P_over_sinth = Vector{Float64}(undef, lmax + 1)
     Pbuf = Vector{Float64}(undef, lmax + 2)   # scratch for extended P̄ row (avoids per-call alloc)
-    φadj = 2π
+    φadj = cfg.nlon * _analysis_phi_scale(cfg)  # = 2π under :dft
 
     for m in 0:cfg.mres:mmax
         col = m + 1
@@ -423,7 +423,7 @@ function _analysis_sphtor_mloop!(Slm::AbstractMatrix, Tlm::AbstractMatrix,
                                   ltr::Int=cfg.lmax)
     lmax, mmax = cfg.lmax, cfg.mmax
     ltr_eff = min(ltr, lmax)
-    scale_phi = cfg.cphi
+    scale_phi = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     m_order = cached_m_order(cfg)
 
     if has_fused_vector_tables(cfg)
@@ -813,7 +813,7 @@ function analysis_sphtor_ml(cfg::SHTConfig, mval::Int, Vt_m::AbstractVector{<:Co
     dPdtheta = Vector{Float64}(undef, ltr + 1)
     P_over_sinth = Vector{Float64}(undef, ltr + 1)
     Pbuf = Vector{Float64}(undef, ltr + 2)   # scratch for extended P̄ row (avoids per-call alloc)
-    scaleφ = cfg.cphi
+    scaleφ = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     # Integrate using Legendre polynomials and derivatives (pole-safe)
     for i in 1:nlat

@@ -11,7 +11,7 @@ This page summarizes practical tips to reduce allocations and improve locality a
 
 - Reuse plans: Construct `SHTPlan` (serial) and distributed plans (`DistAnalysisPlan`, `DistSphtorPlan`, `DistQstPlan`) once per size and reuse. Plans hold FFT plans and working buffers to avoid per-call allocations.
 
-- Grid defaults: Gauss grids use `phi_scale=:dft` (FFT scaling nlon). Regular/Driscoll-Healy grids use `phi_scale=:quad` (nlon/2π). You can override globally with `ENV["SHTNSKIT_PHI_SCALE"]=dft|quad` or per-config via `phi_scale` if you need a specific convention.
+- Grid defaults: every constructor sets `phi_scale=:dft` (FFT scaling `nlon`), Gauss and regular alike. You can override globally with `ENV["SHTNSKIT_PHI_SCALE"]=dft|quad` or per-config by assigning `cfg.phi_scale` if you need the quadrature convention. `analysis` and `synthesis` stay mutual inverses in either mode; `:quad` only rescales the spatial field by 1/2π.
 
 - Low-allocation serial recipe: preallocate FFT scratch and outputs.
   ```julia
