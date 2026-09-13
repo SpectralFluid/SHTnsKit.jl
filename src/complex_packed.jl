@@ -179,7 +179,7 @@ function _analysis_packed_cplx(cfg::SHTConfig, z::AbstractMatrix{<:Complex},
     # fft_phi re-plans each call). eltype preserved for the AD/DFT fallback.
     Fφ = fft_phi!(Matrix{complex(float(eltype(z)))}(undef, size(z)...), z)
     P = Vector{Float64}(undef, lmax + 1)
-    scaleφ = cfg.cphi
+    scaleφ = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     xv = cfg.x; wv = cfg.w  # hoist field reads out of the m/l loops (cfg is mutable, so not auto-hoisted)
     # Read both signs of m from the FFT output and store them in LM_cplx order.
@@ -285,7 +285,10 @@ function synthesis_point_cplx(cfg::SHTConfig, alm::AbstractVector{<:Complex}, co
         acc += gp * cis(convert(PT, am) * ph)
         am > 0 && (acc += gn * cis(-convert(PT, am) * ph))
     end
-    return acc
+    # Same φ convention factor `synthesis_packed_cplx` carries (1 under :dft;
+    # 1/2π under :quad), so a point evaluation matches the grid it samples.
+    sφ = _evaluator_phi_scale(cfg)
+    return sφ == 1 ? acc : acc * sφ
 end
 
 

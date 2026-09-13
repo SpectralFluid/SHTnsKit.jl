@@ -97,6 +97,22 @@ Currently supports fast rotation around the Z-axis by angle `alpha` in radians.
 
 Rotate a real-field SH expansion around the Z-axis by angle `alpha`.
 Input and output are packed `Qlm` vectors (LM order, m ≥ 0). In-place supported if `Rlm === Qlm`.
+
+# Sign convention
+
+`R_lm = Q_lm · exp(-i m α)`. This is the **active** rotation of the field by `+α`
+about `ẑ`: the rotated field is `g(θ, φ) = f(θ, φ - α)`. Equivalently, a feature
+at longitude `φ₀` moves to `φ₀ + α`.
+
+Three things pin this sign and would all break if it were flipped to `+imα`
+(which is the *passive* convention, `f(θ, φ + α)`):
+
+  * the spatial rotation above, verified directly in
+    `test/serial/test_rotations.jl` against an FFT-grid φ shift;
+  * the general Wigner engine — `shtns_rotation_apply_real` with
+    `ZYZ(α, 0, 0)` (or `ZYZ(0, 0, α)`) must equal this function, and it builds
+    `diag(e^{-imα}) · d(β) · diag(e^{-imγ})`;
+  * the distributed twins `dist_SH_Zrotate` and every rotation `rrule`.
 """
 function SH_Zrotate(::CPU, cfg::SHTConfig, Qlm::AbstractVector{<:Complex},
                     alpha::Real, Rlm::AbstractVector{<:Complex})
@@ -582,12 +598,61 @@ function _rotation_host_blocks(r::SHTRotation, ::Type{T}) where {T<:AbstractFloa
     return (; offsets, values, input_scales, output_scales, alpha=α, gamma=γ)
 end
 
+"""
+    _require_full_m_range(r::SHTRotation, β::Real)
+
+Reject an order-mixing rotation on a layout that cannot hold every order it
+produces.
+
+A Wigner-d rotation through a general `β` couples `Y_l^m` to every `Y_l^{m′}`
+with `|m′| ≤ l`. If the storage stops at `mmax < lmax`, the `|m′| > mmax`
+components have nowhere to go and were silently dropped — measured at
+`lmax = 8`, that quietly discarded **14.8 %** of the field’s energy at
+`mmax = 5` and **24.0 %** at `mmax = 3`, with no error and no warning.
+
+The two degenerate angles are exempt because their `d^l` is not order-mixing:
+`β ≡ 0` is diagonal, and `β ≡ π` is anti-diagonal (`m′ = -m`), so `|m′| = |m|`
+and a truncated layout still holds the result. That keeps pure Z-rotations
+expressed as `ZYZ(α, 0, γ)` working at any `mmax`.
+
+Mirrors the `mres > 1` restriction stated by `dist_SH_Yrotate` and the packed
+distributed rotations, for the same reason.
+"""
+function _require_full_m_range(r::SHTRotation, β::Real)
+    r.mmax >= r.lmax && return nothing
+    abs(sin(float(β))) <= 1e-12 && return nothing   # β ≡ 0 (mod π): no m mixing
+    throw(ArgumentError(
+        "rotation with β=$(β) mixes azimuthal orders, but this configuration " *
+        "stores only m ≤ mmax=$(r.mmax) with lmax=$(r.lmax); the |m| > mmax " *
+        "components such a rotation generates cannot be represented and would " *
+        "be silently discarded. Use a configuration with mmax == lmax for " *
+        "Y/X rotations and general Euler angles. Pure Z-rotations (β ≡ 0 mod π) " *
+        "are unaffected and still work at any mmax."))
+end
+
+"""
+    _rotation_packed_length_check(v, expected, name, r)
+
+Length guard for the packed rotation inputs, with an `mres`-aware message.
+"""
+function _rotation_packed_length_check(v::AbstractVector, expected::Int,
+                                       name::AbstractString, r::SHTRotation)
+    length(v) == expected && return nothing
+    throw(DimensionMismatch(
+        "$name has length $(length(v)), expected $expected for the packed (mres=1) " *
+        "layout at lmax=$(r.lmax), mmax=$(r.mmax). A Y/X rotation mixes azimuthal " *
+        "orders, so it cannot be represented in an mres-strided layout at all — an " *
+        "mres>1 config produces a shorter packed vector and lands here. Use mres=1 " *
+        "for rotations other than SH_Zrotate."))
+end
+
 function _rotation_apply_cplx_canonical!(r::SHTRotation,
                                          Zlm::AbstractVector{<:Complex},
                                          Rlm::AbstractVector{<:Complex})
     r.lmax ≥ 0 || return Rlm
     RT = typeof(real(zero(eltype(Rlm))))
     α, β, γ = _rotation_zyz_angles(r, RT)
+    _require_full_m_range(r, β)
 
     # Pre-allocate working arrays at maximum size to avoid per-l allocations
     nmax = 2 * r.lmax + 1
@@ -692,8 +757,13 @@ function shtns_rotation_apply_real(::CPU, r::SHTRotation,
     _require_cpu_storage(:shtns_rotation_apply_real, Qlm)
     _require_cpu_storage(:shtns_rotation_apply_real, Rlm)
     expected = nlm_calc(r.lmax, r.mmax, 1)
-    length(Qlm) == expected || throw(DimensionMismatch("LM packed size mismatch"))
-    length(Rlm) == expected || throw(DimensionMismatch("LM packed size mismatch"))
+    # A length mismatch here is almost always an `mres > 1` config reaching a
+    # rotation that mixes orders, which no mres-strided layout can represent.
+    # Say that, rather than reporting a bare size mismatch the caller has to
+    # reverse-engineer. (`dist_SH_Yrotate` and the packed distributed rotations
+    # state the same restriction up front.)
+    _rotation_packed_length_check(Qlm, expected, "Qlm", r)
+    _rotation_packed_length_check(Rlm, expected, "Rlm", r)
     eltype(Qlm) === eltype(Rlm) || throw(ArgumentError(
         "rotation input and output element types must match",
     ))

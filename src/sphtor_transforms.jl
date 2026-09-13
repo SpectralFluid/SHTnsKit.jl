@@ -404,7 +404,7 @@ function _adjoint_analysis_sphtor(cfg::SHTConfig, Slm̄::AbstractMatrix, Tlm̄::
     dPdtheta = Vector{Float64}(undef, lmax + 1)
     P_over_sinth = Vector{Float64}(undef, lmax + 1)
     Pbuf = Vector{Float64}(undef, lmax + 2)   # scratch for extended P̄ row (avoids per-call alloc)
-    φadj = 2π
+    φadj = cfg.nlon * _analysis_phi_scale(cfg)  # = 2π under :dft
 
     for m in 0:cfg.mres:mmax
         col = m + 1
@@ -533,7 +533,7 @@ function _analysis_sphtor_mloop!(Slm::AbstractMatrix, Tlm::AbstractMatrix,
                                   ltr::Int=cfg.lmax)
     lmax, mmax = cfg.lmax, cfg.mmax
     ltr_eff = min(ltr, lmax)
-    scale_phi = cfg.cphi
+    scale_phi = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     m_order = cached_m_order(cfg)
 
     if has_fused_vector_tables(cfg)
@@ -997,39 +997,39 @@ synthesis_tor_l_cplx(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix,
     synthesis_tor_l(CPU(), cfg, Tlm, ltr; real_output=false)
 
 """
-    synthesis_sph_ml(cfg::SHTConfig, im::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
+    synthesis_sph_ml(cfg::SHTConfig, mval::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
 
 Mode-limited spheroidal-only synthesis wrapper.
 """
-function synthesis_sph_ml(cfg::SHTConfig, im::Integer, Sl::AbstractVector{<:Complex}, ltr::Integer)
+function synthesis_sph_ml(cfg::SHTConfig, mval::Integer, Sl::AbstractVector{<:Complex}, ltr::Integer)
     # Mode-limited wrappers use zero-vector views for the missing component;
-    # this avoids an O(ltr-im) allocation on repeated per-mode calls.
+    # this avoids an O(ltr-mval) allocation on repeated per-mode calls.
     Tl_zero = _zero_spectral_vector(eltype(Sl), length(Sl))
-    return synthesis_sphtor_ml(cfg, im, Sl, Tl_zero, ltr)
+    return synthesis_sphtor_ml(cfg, mval, Sl, Tl_zero, ltr)
 end
 
-function synthesis_sph_ml(::CPU, cfg::SHTConfig, im::Integer,
+function synthesis_sph_ml(::CPU, cfg::SHTConfig, mval::Integer,
                           Sl::AbstractVector{<:Complex}, ltr::Integer)
     _require_cpu_storage(:synthesis_sph_ml, Sl)
-    return synthesis_sph_ml(cfg, im, Sl, ltr)
+    return synthesis_sph_ml(cfg, mval, Sl, ltr)
 end
 
 """
-    synthesis_tor_ml(cfg::SHTConfig, im::Int, Tl::AbstractVector{<:Complex}, ltr::Int)
+    synthesis_tor_ml(cfg::SHTConfig, mval::Int, Tl::AbstractVector{<:Complex}, ltr::Int)
 
 Mode-limited toroidal-only synthesis wrapper.
 """
-function synthesis_tor_ml(cfg::SHTConfig, im::Integer, Tl::AbstractVector{<:Complex}, ltr::Integer)
+function synthesis_tor_ml(cfg::SHTConfig, mval::Integer, Tl::AbstractVector{<:Complex}, ltr::Integer)
     # Mode-limited wrappers use zero-vector views for the missing component;
-    # this avoids an O(ltr-im) allocation on repeated per-mode calls.
+    # this avoids an O(ltr-mval) allocation on repeated per-mode calls.
     Sl_zero = _zero_spectral_vector(eltype(Tl), length(Tl))
-    return synthesis_sphtor_ml(cfg, im, Sl_zero, Tl, ltr)
+    return synthesis_sphtor_ml(cfg, mval, Sl_zero, Tl, ltr)
 end
 
-function synthesis_tor_ml(::CPU, cfg::SHTConfig, im::Integer,
+function synthesis_tor_ml(::CPU, cfg::SHTConfig, mval::Integer,
                           Tl::AbstractVector{<:Complex}, ltr::Integer)
     _require_cpu_storage(:synthesis_tor_ml, Tl)
-    return synthesis_tor_ml(cfg, im, Tl, ltr)
+    return synthesis_tor_ml(cfg, mval, Tl, ltr)
 end
 
 """
@@ -1081,7 +1081,7 @@ function analysis_sphtor_ml(cfg::SHTConfig, stored_im::Integer, Vt_m::AbstractVe
     dPdtheta = Vector{Float64}(undef, ltr + 1)
     P_over_sinth = Vector{Float64}(undef, ltr + 1)
     Pbuf = Vector{Float64}(undef, ltr + 2)   # scratch for extended P̄ row (avoids per-call alloc)
-    scaleφ = cfg.cphi
+    scaleφ = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     # Integrate using Legendre polynomials and derivatives (pole-safe)
     for i in 1:nlat
@@ -1229,12 +1229,12 @@ synthesis_grad_l(::CPU, cfg::SHTConfig, Slm::AbstractMatrix,
     synthesis_sph_l(CPU(), cfg, Slm, ltr; kwargs...)
 
 """
-    synthesis_grad_ml(cfg::SHTConfig, im::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
+    synthesis_grad_ml(cfg::SHTConfig, mval::Int, Sl::AbstractVector{<:Complex}, ltr::Int)
 
 Mode-limited gradient synthesis alias.
 """
-function synthesis_grad_ml(cfg::SHTConfig, im::Integer, Sl::AbstractVector{<:Complex}, ltr::Integer)
-    return synthesis_sph_ml(cfg, im, Sl, ltr)
+function synthesis_grad_ml(cfg::SHTConfig, mval::Integer, Sl::AbstractVector{<:Complex}, ltr::Integer)
+    return synthesis_sph_ml(cfg, mval, Sl, ltr)
 end
 
 synthesis_grad_ml(::CPU, cfg::SHTConfig, im::Integer,

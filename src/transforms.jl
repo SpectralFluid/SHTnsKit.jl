@@ -108,7 +108,7 @@ function analysis_axisym(cfg::SHTConfig, Vr::AbstractVector{<:Real})
     # applied explicitly here. Without it this is NOT the inverse of
     # `synthesis_axisym` (which matches `synthesis` exactly) and disagrees with
     # the m=0 column of `analysis` by 1/2π.
-    scaleφ = cfg.cphi * cfg.nlon
+    scaleφ = _analysis_phi_scale(cfg) * cfg.nlon  # inverts synthesis under any phi_scale (= cphi under :dft)
     @inbounds for l in 0:lmax
         Ql[l+1] *= scaleφ
     end
@@ -239,6 +239,11 @@ function synthesis_axisym(cfg::SHTConfig, Qlm::AbstractVector{<:Complex})
         Vr[i] = val
     end
 
+    # Same φ convention factor the full `synthesis` carries (1 under :dft;
+    # 1/2π under :quad), so this stays the m=0 column of `synthesis` and the
+    # exact inverse of `analysis_axisym` in either mode.
+    sφ = _evaluator_phi_scale(cfg)
+    sφ == 1 || (Vr .*= RT(sφ))
     return Vr
 end
 
@@ -270,7 +275,7 @@ function analysis_axisym_l(cfg::SHTConfig, Vr::AbstractVector{<:Real}, ltr::Inte
     end
 
     # Same φ quadrature factor as `analysis_axisym` — see the comment there.
-    scaleφ = cfg.cphi * cfg.nlon
+    scaleφ = _analysis_phi_scale(cfg) * cfg.nlon  # inverts synthesis under any phi_scale (= cphi under :dft)
     @inbounds for l in eachindex(Ql)
         Ql[l] *= scaleφ
     end
@@ -307,25 +312,28 @@ function synthesis_axisym_l(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, ltr:
         Vr[i] = val
     end
 
+    # Same φ convention factor as `synthesis_axisym` — see the comment there.
+    sφ = _evaluator_phi_scale(cfg)
+    sφ == 1 || (Vr .*= RT(sφ))
     return Vr
 end
 
 """
-    analysis_packed_ml(cfg, im, Vr_m, ltr) -> Vector{<:Complex}
+    analysis_packed_ml(cfg, mval, Vr_m, ltr) -> Vector{<:Complex}
 
 Transform spatial field for one stored azimuthal order to spherical harmonic
-coefficients. `im` is the zero-based stored-order index, so the physical order
-is `m = im * cfg.mres`. `Vr_m` contains complex spatial values for that mode.
+coefficients. `mval` is the zero-based stored-order index, so the physical order
+is `m = mval * cfg.mres`. `Vr_m` contains complex spatial values for that mode.
 Returns coefficients Q_l for degrees l = m..ltr.
 """
-function analysis_packed_ml(cfg::SHTConfig, im::Int, Vr_m::AbstractVector{<:Complex}, ltr::Integer)
+function analysis_packed_ml(cfg::SHTConfig, mval::Int, Vr_m::AbstractVector{<:Complex}, ltr::Integer)
     nlat = cfg.nlat
     length(Vr_m) == nlat || throw(DimensionMismatch("Vr_m length must be nlat=$(nlat)"))
-    im >= 0 || throw(ArgumentError("im must be >= 0"))
-    im <= cfg.mmax ÷ cfg.mres || throw(ArgumentError("im must be <= mmax/mres=$(cfg.mmax ÷ cfg.mres)"))
-    m = im * cfg.mres
+    mval >= 0 || throw(ArgumentError("mval must be >= 0"))
+    mval <= cfg.mmax ÷ cfg.mres || throw(ArgumentError("mval must be <= mmax/mres=$(cfg.mmax ÷ cfg.mres)"))
+    m = mval * cfg.mres
     ltr = _validate_degree_limit(cfg, ltr)
-    ltr >= m || throw(ArgumentError("ltr must be >= im*mres=$(m)"))
+    ltr >= m || throw(ArgumentError("ltr must be >= mval*mres=$(m)"))
 
     num_l = ltr - m + 1
     CT = complex(float(real(eltype(Vr_m))))  # AD/Float32-safe output eltype
@@ -333,7 +341,7 @@ function analysis_packed_ml(cfg::SHTConfig, im::Int, Vr_m::AbstractVector{<:Comp
     fill!(Ql, zero(CT))
 
     P = Vector{Float64}(undef, ltr + 1)
-    scaleφ = cfg.cphi  # Match full transform normalization
+    scaleφ = _analysis_phi_scale(cfg)  # Match full transform normalization
     xv = cfg.x; wv = cfg.w  # hoist field reads out of the i/l loops (cfg is mutable, so not auto-hoisted)
 
     for i in 1:nlat
@@ -352,20 +360,20 @@ function analysis_packed_ml(cfg::SHTConfig, im::Int, Vr_m::AbstractVector{<:Comp
 end
 
 """
-    synthesis_packed_ml(cfg, im, Ql, ltr) -> Vector{<:Complex}
+    synthesis_packed_ml(cfg, mval, Ql, ltr) -> Vector{<:Complex}
 
 Transform spherical harmonic coefficients for specific mode m to spatial field.
-`im` is the zero-based stored-order index (`m = im * cfg.mres`); `Ql`
+`mval` is the zero-based stored-order index (`m = mval * cfg.mres`); `Ql`
 contains coefficients for degrees l = m..ltr.
 Returns complex spatial values for that azimuthal mode.
 """
-function synthesis_packed_ml(cfg::SHTConfig, im::Int, Ql::AbstractVector{<:Complex}, ltr::Integer)
+function synthesis_packed_ml(cfg::SHTConfig, mval::Int, Ql::AbstractVector{<:Complex}, ltr::Integer)
     nlat = cfg.nlat
-    im >= 0 || throw(ArgumentError("im must be >= 0"))
-    im <= cfg.mmax ÷ cfg.mres || throw(ArgumentError("im must be <= mmax/mres=$(cfg.mmax ÷ cfg.mres)"))
-    m = im * cfg.mres
+    mval >= 0 || throw(ArgumentError("mval must be >= 0"))
+    mval <= cfg.mmax ÷ cfg.mres || throw(ArgumentError("mval must be <= mmax/mres=$(cfg.mmax ÷ cfg.mres)"))
+    m = mval * cfg.mres
     ltr = _validate_degree_limit(cfg, ltr)
-    ltr >= m || throw(ArgumentError("ltr must be >= im*mres=$(m)"))
+    ltr >= m || throw(ArgumentError("ltr must be >= mval*mres=$(m)"))
 
     expected_len = ltr - m + 1
     length(Ql) == expected_len || throw(DimensionMismatch("Ql length must be $(expected_len)"))
@@ -432,15 +440,15 @@ function synthesis_axisym_l(::CPU, cfg::SHTConfig,
     _require_cpu_storage(:synthesis_axisym_l, coefficients)
     return synthesis_axisym_l(cfg, coefficients, ltr)
 end
-function analysis_packed_ml(::CPU, cfg::SHTConfig, im::Int,
+function analysis_packed_ml(::CPU, cfg::SHTConfig, mval::Int,
                             mode::AbstractVector{<:Complex}, ltr::Integer)
     _require_cpu_storage(:analysis_packed_ml, mode)
-    return analysis_packed_ml(cfg, im, mode, ltr)
+    return analysis_packed_ml(cfg, mval, mode, ltr)
 end
-function synthesis_packed_ml(::CPU, cfg::SHTConfig, im::Int,
+function synthesis_packed_ml(::CPU, cfg::SHTConfig, mval::Int,
                              coefficients::AbstractVector{<:Complex}, ltr::Integer)
     _require_cpu_storage(:synthesis_packed_ml, coefficients)
-    return synthesis_packed_ml(cfg, im, coefficients, ltr)
+    return synthesis_packed_ml(cfg, mval, coefficients, ltr)
 end
 
 """
@@ -538,7 +546,10 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
         result += 2 * real(gm * phase)
     end
 
-    return result
+    # Same φ convention factor the grid `synthesis` carries (1 under :dft;
+    # 1/2π under :quad), so a point evaluation matches the grid it samples.
+    sφ = _evaluator_phi_scale(cfg)
+    return sφ == 1 ? result : result * sφ
 end
 
 function synthesis_point(::CPU, cfg::SHTConfig,

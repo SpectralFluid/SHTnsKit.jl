@@ -7,6 +7,17 @@ using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
+# Allocation budgets below are calibrated for a SINGLE-THREADED run, where they
+# are exact. The shared m-loop orchestrators start `@threads` tasks whenever
+# threads are available, and each threaded region costs a few hundred bytes to
+# spawn — a constant independent of problem size, and not the kind of regression
+# these budgets exist to catch (a per-row temporary or a dense zero spectrum
+# costs tens of KB and grows with lmax). Allow a per-thread slack rather than
+# letting the whole suite go red on any multi-core machine; note this makes the
+# budgets coarse at `nthreads > 1`, so the tight check is the 1-thread run.
+@isdefined(_thread_alloc_slack) ||
+    (_thread_alloc_slack() = Threads.nthreads() > 1 ? 4_096 * Threads.nthreads() : 0)
+
 @testset "Batch Transforms" begin
     @testset "Scalar batch analysis" begin
         lmax = 6
@@ -105,10 +116,10 @@ using SHTnsKit
         synthesis_batch!(cfg, fields_out, alm_batch; fft_batch=rfft_batch, use_rfft=true)
         GC.gc()
 
-        @test @allocated(analysis_batch!(cfg, alm_batch, fields; fft_batch=fft_batch)) <= 8_000
-        @test @allocated(synthesis_batch!(cfg, fields_out, alm_batch; fft_batch=fft_batch)) <= 8_000
-        @test @allocated(analysis_batch!(cfg, alm_batch, fields; fft_batch=rfft_batch, use_rfft=true)) <= 8_000
-        @test @allocated(synthesis_batch!(cfg, fields_out, alm_batch; fft_batch=rfft_batch, use_rfft=true)) <= 8_000
+        @test @allocated(analysis_batch!(cfg, alm_batch, fields; fft_batch=fft_batch)) <= 8_000 + _thread_alloc_slack()
+        @test @allocated(synthesis_batch!(cfg, fields_out, alm_batch; fft_batch=fft_batch)) <= 8_000 + _thread_alloc_slack()
+        @test @allocated(analysis_batch!(cfg, alm_batch, fields; fft_batch=rfft_batch, use_rfft=true)) <= 8_000 + _thread_alloc_slack()
+        @test @allocated(synthesis_batch!(cfg, fields_out, alm_batch; fft_batch=rfft_batch, use_rfft=true)) <= 8_000 + _thread_alloc_slack()
         @inferred synthesis_batch(cfg, alm_batch)
 
         fields_kw = synthesis_batch(cfg, alm_batch; real_output=false)
@@ -223,8 +234,8 @@ using SHTnsKit
         synthesis_sphtor_batch(cfg, Slm_batch, Tlm_batch)
         analysis_sphtor_batch(cfg, Vt_batch, Vp_batch)
         GC.gc()
-        @test @allocated(synthesis_sphtor_batch(cfg, Slm_batch, Tlm_batch)) <= 16_000
-        @test @allocated(analysis_sphtor_batch(cfg, Vt_batch, Vp_batch)) <= 18_000
+        @test @allocated(synthesis_sphtor_batch(cfg, Slm_batch, Tlm_batch)) <= 16_000 + _thread_alloc_slack()
+        @test @allocated(analysis_sphtor_batch(cfg, Vt_batch, Vp_batch)) <= 18_000 + _thread_alloc_slack()
     end
 
     @testset "QST batch transforms" begin

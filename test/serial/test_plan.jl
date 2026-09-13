@@ -262,4 +262,51 @@ end
         @test all(isfinite, f_cplx)
         @test eltype(f_cplx) <: Complex
     end
+
+    @testset "planned transforms match the cfg form in every buffer mode" begin
+        # The planned transforms exist to be a drop-in, faster replacement for
+        # the `cfg` forms. Pin that they agree numerically across the whole
+        # matrix of buffer modes: Legendre tables on/off, rfft on/off, and
+        # Robert form on/off — a divergence in any cell is a silent wrong
+        # answer for anyone who reaches for a plan.
+        rng = MersenneTwister(4821)
+        for tables in (false, true), use_rfft in (false, true), robert in (false, true)
+            cfgp = create_gauss_config(10, 12)
+            cfgp.robert_form = robert
+            tables ? SHTnsKit.prepare_plm_tables!(cfgp) : SHTnsKit.disable_plm_tables!(cfgp)
+
+            alm = zeros(ComplexF64, cfgp.lmax + 1, cfgp.mmax + 1)
+            for m in 0:cfgp.mmax, l in m:cfgp.lmax
+                alm[l + 1, m + 1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+            end
+            S = copy(alm); T = 0.5 .* alm
+            S[1, 1] = 0; T[1, 1] = 0
+
+            f = synthesis(cfgp, alm)
+            Vt, Vp = synthesis_sphtor(cfgp, S, T)
+            alm_ref = analysis(cfgp, f)
+            S_ref, T_ref = analysis_sphtor(cfgp, Vt, Vp)
+
+            plan = SHTPlan(cfgp; use_rfft=use_rfft)
+            tol = 1e-12
+
+            alm_out = similar(alm_ref)
+            analysis!(plan, alm_out, f)
+            @test maximum(abs, alm_out .- alm_ref) <= tol
+
+            f_out = similar(f)
+            synthesis!(plan, f_out, alm)
+            @test maximum(abs, f_out .- f) <= tol
+
+            S_out = similar(S_ref); T_out = similar(T_ref)
+            SHTnsKit.analysis_sphtor!(plan, S_out, T_out, Vt, Vp)
+            @test maximum(abs, S_out .- S_ref) <= tol
+            @test maximum(abs, T_out .- T_ref) <= tol
+
+            Vt_out = similar(Vt); Vp_out = similar(Vp)
+            SHTnsKit.synthesis_sphtor!(plan, Vt_out, Vp_out, S, T)
+            @test maximum(abs, Vt_out .- Vt) <= tol
+            @test maximum(abs, Vp_out .- Vp) <= tol
+        end
+    end
 end

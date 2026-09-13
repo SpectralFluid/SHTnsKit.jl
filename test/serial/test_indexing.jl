@@ -210,4 +210,22 @@ using SHTnsKit
         cfg = create_gauss_config(lmax, lmax + 2)
         @test cfg.nlm == nlm_calc(lmax, lmax, mres)
     end
+
+    @testset "im_from_lm is bounded by mmax, not lmax" begin
+        # The bound was `lmax ÷ mres`, so for an mmax < lmax layout a
+        # past-the-end index resolved to an order the configuration does not
+        # store instead of raising.
+        lmax, mmax = 8, 3
+        n = nlm_calc(lmax, mmax, 1)
+        # every in-range index still maps to its own order
+        li, mi = build_li_mi(lmax, mmax, 1)
+        for k in 1:n
+            @test SHTnsKit.im_from_lm(k - 1, lmax, 1; mmax=mmax) == mi[k]
+        end
+        # one past the end now raises rather than inventing m = 4
+        @test_throws ArgumentError SHTnsKit.im_from_lm(n, lmax, 1; mmax=mmax)
+        # default mmax=lmax keeps the old, correct behaviour for full layouts
+        @test SHTnsKit.im_from_lm(nlm_calc(lmax, lmax, 1) - 1, lmax, 1) == lmax
+    end
+
 end

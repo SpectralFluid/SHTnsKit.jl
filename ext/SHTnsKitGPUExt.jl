@@ -628,7 +628,7 @@ function _cuda_scalar_analysis_direct!(owner, cfg::SHTConfig,
         end
         backend = CUDABackend()
         scalar_analysis_kernel!(backend)(
-            output, fourier, tables.Plm, tables.weights, RT(cfg.cphi),
+            output, fourier, tables.Plm, tables.weights, RT(SHTnsKit._analysis_phi_scale(cfg)),
             cfg.lmax, cfg.mmax, cfg.mres, cfg.lmax;
             ndrange=(cfg.lmax + 1, cfg.mmax + 1),
         )
@@ -716,7 +716,7 @@ function _cuda_scalar_analysis(cfg::SHTConfig, field::CUDA.AnyCuArray;
     backend = CUDABackend()
     canonical = CUDA.zeros(CT, cfg.lmax + 1, cfg.mmax + 1)
     analyze! = scalar_analysis_kernel!(backend)
-    analyze!(canonical, fourier, tables.Plm, tables.weights, RT(cfg.cphi),
+    analyze!(canonical, fourier, tables.Plm, tables.weights, RT(SHTnsKit._analysis_phi_scale(cfg)),
              cfg.lmax, cfg.mmax, cfg.mres, lcap;
              ndrange=(lcap + 1, min(cfg.mmax, lcap) + 1))
 
@@ -846,7 +846,7 @@ function _cuda_vector_analysis_direct!(owner, cfg::SHTConfig,
         vector_analysis_kernel!(CUDABackend())(
             Sout, Tout, workspace.Ftheta, workspace.Fphi,
             tables.dtheta, tables.over_sin, tables.weights, tables.scales,
-            tables.x, RT(cfg.cphi), lcap, min(cfg.mmax, lcap), cfg.mres,
+            tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), lcap, min(cfg.mmax, lcap), cfg.mres,
             cfg.robert_form; ndrange=(lcap + 1, min(cfg.mmax, lcap) + 1),
         )
         CUDA.synchronize()
@@ -1052,7 +1052,7 @@ function _cuda_vector_mode_analysis(cfg::SHTConfig, stored_im::Integer,
     Tout = similar(Sout)
     vector_mode_analysis_kernel!(CUDABackend())(
         Sout, Tout, Vt, Vp, tables.dtheta, tables.over_sin,
-        tables.weights, tables.scales, tables.x, RT(cfg.cphi), physical_m,
+        tables.weights, tables.scales, tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), physical_m,
         lcap, cfg.robert_form; ndrange=length(Sout),
     )
     CUDA.synchronize()
@@ -1196,7 +1196,7 @@ function _cuda_vector_batch_analysis(cfg::SHTConfig,
     Tout = similar(Sout)
     vector_batch_analysis_kernel!(CUDABackend())(
         Sout, Tout, Ft, Fp, tables.dtheta, tables.over_sin,
-        tables.weights, tables.scales, tables.x, RT(cfg.cphi), cfg.lmax,
+        tables.weights, tables.scales, tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), cfg.lmax,
         cfg.mmax, cfg.mres, cfg.robert_form; ndrange=size(Sout),
     )
     CUDA.synchronize()
@@ -1532,7 +1532,7 @@ function analysis_axisym(::SHTnsKit.GPU, cfg::SHTConfig,
     length(field) == cfg.nlat || throw(DimensionMismatch(
         "field must have length nlat=$(cfg.nlat)",
     ))
-    return _cuda_mode_analysis(cfg, 0, field, cfg.lmax, cfg.cphi * cfg.nlon)
+    return _cuda_mode_analysis(cfg, 0, field, cfg.lmax, SHTnsKit._analysis_phi_scale(cfg) * cfg.nlon)
 end
 analysis_axisym(cfg::SHTConfig, field::CUDA.AnyCuArray{T,1}) where {T<:Real} =
     analysis_axisym(SHTnsKit.GPU(), cfg, field)
@@ -1553,7 +1553,7 @@ function analysis_axisym_l(::SHTnsKit.GPU, cfg::SHTConfig,
     length(field) == cfg.nlat || throw(DimensionMismatch(
         "field must have length nlat=$(cfg.nlat)",
     ))
-    return _cuda_mode_analysis(cfg, 0, field, lcap, cfg.cphi * cfg.nlon)
+    return _cuda_mode_analysis(cfg, 0, field, lcap, SHTnsKit._analysis_phi_scale(cfg) * cfg.nlon)
 end
 analysis_axisym_l(cfg::SHTConfig, field::CUDA.AnyCuArray{T,1}, ltr::Integer) where {T<:Real} =
     analysis_axisym_l(SHTnsKit.GPU(), cfg, field, ltr)
@@ -1591,7 +1591,7 @@ function analysis_packed_ml(::SHTnsKit.GPU, cfg::SHTConfig, im::Int,
     length(mode) == cfg.nlat || throw(DimensionMismatch(
         "mode must have length nlat=$(cfg.nlat)",
     ))
-    return _cuda_mode_analysis(cfg, physical_m, mode, lcap, cfg.cphi)
+    return _cuda_mode_analysis(cfg, physical_m, mode, lcap, SHTnsKit._analysis_phi_scale(cfg))
 end
 analysis_packed_ml(cfg::SHTConfig, im::Int, mode::CUDA.AnyCuArray{T,1},
                    ltr::Integer) where {T<:Complex} =
@@ -1628,7 +1628,7 @@ function _cuda_analysis_packed_cplx(cfg::SHTConfig,
     mcap = min(cfg.mmax, lcap)
     kernel! = complex_packed_analysis_kernel!(CUDABackend())
     kernel!(packed, fourier, tables.Plm, tables.weights, tables.scales,
-            RT(cfg.cphi), cfg.nlon, lcap, cfg.mmax, mcap;
+            RT(SHTnsKit._analysis_phi_scale(cfg)), cfg.nlon, lcap, cfg.mmax, mcap;
             ndrange=(lcap + 1, 2mcap + 1))
     CUDA.synchronize()
     return packed
@@ -1710,7 +1710,7 @@ function _cuda_batch_analysis(cfg::SHTConfig, fields::CUDA.AnyCuArray;
     gpu_fft!(fourier, 2)
     canonical = CUDA.zeros(CT, cfg.lmax + 1, cfg.mmax + 1, size(fields, 3))
     kernel! = scalar_batch_analysis_kernel!(CUDABackend())
-    kernel!(canonical, fourier, tables.Plm, tables.weights, RT(cfg.cphi),
+    kernel!(canonical, fourier, tables.Plm, tables.weights, RT(SHTnsKit._analysis_phi_scale(cfg)),
             cfg.lmax, cfg.mmax, cfg.mres; ndrange=size(canonical))
     configured = canonical ./ reshape(
         tables.scales, cfg.lmax + 1, cfg.mmax + 1, 1,
@@ -1752,7 +1752,7 @@ function _cuda_batch_analysis_direct!(cfg::SHTConfig,
         end
         backend = CUDABackend()
         scalar_batch_analysis_kernel!(backend)(
-            output, fourier, tables.Plm, tables.weights, RT(cfg.cphi),
+            output, fourier, tables.Plm, tables.weights, RT(SHTnsKit._analysis_phi_scale(cfg)),
             cfg.lmax, cfg.mmax, cfg.mres; ndrange=size(output),
         )
         coefficient_batch_conversion_kernel!(backend)(
