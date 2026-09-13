@@ -6,13 +6,13 @@ platform = "aarch64-apple-darwin"
 [local_gate]
 evidence_kind = "local_readiness"
 certifying = false
-audited_tree_digest = "2cb7eee1644d1df5613a0b39e188ee634a23aceafef5f49b418cde59717e3643"
+audited_tree_digest = "763b5c3413870230bd8b906ced62324a36885f9d026abbdf0ef6788dbecd2793"
 audited_scope = ["Project.toml", ".github/workflows", "docs/src/shtns37-parity.md", "ext", "src", "test"]
 audited_exclusions = ["test/fixtures/compatibility/task16_gate.toml", "test/fixtures/compatibility/task16_local_commands.txt", "test/fixtures/compatibility/task16_local_summary.log"]
 commands_file = "test/fixtures/compatibility/task16_local_commands.txt"
-commands_sha256 = "9f61a016bc43244a56c24ef18d2a1c0a9aefd2be09d24745efd55d82278b7ea8"
+commands_sha256 = "a973719289891efa284d3627e21f8881edc7763c40523205e759b9bded6bbdfc"
 summary_log = "test/fixtures/compatibility/task16_local_summary.log"
-summary_log_sha256 = "63082905f4212b90b67c09834f35473c19e8dac945e42e9d48efdd494b50b251"
+summary_log_sha256 = "1b4df56fbe299b2d4f51a55bafdac0048efade1a8aa4cc56420fe01f097854c8"
 # Historical readiness counts; current review runs are recorded in the summary.
 pkg_exit_code = 0
 serial_pass = 76347

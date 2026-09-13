@@ -5,7 +5,7 @@ certifying=false
 manual_cuda_tool_command=python3 -B -m unittest discover -s test/support -p test_manual_cuda.py -v
 manual_cuda_contract_command=/Users/subha/.julia/juliaup/julia-1.12.4+0.aarch64.apple.darwin14/bin/julia --startup-file=no --project=. test/serial/test_shtns37_contract.jl
 manual_cuda_numerical_source_unchanged_from=3b8b2fe118900f2431208088932631db4a162908
-audited_tree_digest=2cb7eee1644d1df5613a0b39e188ee634a23aceafef5f49b418cde59717e3643
+audited_tree_digest=763b5c3413870230bd8b906ced62324a36885f9d026abbdf0ef6788dbecd2793
 audited_scope=Project.toml,.github/workflows,docs/src/shtns37-parity.md,ext,src,test
 audited_exclusions=test/fixtures/compatibility/task16_gate.toml,test/fixtures/compatibility/task16_local_commands.txt,test/fixtures/compatibility/task16_local_summary.log
 pkg_command=/usr/bin/env JULIA_DEPOT_PATH=/private/tmp/julia_depot_shtnskit:/Users/subha/.julia SHTNSKIT_RUN_JET_TESTS=1 SHTNSKIT_RUN_AQUA_TESTS=1 /Users/subha/.julia/juliaup/julia-1.12.4+0.aarch64.apple.darwin14/bin/julia --startup-file=no --project=. -e 'using Pkg; Pkg.test()'
