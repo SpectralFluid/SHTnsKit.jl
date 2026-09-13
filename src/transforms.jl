@@ -74,6 +74,22 @@ These functions are optimized for cases where only partial spectral information
 is needed, avoiding the computational overhead of full 2D transforms.
 """
 
+
+"""
+    _evaluator_phi_scale(cfg) -> Float64
+
+The factor a point/latitude evaluator must apply to reproduce the value
+`synthesis` writes on the grid.
+
+`synthesis` scales its Fourier bins by `phi_inv_scale(cfg)` and the inverse FFT
+divides by `nlon`, so the net factor on the Legendre sum is
+`phi_inv_scale(cfg)/nlon`. That is exactly 1 in the default `:dft` mode, which is
+why the direct evaluators below could omit it — but under `:quad` it is `1/2π`,
+and omitting it made every one of them disagree with the very grid they claim to
+sample by a factor of 2π.
+"""
+@inline _evaluator_phi_scale(cfg::SHTConfig) = phi_inv_scale(cfg) / cfg.nlon
+
 """
     analysis_axisym(cfg, Vr) -> Vector{ComplexF64}
 
@@ -209,6 +225,7 @@ function synthesis_axisym(cfg::SHTConfig, Qlm::AbstractVector{<:Complex})
     Vr = Vector{RT}(undef, nlat)
     P = Vector{Float64}(undef, lmax + 1)
     xv = cfg.x  # hoist field reads out of the i/l loops (cfg is mutable, so not auto-hoisted)
+    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
 
     for i in 1:nlat
         x = xv[i]
@@ -218,7 +235,7 @@ function synthesis_axisym(cfg::SHTConfig, Qlm::AbstractVector{<:Complex})
         @inbounds for l in 0:lmax
             val += real(Qlm_int[l+1] * P[l+1])  # Take real part for spatial field
         end
-        Vr[i] = val
+        Vr[i] = val * sφ
     end
 
     return Vr
@@ -277,6 +294,7 @@ function synthesis_axisym_l(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, ltr:
     Vr = Vector{RT}(undef, nlat)
     P = Vector{Float64}(undef, ltr + 1)
     xv = cfg.x  # hoist field reads out of the i/l loops (cfg is mutable, so not auto-hoisted)
+    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
 
     for i in 1:nlat
         x = xv[i]
@@ -286,7 +304,7 @@ function synthesis_axisym_l(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, ltr:
         @inbounds for l in 0:ltr
             val += real(Qlm_int[l+1] * P[l+1])
         end
-        Vr[i] = val
+        Vr[i] = val * sφ
     end
 
     return Vr
@@ -414,5 +432,5 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
         result += 2 * real(gm * phase)
     end
 
-    return result
+    return result * _evaluator_phi_scale(cfg)
 end

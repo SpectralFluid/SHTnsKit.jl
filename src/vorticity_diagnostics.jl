@@ -212,7 +212,10 @@ function grad_loss_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_target:
     gT = similar(Tlm)
     fill!(gT, 0.0)
     
-    for m in 0:mmax, l in max(1,m):lmax
+    # Stride by mres like every other diagnostic in the package: orders that are
+    # not multiples of mres have no packed storage, so a gradient entry there is
+    # meaningless. Harmless today only because `analysis` pre-zeros its output.
+    for m in 0:cfg.mres:mmax, l in max(1,m):lmax
         L2 = l * (l + 1)  # Note: negative sign from ζ = -l(l+1)T
         gT[l+1, m+1] = -L2 * synthesis_scale * _convention_metric(cfg, l, m) * gζlm[l+1, m+1]
     end
@@ -238,7 +241,7 @@ function loss_and_grad_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_tar
     gT = similar(Tlm)
     fill!(gT, 0.0)
     
-    for m in 0:mmax, l in max(1,m):lmax
+    for m in 0:cfg.mres:mmax, l in max(1,m):lmax
         L2 = l * (l + 1)
         gT[l+1, m+1] = -L2 * synthesis_scale * _convention_metric(cfg, l, m) * gζlm[l+1, m+1]
     end

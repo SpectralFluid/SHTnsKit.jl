@@ -53,6 +53,8 @@ function SH_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, cost::Real; n
             vals[j+1] += 2 * real(gm * cis(2π * m * j / nphi))
         end
     end
+    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    sφ == 1 || (vals .*= sφ)
     return vals
 end
 
@@ -104,6 +106,8 @@ function SH_to_lat_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex}, c
             vals[j+1] += gm * phase + gn * conj(phase)
         end
     end
+    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    sφ == 1 || (vals .*= sφ)
     return vals
 end
 
@@ -175,7 +179,8 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
         vt *= sθ
         vp *= sθ
     end
-    return real(vr), real(vt), real(vp)
+    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    return real(vr) * sφ, real(vt) * sφ, real(vp) * sφ
 end
 
 """
@@ -230,7 +235,8 @@ function SH_to_grad_point(cfg::SHTConfig, ::AbstractVector{<:Complex}, Slm::Abst
         vt *= sθ
         vp *= sθ
     end
-    return zero(real(CT)), real(vt), real(vp)
+    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    return zero(real(CT)), real(vt) * sφ, real(vp) * sφ
 end
 
 """
@@ -318,6 +324,10 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
         sθ = sqrt(max(0.0, 1 - x*x))
         Vt .*= sθ
         Vp .*= sθ
+    end
+    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    if sφ != 1
+        Vr .*= sφ; Vt .*= sφ; Vp .*= sφ
     end
     return Vr, Vt, Vp
 end

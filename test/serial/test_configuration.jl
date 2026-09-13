@@ -321,6 +321,60 @@ using SHTnsKit
         @test size(spatial_scratch) == (nlat, nlon)
     end
 
+    @testset "structural field assignment keeps derived state consistent" begin
+        # `cfg.lmax = 10` used to leave `size(cfg.Nlm) == (7,7)` while the
+        # transforms index it as (lmax+1, mmax+1) under `@inbounds` — a live
+        # out-of-bounds read. lmax/mmax/mres now rebuild the spectral layout;
+        # the fields that cannot be made consistent are rejected outright.
+        cfg = create_gauss_config(6, 8)
+        prepare_plm_tables!(cfg)
+        @test SHTnsKit.has_fused_scalar_tables(cfg)
+
+        cfg.lmax = 10
+        @test size(cfg.Nlm) == (cfg.lmax + 1, cfg.mmax + 1)
+        @test cfg.nlm == SHTnsKit.nlm_calc(cfg.lmax, cfg.mmax, cfg.mres)
+        @test length(cfg.li) == cfg.nlm && length(cfg.mi) == cfg.nlm
+        @test !SHTnsKit.has_fused_scalar_tables(cfg)   # stale tables dropped
+
+        cfg2 = create_gauss_config(6, 8; mres=1)
+        cfg2.mres = 2
+        @test cfg2.nlm == SHTnsKit.nlm_calc(6, cfg2.mmax, 2)
+        @test all(m -> m % 2 == 0, cfg2.mi)
+
+        for bad in (:nlat, :nlon, :grid_type, :nlm, :nspat)
+            @test_throws ArgumentError setproperty!(create_gauss_config(4, 6), bad,
+                                                    bad === :grid_type ? :regular : 99)
+        end
+        # An inconsistent spectral triple is rejected rather than stored.
+        @test_throws ArgumentError (c = create_gauss_config(6, 8); c.mmax = 99)
+    end
+
+    @testset "kwarg SHTConfig constructor validates its invariants" begin
+        # This constructor is exported and used to check nothing, so a hand-built
+        # config could violate nlon >= 2*mmax+1 and then silently synthesize an
+        # all-zero field for any mode it could not resolve.
+        lmax = mmax = 6
+        mk(; nlon=2*mmax + 2, nlat=8, kw...) = begin
+            θ = collect(range(0.1, 3.0; length=nlat))
+            base = (; lmax, mmax, mres=1, nlat, nlon,
+                    θ, φ=collect(range(0, 2π; length=nlon+1))[1:nlon],
+                    x=cos.(θ), w=fill(2/nlat, nlat), st=sin.(θ),
+                    Nlm=SHTnsKit.Nlm_table(lmax, mmax), cphi=2π/nlon,
+                    nlm=SHTnsKit.nlm_calc(lmax, mmax, 1),
+                    li=SHTnsKit.build_li_mi(lmax, mmax, 1)[1],
+                    mi=SHTnsKit.build_li_mi(lmax, mmax, 1)[2],
+                    nspat=nlat*nlon, norm=:orthonormal, cs_phase=true,
+                    real_norm=false, robert_form=false)
+            SHTnsKit.SHTConfig(; base..., kw...)
+        end
+        @test mk() isa SHTnsKit.SHTConfig                       # the valid case still builds
+        @test_throws ArgumentError mk(nlon=8)                    # nlon < 2*mmax+1
+        @test_throws ArgumentError mk(mres=0)
+        @test_throws ArgumentError mk(nspat=1)                   # nspat != nlat*nlon
+        @test_throws DimensionMismatch mk(w=fill(0.25, 4))       # w shorter than nlat
+        @test_throws DimensionMismatch mk(Nlm=zeros(2, 2))        # Nlm not (lmax+1, mmax+1)
+    end
+
     @testset "FFT plan cache control" begin
         # These knobs used to forward to a cache in the parallel extension that
         # nothing ever read (`_get_or_plan` had no call sites), so the whole

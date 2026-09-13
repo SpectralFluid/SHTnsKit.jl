@@ -69,7 +69,77 @@ they were already on the new convention, which is why the two disagreed.
 with `SH_Yrotate` or the Euler-angle API was getting inconsistent results before
 and needs no compensation now.
 
+**Order-mixing rotations now reject `mmax < lmax` instead of truncating.**
+A Wigner-d rotation through a general `β` couples `Y_l^m` to every `Y_l^{m'}` with
+`|m'| ≤ l`. When storage stopped at `mmax < lmax`, the `|m'| > mmax` components
+were silently dropped — measured at `lmax = 8`, that discarded **14.8 %** of the
+field's energy at `mmax = 5` and **24.0 %** at `mmax = 3`, with no error. `SH_Yrotate`,
+`SH_Yrotate90`, `SH_Xrotate90` and the Euler-angle API now raise an `ArgumentError`
+on such a configuration. Pure Z-rotations are unaffected: `β ≡ 0` is diagonal and
+`β ≡ π` is anti-diagonal (`m' = -m`), so both still work at any `mmax`.
+
+*Porting:* use `mmax == lmax` for anything but a Z-rotation. Results that appeared
+to work before were missing the truncated energy.
+
+**`shtns_rotation_set_angle_axis` returned the wrong axis for exact half-turns.**
+Its degenerate branch used the `β ≈ 0` formula at both poles. At `β ≈ π` the
+observable Euler combination is `α - γ`, read off the *negated* first column, so a
+180° turn about `x̂` came back as `ZYZ(0, π, 0)` — which is exactly `Ry(π)`. The
+relative error against the true `Rx(π)` was 1.33, and against `Ry(π)` it was 0.
+Only exact half-turns were affected; 90° and 179.99° were already correct.
+
+**Point and latitude evaluators now honour `phi_scale`.**
+`synthesis` scales its Fourier bins by `phi_inv_scale(cfg)` and the inverse FFT
+divides by `nlon`, a net factor of 1 under `:dft` but `1/2π` under `:quad`.
+`synthesis_point`, `synthesis_axisym`, `synthesis_axisym_l`, `SH_to_lat`,
+`SH_to_lat_cplx`, `SHqst_to_point`, `SH_to_grad_point` and `SHqst_to_lat` applied
+no factor at all, so under `:quad` every one of them disagreed with the grid it
+claims to sample by exactly 2π. **Default `:dft` behaviour is unchanged.**
+
+**Structural `SHTConfig` fields are no longer silently inconsistent.**
+Assigning `cfg.lmax = 10` left `size(cfg.Nlm) == (7, 7)` while the transforms index
+it as `(lmax+1, mmax+1)` under `@inbounds` — an out-of-bounds read of a live array.
+`lmax`, `mmax` and `mres` now rebuild the derived spectral layout (`Nlm`, `nlm`,
+`li`, `mi`, cached scale matrix and m-ordering) and drop the now-stale Legendre
+tables; `nlat`, `nlon`, `grid_type`, `nlm`, `li`, `mi` and `nspat` raise an
+`ArgumentError` pointing at the `create_*_config` constructors, because there is no
+grid-type-independent way to regenerate the quadrature in place.
+
+**The exported `SHTConfig(; ...)` keyword constructor validates its invariants.**
+It previously checked nothing, so a hand-built configuration could violate
+`nlon ≥ 2*mmax+1` and then silently synthesize an all-zero field for any mode it
+could not resolve (and hand `use_rfft=true` a raw `BoundsError`). It now enforces
+the same constraints the `create_*_config` helpers always have.
+
+**Argument validation added where it was missing.** `analysis_sphtor_ml` /
+`synthesis_sphtor_ml` returned `±Inf` coefficients for an out-of-range order or
+truncation where their scalar twins already raised; `energy_scalar` /
+`energy_vector` indexed under `@inbounds` with no size check and returned a
+silently wrong number for a mis-sized spectrum. Both now raise.
+
 ### Fixed
+
+- **QST transforms had no reverse-mode rule.** `synthesis_qst` and `analysis_qst`
+  fell through to Zygote's source tracing and crashed inside FFTW. Both now have
+  `rrule`s composed from the existing scalar and sphtor adjoints, verified against
+  finite differences.
+- **`rrule`s that declared fewer keyword arguments than their primal were skipped
+  entirely** the moment a caller passed one, even at its default value — `analysis`
+  accepted none, and `synthesis` / `synthesis_sphtor` omitted `use_rfft`. They now
+  accept the primal's full keyword set; the adjoint is unchanged, since these pick
+  a different FFT implementation of the same linear operator.
+- **A GC finalizer called an MPI collective.** `DistributedSpectralPlan2D` attached
+  a finalizer that ran `close`, which frees the plan's sub-communicators via
+  `MPI_Comm_free` — a collective. Garbage collection is rank-local and
+  nondeterministic, so ranks could enter it at divergent points. Cleanup is now
+  explicit only; `close` documents the collective contract.
+- **`im_from_lm` was bounded by `lmax` rather than `mmax`,** so on an `mmax < lmax`
+  layout a past-the-end index resolved to an order the configuration does not store
+  instead of raising. It now takes an optional `mmax` keyword (defaulting to `lmax`,
+  preserving behaviour for full layouts).
+- **The two vorticity inverse-problem gradients did not stride by `mres`,** unlike
+  every other diagnostic. Latent only — `analysis` pre-zeros its output — but a
+  reused gradient buffer would have produced entries for unrepresentable modes.
 
 - **Silent precision loss in batch QST/sphtor transforms.** `analysis_qst_batch`,
   `_synthesis_qst_batch` and the sphtor batch pair derived their output element

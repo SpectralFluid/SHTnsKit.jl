@@ -227,17 +227,22 @@ the given packed index.
 Useful for algorithms that need to determine the azimuthal symmetry
 of a coefficient from its packed storage location.
 """
-function im_from_lm(lm::Int, lmax::Int, mres::Int)
+function im_from_lm(lm::Int, lmax::Int, mres::Int; mmax::Int=lmax)
     # Validate packed index
     lm ≥ 0 || throw(ArgumentError("lm must be ≥ 0"))
-    
+    (0 ≤ mmax ≤ lmax) || throw(ArgumentError("require 0 ≤ mmax ≤ lmax"))
+
     # Search through m-blocks to find the one containing this packed index
     im = 0      # Current reduced m-index being tested
     base = 0    # Base offset for current m-block
-    
-    im_max = lmax ÷ mres  # maximum valid reduced m-index
+
+    # Bound by the last block the LAYOUT actually has, which is set by mmax, not
+    # by lmax. Using `lmax ÷ mres` let a past-the-end index resolve to an order
+    # the configuration does not store (`im_from_lm(30, 8, 1)` returned 4 for an
+    # mmax=3 layout whose valid indices stop at 29) instead of raising.
+    im_max = mmax ÷ mres  # maximum valid reduced m-index
     while true
-        im > im_max && throw(ArgumentError("lm=$lm is out of range for lmax=$lmax, mres=$mres"))
+        im > im_max && throw(ArgumentError("lm=$lm is out of range for lmax=$lmax, mmax=$mmax, mres=$mres"))
         # Size of current m-block (number of l-modes for this m)
         block = lmax - im*mres + 1
 

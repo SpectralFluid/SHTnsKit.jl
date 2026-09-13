@@ -2211,6 +2211,19 @@ end
     return false
 end
 
+"""
+    close(plan::DistributedSpectralPlan2D)
+
+Free the plan's `l_comm` / `m_comm` sub-communicators.
+
+!!! warning "Collective"
+    `MPI_Comm_free` is a collective operation: **every** rank holding this plan
+    must call `close` on it, and in the same order relative to other collectives.
+    It is therefore not attached to a finalizer — garbage collection is
+    rank-local and would call it at divergent points. Closing twice is safe
+    (the second call is a no-op); never closing only leaks the communicators
+    until `MPI_Finalize`.
+"""
 function Base.close(plan::DistributedSpectralPlan2D)
     plan.closed && return nothing
     plan.closed = true
@@ -2554,12 +2567,21 @@ function create_distributed_spectral_plan_2d(lmax::Int, mmax::Int, comm::MPI.Com
             m_group_nlm,
             with_scratch, scratch, scratch_context, false
         )
-        finalizer(plan) do p
-            try
-                close(p)
-            catch
-            end
-        end
+        # NO finalizer here, deliberately.
+        #
+        # `close(plan)` frees the `l_comm` / `m_comm` sub-communicators, and
+        # `MPI_Comm_free` is a COLLECTIVE: every rank in the communicator must
+        # call it, in the same order relative to other collectives. A finalizer
+        # runs whenever that rank's garbage collector happens to fire, which is
+        # rank-local and nondeterministic — so attaching one meant ranks could
+        # enter `Comm_free` at completely different points in the program, or
+        # some not at all before the next collective. That is a hang or worse,
+        # and it contradicts the policy `ParallelPlans.jl` states for its own
+        # `Comm_split` bookkeeping.
+        #
+        # Leaking two communicators until `MPI_Finalize` is strictly better than
+        # a nondeterministic collective, so cleanup is explicit only: call
+        # `close(plan)` (collectively) when you are done with it.
         return plan
     catch
         _safe_comm_free(l_comm)

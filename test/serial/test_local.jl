@@ -47,6 +47,41 @@ using Random
         end
     end
 
+    @testset "point/latitude evaluators honour phi_scale" begin
+        # `synthesis` scales its Fourier bins by `phi_inv_scale(cfg)` and the
+        # inverse FFT divides by nlon, a net factor of 1 under :dft but 1/2π
+        # under :quad. The direct evaluators applied no factor at all, so under
+        # :quad every one of them disagreed with the grid it claims to sample by
+        # exactly 2π.
+        for mode in (:dft, :quad)
+            cfg = create_gauss_config(6, 8)
+            cfg.phi_scale = mode
+            rng = MersenneTwister(5150)
+            A = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+            for m in 0:cfg.mmax, l in m:cfg.lmax
+                A[l+1, m+1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+            end
+            packed = SHTnsKit.pack_lm(cfg, A)
+            zero_packed = zeros(ComplexF64, cfg.nlm)
+
+            f = synthesis(cfg, A)
+            Vr, Vt, Vp = synthesis_qst(cfg, A, zero(A), zero(A))
+            i, j = 2, 3
+
+            @test synthesis_point(cfg, A, cfg.x[i], cfg.φ[j]) ≈ f[i, j] rtol=1e-10
+            @test SH_to_lat(cfg, packed, cfg.x[i]) ≈ f[i, :] rtol=1e-10
+            @test SHqst_to_lat(cfg, packed, zero_packed, zero_packed, cfg.x[i])[1] ≈
+                  Vr[i, :] rtol=1e-10
+            @test SHTnsKit.SHqst_to_point(cfg, packed, zero_packed, zero_packed,
+                                          cfg.x[i], cfg.φ[j])[1] ≈ Vr[i, j] rtol=1e-10
+
+            # axisymmetric pair
+            a0 = zeros(ComplexF64, cfg.lmax + 1); a0[3] = 0.7
+            am = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1); am[3, 1] = 0.7
+            @test synthesis_axisym(cfg, a0) ≈ synthesis(cfg, am)[:, 1] rtol=1e-10
+        end
+    end
+
     @testset "SH_to_lat matches synthesis at grid latitudes" begin
         lmax = 8
         nlat = lmax + 2

@@ -464,4 +464,20 @@ using SHTnsKit
         @test isapprox(Gp_l, Gp_ref; rtol=1e-10, atol=1e-12)
     end
 
+
+    @testset "mode-limited sphtor validates its order and truncation" begin
+        # Out-of-range arguments used to walk off the end of the norm-scale table
+        # and return ±Inf coefficients; the scalar twin already raised.
+        cfg = create_gauss_config(3, 5; nlon=8)
+        v = randn(MersenneTwister(3311), ComplexF64, cfg.nlat)
+        sl = zeros(ComplexF64, cfg.lmax + 1)
+        @test_throws ArgumentError SHTnsKit.analysis_sphtor_ml(cfg, 9, v, v, 12)
+        @test_throws ArgumentError SHTnsKit.analysis_sphtor_ml(cfg, -1, v, v, 3)
+        @test_throws ArgumentError SHTnsKit.analysis_sphtor_ml(cfg, 1, v, v, 99)
+        @test_throws ArgumentError SHTnsKit.synthesis_sphtor_ml(cfg, 9, sl, sl, 12)
+        # a valid call still returns finite coefficients
+        S, T = SHTnsKit.analysis_sphtor_ml(cfg, 1, v, v, 3)
+        @test all(isfinite, S) && all(isfinite, T)
+    end
+
 end

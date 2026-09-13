@@ -794,6 +794,13 @@ function analysis_sphtor_ml(cfg::SHTConfig, mval::Int, Vt_m::AbstractVector{<:Co
     nlat = cfg.nlat
     length(Vt_m) == nlat || throw(DimensionMismatch("Vt_m length must be nlat"))
     length(Vp_m) == nlat || throw(DimensionMismatch("Vp_m length must be nlat"))
+    # Same guards the scalar twin `analysis_packed_ml` has always had. Without
+    # them an out-of-range order walked off the end of the norm-scale table and
+    # returned ±Inf coefficients instead of raising.
+    mval >= 0 || throw(ArgumentError("mval must be >= 0"))
+    mval <= cfg.mmax || throw(ArgumentError("mval must be <= mmax=$(cfg.mmax)"))
+    ltr <= cfg.lmax || throw(ArgumentError("ltr must be <= lmax=$(cfg.lmax)"))
+    ltr >= mval || throw(ArgumentError("ltr must be >= mval=$(mval)"))
 
     num_l = ltr - mval + 1
     CT = complex(float(promote_type(eltype(Vt_m), eltype(Vp_m))))  # AD/Float32-safe output eltype
@@ -856,6 +863,10 @@ coupling terms above silently became real. Do not rename it back.
 """
 function synthesis_sphtor_ml(cfg::SHTConfig, mval::Int, Sl::AbstractVector{<:Complex}, Tl::AbstractVector{<:Complex}, ltr::Int)
     nlat = cfg.nlat
+    mval >= 0 || throw(ArgumentError("mval must be >= 0"))
+    mval <= cfg.mmax || throw(ArgumentError("mval must be <= mmax=$(cfg.mmax)"))
+    ltr <= cfg.lmax || throw(ArgumentError("ltr must be <= lmax=$(cfg.lmax)"))
+    ltr >= mval || throw(ArgumentError("ltr must be >= mval=$(mval)"))
     expected_len = ltr - mval + 1
     length(Sl) == expected_len || throw(DimensionMismatch("Sl length mismatch"))
     length(Tl) == expected_len || throw(DimensionMismatch("Tl length mismatch"))

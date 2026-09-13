@@ -88,6 +88,9 @@ This represents the L² norm of the field, which is conserved under orthonormal
 spherical harmonic transforms (Parseval's identity).
 """
 function energy_scalar(cfg::SHTConfig, alm::AbstractMatrix; real_field::Bool=true)
+    # The accumulation loop is `@inbounds`; without this a too-small matrix
+    # silently returned a wrong number instead of raising, unlike every sibling.
+    validate_spectral_dimensions(alm, cfg, "alm")
     lmax, mmax = cfg.lmax, cfg.mmax
     # Type-stable accumulator (stays inferrable for Float32 / ForwardDiff.Dual inputs).
     E = zero(promote_type(Float64, real(float(eltype(alm)))))
@@ -106,6 +109,7 @@ For a vector field V = ∇×(T Y_l^m êᵣ) + ∇ₕ(S Y_l^m), the kinetic energ
 KE = (1/2) ∫ |V|² dΩ = (1/2) Σ [l(l+1)|S_lm|² + l(l+1)|T_lm|²]
 """
 function energy_vector(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatrix; real_field::Bool=true)
+    validate_spectral_pair_dimensions(Slm, Tlm, cfg, ("Slm", "Tlm"))
     lmax, mmax = cfg.lmax, cfg.mmax
     E = zero(promote_type(Float64, real(float(eltype(Slm))), real(float(eltype(Tlm)))))
     @inbounds for m in 0:cfg.mres:mmax, l in max(1,m):lmax  # Vector fields start at l=1

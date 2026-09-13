@@ -42,8 +42,13 @@ import SHTnsKit: wigner_d_matrix_deriv
         A isa ChainRulesCore.AbstractZero ? _coeff_zeros(cfg) : _to_complex(A)
 
 
-    function ChainRulesCore.rrule(::typeof(SHTnsKit.analysis), cfg::SHTnsKit.SHTConfig, f)
-        y = SHTnsKit.analysis(cfg, f)
+    # `fft_scratch` / `use_rfft` pick a different FFT implementation of the SAME
+    # linear operator, so the adjoint is unchanged — but a pullback must still
+    # ACCEPT them. Declaring fewer kwargs than the primal made ChainRules skip
+    # this rule entirely the moment a caller passed one, even at its default.
+    function ChainRulesCore.rrule(::typeof(SHTnsKit.analysis), cfg::SHTnsKit.SHTConfig, f;
+                                  fft_scratch=nothing, use_rfft::Bool=false)
+        y = SHTnsKit.analysis(cfg, f; fft_scratch, use_rfft)
         project_f = ProjectTo(f)
         function pullback(ȳ)
             ȳA = _to_complex(ȳ)
@@ -61,8 +66,9 @@ import SHTnsKit: wigner_d_matrix_deriv
     # `_adjoint_synthesis` helper instead. (See `test_adjoint_consistency`
     # in the test suite for an FD verification.)
     function ChainRulesCore.rrule(::typeof(SHTnsKit.synthesis), cfg::SHTnsKit.SHTConfig,
-                                alm; real_output::Bool=true)
-        y = SHTnsKit.synthesis(cfg, alm; real_output)
+                                alm; real_output::Bool=true,
+                                fft_scratch=nothing, use_rfft::Bool=false)
+        y = SHTnsKit.synthesis(cfg, alm; real_output, fft_scratch, use_rfft)
         project_alm = ProjectTo(alm)
         function pullback(ȳ)
             ȳ_mat = ChainRulesCore.unthunk(ȳ)      # materialize Thunk/InplaceableThunk
@@ -172,8 +178,9 @@ import SHTnsKit: wigner_d_matrix_deriv
     # Keep local alias for any direct callers of the ext symbol.
     const _adjoint_analysis_sphtor = SHTnsKit._adjoint_analysis_sphtor
 
-    function ChainRulesCore.rrule(::typeof(SHTnsKit.analysis_sphtor), cfg::SHTnsKit.SHTConfig, Vt, Vp)
-        Slm, Tlm = SHTnsKit.analysis_sphtor(cfg, Vt, Vp)
+    function ChainRulesCore.rrule(::typeof(SHTnsKit.analysis_sphtor), cfg::SHTnsKit.SHTConfig, Vt, Vp;
+                                  use_rfft::Bool=false)
+        Slm, Tlm = SHTnsKit.analysis_sphtor(cfg, Vt, Vp; use_rfft)
         project_Vt = ProjectTo(Vt)
         project_Vp = ProjectTo(Vp)
         function pullback(ṠTl)
@@ -199,8 +206,8 @@ import SHTnsKit: wigner_d_matrix_deriv
     const _adjoint_synthesis_sphtor = SHTnsKit._adjoint_synthesis_sphtor
 
     function ChainRulesCore.rrule(::typeof(SHTnsKit.synthesis_sphtor), cfg::SHTnsKit.SHTConfig,
-                                Slm, Tlm; real_output::Bool=true)
-        Vt, Vp = SHTnsKit.synthesis_sphtor(cfg, Slm, Tlm; real_output)
+                                Slm, Tlm; real_output::Bool=true, use_rfft::Bool=false)
+        Vt, Vp = SHTnsKit.synthesis_sphtor(cfg, Slm, Tlm; real_output, use_rfft)
         project_Slm = ProjectTo(Slm)
         project_Tlm = ProjectTo(Tlm)
         function pullback(Ṽ)
@@ -217,6 +224,44 @@ import SHTnsKit: wigner_d_matrix_deriv
                    (; real_output=NoTangent())
         end
         return (Vt, Vp), pullback
+    end
+
+
+    # QST (3-component) transforms. `synthesis_qst` is the scalar synthesis of Q
+    # alongside the sphtor synthesis of (S,T), and `analysis_qst` is the mirror,
+    # so each adjoint is just the two existing adjoints side by side. Without
+    # these, differentiating a QST pipeline fell through to Zygote's source
+    # tracing and crashed inside FFTW.
+    function ChainRulesCore.rrule(::typeof(SHTnsKit.synthesis_qst), cfg::SHTnsKit.SHTConfig,
+                                  Qlm, Slm, Tlm; real_output::Bool=true)
+        Vr, Vt, Vp = SHTnsKit.synthesis_qst(cfg, Qlm, Slm, Tlm; real_output)
+        project_Q = ProjectTo(Qlm); project_S = ProjectTo(Slm); project_T = ProjectTo(Tlm)
+        function pullback(V̄)
+            zsp() = zeros(Float64, cfg.nlat, cfg.nlon)
+            V̄r = ChainRulesCore.unthunk(V̄[1]); V̄r = V̄r isa ChainRulesCore.AbstractZero ? zsp() : V̄r
+            V̄t = ChainRulesCore.unthunk(V̄[2]); V̄t = V̄t isa ChainRulesCore.AbstractZero ? zsp() : V̄t
+            V̄p = ChainRulesCore.unthunk(V̄[3]); V̄p = V̄p isa ChainRulesCore.AbstractZero ? zsp() : V̄p
+            Q̄ = SHTnsKit._adjoint_synthesis(cfg, V̄r; real_output=real_output)
+            S̄, T̄ = SHTnsKit._adjoint_synthesis_sphtor(cfg, V̄t, V̄p; real_output=real_output)
+            return NoTangent(), NoTangent(), project_Q(Q̄), project_S(S̄), project_T(T̄),
+                   (; real_output=NoTangent())
+        end
+        return (Vr, Vt, Vp), pullback
+    end
+
+    function ChainRulesCore.rrule(::typeof(SHTnsKit.analysis_qst), cfg::SHTnsKit.SHTConfig,
+                                  Vr, Vt, Vp)
+        Qlm, Slm, Tlm = SHTnsKit.analysis_qst(cfg, Vr, Vt, Vp)
+        project_Vr = ProjectTo(Vr); project_Vt = ProjectTo(Vt); project_Vp = ProjectTo(Vp)
+        function pullback(Ā)
+            Q̄ = _materialize_coeff(Ā[1], cfg)
+            S̄ = _materialize_coeff(Ā[2], cfg)
+            T̄ = _materialize_coeff(Ā[3], cfg)
+            V̄r = _adjoint_analysis(cfg, Q̄)
+            V̄t, V̄p = _adjoint_analysis_sphtor(cfg, S̄, T̄)
+            return NoTangent(), NoTangent(), project_Vr(V̄r), project_Vt(V̄t), project_Vp(V̄p)
+        end
+        return (Qlm, Slm, Tlm), pullback
     end
 
     # Complex packed (LM_cplx layout — both signs of m stored explicitly).

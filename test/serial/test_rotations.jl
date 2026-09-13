@@ -216,6 +216,71 @@ using SHTnsKit
         @test isapprox(c, Xinv; rtol=1e-9, atol=1e-11)
     end
 
+    @testset "angle-axis half-turns pick the right axis" begin
+        # The degenerate branch of `shtns_rotation_set_angle_axis` used the β≈0
+        # formula for BOTH poles. At β≈π the observable Euler combination is
+        # α-γ read off the NEGATED first column, so a 180° turn about x̂ came
+        # back as ZYZ(0, π, 0) — exactly Ry(π). Non-degenerate angles were fine,
+        # so only exact half-turns were affected.
+        cfg = create_gauss_config(5, 7; nlon=12)
+        rng = MersenneTwister(6041)
+        Q = randn(rng, ComplexF64, cfg.nlm)
+        Q[1:cfg.lmax+1] .= real.(Q[1:cfg.lmax+1])
+        apply(r) = (R = similar(Q); SHTnsKit.shtns_rotation_apply_real(r, Q, R); R)
+        byaxis(θ, ax...) = (r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax);
+                            SHTnsKit.shtns_rotation_set_angle_axis(r, θ, ax...); apply(r))
+        byzxz(β) = (r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax);
+                    SHTnsKit.shtns_rotation_set_angles_ZXZ(r, 0.0, β, 0.0); apply(r))
+        byzyz(β) = (r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax);
+                    SHTnsKit.shtns_rotation_set_angles_ZYZ(r, 0.0, β, 0.0); apply(r))
+
+        @test isapprox(byaxis(π, 1.0, 0.0, 0.0), byzxz(π);  rtol=1e-10, atol=1e-12)  # x̂ half-turn
+        @test isapprox(byaxis(π, 0.0, 1.0, 0.0), byzyz(π);  rtol=1e-10, atol=1e-12)  # ŷ half-turn
+        @test !isapprox(byaxis(π, 1.0, 0.0, 0.0), byzyz(π); rtol=1e-3,  atol=1e-6)   # and they differ
+        @test isapprox(byaxis(π/2, 1.0, 0.0, 0.0), byzxz(π/2); rtol=1e-10, atol=1e-12)
+        @test isapprox(byaxis(0.0, 1.0, 0.0, 0.0), Q; rtol=1e-10, atol=1e-12)
+
+        # A half-turn about any axis must square to the identity.
+        for ax in ((1.0,0.0,0.0), (0.0,1.0,0.0), (0.0,0.0,1.0), (1.0,1.0,0.0), (1.0,1.0,1.0))
+            r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
+            SHTnsKit.shtns_rotation_set_angle_axis(r, π, ax...)
+            once = similar(Q); SHTnsKit.shtns_rotation_apply_real(r, Q, once)
+            twice = similar(Q); SHTnsKit.shtns_rotation_apply_real(r, once, twice)
+            @test isapprox(twice, Q; rtol=1e-9, atol=1e-11)
+        end
+    end
+
+    @testset "order-mixing rotations reject mmax < lmax" begin
+        # A Wigner-d rotation through a general β couples every |m'| ≤ l. With
+        # mmax < lmax the |m'| > mmax components were silently dropped — 14.8 %
+        # of the field energy at lmax=8/mmax=5, 24.0 % at mmax=3.
+        full = create_gauss_config(8, 10; mmax=8, nlon=18)
+        cut  = create_gauss_config(8, 10; mmax=5, nlon=18)
+        rng = MersenneTwister(6042)
+        qf = randn(rng, ComplexF64, full.nlm); qf[1:full.lmax+1] .= real.(qf[1:full.lmax+1])
+        qc = randn(rng, ComplexF64, cut.nlm);  qc[1:cut.lmax+1]  .= real.(qc[1:cut.lmax+1])
+
+        # mmax == lmax is unaffected and conserves energy.
+        Rf = similar(qf); SH_Yrotate(full, qf, 0.7, Rf)
+        w = Float64[full.mi[k] == 0 ? 1.0 : 2.0 for k in 1:full.nlm]
+        @test sum(w .* abs2.(Rf)) ≈ sum(w .* abs2.(qf)) rtol=1e-10
+
+        # mmax < lmax with an order-mixing β must raise, not truncate.
+        @test_throws ArgumentError SH_Yrotate(cut, qc, 0.7, similar(qc))
+        @test_throws ArgumentError SH_Xrotate90(cut, qc, similar(qc))
+
+        # ...but the two non-mixing angles still work at reduced mmax:
+        # β ≡ 0 is diagonal (a pure Z-rotation) and β ≡ π is anti-diagonal.
+        for β in (0.0, π)
+            r = SHTnsKit.SHTRotation(cut.lmax, cut.mmax)
+            SHTnsKit.shtns_rotation_set_angles_ZYZ(r, 0.4, β, 0.0)
+            R = similar(qc)
+            @test (SHTnsKit.shtns_rotation_apply_real(r, qc, R); true)
+            wc = Float64[cut.mi[k] == 0 ? 1.0 : 2.0 for k in 1:cut.nlm]
+            @test sum(wc .* abs2.(R)) ≈ sum(wc .* abs2.(qc)) rtol=1e-10
+        end
+    end
+
     @testset "Wigner-d matrix orthogonality" begin
         # Test orthogonality: d^T d = I for real orthogonal case
         for l in 0:4

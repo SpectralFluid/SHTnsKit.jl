@@ -232,9 +232,26 @@ function shtns_rotation_set_angle_axis(r::SHTRotation, theta::Real, Vx::Real, Vy
     if abs(sin(β)) > 1e-12
         α = atan(R23, R13)    # atan2(sα*sβ, cα*sβ) = α
         γ = atan(R32, -R31)   # atan2(sβ*sγ, sβ*cγ) = γ
-    else
-        # β ~ 0 or π: set γ = 0 and α from R11,R21
+    elseif R33 > 0
+        # β ≈ 0: R = Rz(α)·Rz(γ) = Rz(α+γ), so R11 = cos(α+γ), R21 = sin(α+γ).
+        # Only the sum is observable; fold it all into α.
         α = atan(R21, R11)
+        γ = 0.0
+    else
+        # β ≈ π: R = Rz(α)·Ry(π)·Rz(γ). Working it out,
+        #     R = [-cos(α-γ)  -sin(α-γ)   0
+        #          -sin(α-γ)   cos(α-γ)   0
+        #           0          0         -1]
+        # so the observable combination is the DIFFERENCE α-γ, and it is read off
+        # the NEGATED first column: α-γ = atan2(-R21, -R11).
+        #
+        # Reusing the β≈0 formula here (which is what this branch used to do for
+        # both poles) silently returns a rotation about the wrong axis: a 180°
+        # turn about x̂ came back as ZYZ(0, π, 0), which is exactly Ry(π) — the
+        # relative error against the true Rx(π) was 1.33, and against Ry(π) it
+        # was 0. Non-degenerate angles were unaffected, so this only bit exact
+        # half-turns.
+        α = atan(-R21, -R11)
         γ = 0.0
     end
     r.α = α; r.β = β; r.γ = γ; r.conv = :ZYZ
@@ -487,6 +504,7 @@ function shtns_rotation_apply_cplx(r::SHTRotation, Zlm::AbstractVector{<:Complex
     expected = nlm_cplx_calc(r.lmax, r.mmax, mres)
     length(Zlm) == expected || throw(DimensionMismatch("LM_cplx size mismatch"))
     α, β, γ = _rotation_zyz_angles(r)
+    _require_full_m_range(r, β)
 
     # Pre-allocate working arrays at maximum size to avoid per-l allocations
     nmax = 2 * r.lmax + 1
@@ -541,6 +559,38 @@ function shtns_rotation_apply_cplx(r::SHTRotation, Zlm::AbstractVector{<:Complex
         end
     end
     return Rlm
+end
+
+"""
+    _require_full_m_range(r::SHTRotation, β::Real)
+
+Reject an order-mixing rotation on a layout that cannot hold every order it
+produces.
+
+A Wigner-d rotation through a general `β` couples `Y_l^m` to every `Y_l^{m'}`
+with `|m'| ≤ l`. If the storage stops at `mmax < lmax`, the `|m'| > mmax`
+components have nowhere to go and were silently dropped — measured at
+`lmax = 8`, that quietly discarded **14.8 %** of the field's energy at
+`mmax = 5` and **24.0 %** at `mmax = 3`, with no error and no warning.
+
+The two degenerate angles are exempt because their `d^l` is not order-mixing:
+`β ≡ 0` is diagonal, and `β ≡ π` is anti-diagonal (`m' = -m`), so `|m'| = |m|`
+and a truncated layout still holds the result. That keeps pure Z-rotations
+expressed as `ZYZ(α, 0, γ)` working at any `mmax`.
+
+Mirrors the `mres > 1` restriction stated by `dist_SH_Yrotate` and the packed
+distributed rotations, for the same reason.
+"""
+function _require_full_m_range(r::SHTRotation, β::Real)
+    r.mmax >= r.lmax && return nothing
+    abs(sin(float(β))) <= 1e-12 && return nothing   # β ≡ 0 (mod π): no m mixing
+    throw(ArgumentError(
+        "rotation with β=$(β) mixes azimuthal orders, but this configuration " *
+        "stores only m ≤ mmax=$(r.mmax) with lmax=$(r.lmax); the |m| > mmax " *
+        "components such a rotation generates cannot be represented and would " *
+        "be silently discarded. Use a configuration with mmax == lmax for " *
+        "Y/X rotations and general Euler angles. Pure Z-rotations (β ≡ 0 mod π) " *
+        "are unaffected and still work at any mmax."))
 end
 
 """
