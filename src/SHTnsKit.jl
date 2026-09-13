@@ -187,6 +187,19 @@ the very grid it claims to sample by a factor of 2π.
 """
 @inline _evaluator_phi_scale(cfg::SHTConfig) = phi_inv_scale(cfg) / cfg.nlon
 
+"""
+    _evaluator_phi_scale(cfg, ::Type{T}) -> T
+
+`_evaluator_phi_scale` narrowed to the evaluator's own real type.
+
+The evaluators promise their caller the element type their coefficients carry —
+`Float32` coefficients give `Float32` values, and a `Dual` stays a `Dual`. The
+untyped scale is a `Float64`, so multiplying by it silently widens every
+`Float32` result to `Float64`. Convert once, at the boundary.
+"""
+@inline _evaluator_phi_scale(cfg::SHTConfig, ::Type{T}) where {T} =
+    convert(real(T), _evaluator_phi_scale(cfg))
+
 include("buffer_utils.jl")                   # Common buffer allocation patterns
 include("kernels.jl")                       # Legendre accumulation kernels
 include("plan.jl")                           # Transform planning and optimization

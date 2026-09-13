@@ -83,6 +83,34 @@ using Random
         end
     end
 
+    @testset "evaluators preserve the coefficient element type" begin
+        # The φ convention factor is a Float64. Multiplying a Float32 evaluation
+        # by it silently widens every result to Float64, breaking the element
+        # type these functions promise their caller (and the Dual types AD needs
+        # to see through). Narrow the scale at the boundary instead.
+        for mode in (:dft, :quad), T in (Float32, Float64)
+            cfg = create_gauss_config(4, 6; nlon=9)
+            cfg.phi_scale = mode
+            CT = Complex{T}
+            A = zeros(CT, cfg.lmax + 1, cfg.mmax + 1)
+            A[2, 1] = CT(0.6); A[3, 2] = CT(0.4, 0.2)
+            packed = SHTnsKit.pack_lm(cfg, A)
+            zpack = zeros(CT, cfg.nlm)
+            x = T(cfg.x[2]); φ = T(cfg.φ[3])
+
+            @test synthesis_point(cfg, A, x, φ) isa T
+            @test eltype(SH_to_lat(cfg, packed, x)) === T
+            @test eltype(SH_to_lat_cplx(cfg, zeros(CT, SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)), x)) === CT
+            @test all(v -> v isa T, SHTnsKit.SHqst_to_point(cfg, packed, zpack, zpack, x, φ))
+            @test all(v -> v isa T, SHTnsKit.SH_to_grad_point(cfg, packed, zpack, x, φ))
+            @test all(V -> eltype(V) === T, SHqst_to_lat(cfg, packed, zpack, zpack, x))
+            @test eltype(synthesis_axisym(cfg, A[:, 1])) === T
+            @test eltype(SHTnsKit.synthesis_axisym_l(cfg, A[:, 1], cfg.lmax)) === T
+            @test SHTnsKit.synthesis_point_cplx(
+                cfg, zeros(CT, SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)), x, φ) isa CT
+        end
+    end
+
     @testset "SH_to_lat matches synthesis at grid latitudes" begin
         lmax = 8
         nlat = lmax + 2

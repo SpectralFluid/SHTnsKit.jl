@@ -548,7 +548,7 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
 
     # Same φ convention factor the grid `synthesis` carries (1 under :dft;
     # 1/2π under :quad), so a point evaluation matches the grid it samples.
-    sφ = _evaluator_phi_scale(cfg)
+    sφ = _evaluator_phi_scale(cfg, typeof(result))
     return sφ == 1 ? result : result * sφ
 end
 

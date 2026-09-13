@@ -287,7 +287,7 @@ function synthesis_point_cplx(cfg::SHTConfig, alm::AbstractVector{<:Complex}, co
     end
     # Same φ convention factor `synthesis_packed_cplx` carries (1 under :dft;
     # 1/2π under :quad), so a point evaluation matches the grid it samples.
-    sφ = _evaluator_phi_scale(cfg)
+    sφ = _evaluator_phi_scale(cfg, typeof(acc))
     return sφ == 1 ? acc : acc * sφ
 end
 

@@ -68,7 +68,7 @@ function SH_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, cost::Real; n
             vals[j+1] += 2 * real(gm * cis(PT(2π * m * j / nphi)))
         end
     end
-    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    sφ = _evaluator_phi_scale(cfg, eltype(vals))   # 1 under :dft; 1/2π under :quad
     sφ == 1 || (vals .*= sφ)
     return vals
 end
@@ -128,7 +128,7 @@ function SH_to_lat_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex}, c
             vals[j+1] += gm * phase + gn * conj(phase)
         end
     end
-    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    sφ = _evaluator_phi_scale(cfg, eltype(vals))   # 1 under :dft; 1/2π under :quad
     sφ == 1 || (vals .*= sφ)
     return vals
 end
@@ -207,7 +207,10 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
         vt *= sinth
         vp *= sinth
     end
-    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    # Narrow the scale to the accumulator's own real type first: the untyped
+    # scale is Float64, and multiplying by it would widen a Float32 evaluation
+    # (and break the element type these functions promise their caller).
+    sφ = _evaluator_phi_scale(cfg, typeof(real(vr)))
     return real(vr) * sφ, real(vt) * sφ, real(vp) * sφ
 end
 
@@ -278,7 +281,10 @@ function SH_to_grad_point(cfg::SHTConfig, DrSlm::AbstractVector{<:Complex}, Slm:
         vt *= sinth
         vp *= sinth
     end
-    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    # Narrow the scale to the accumulator's own real type first: the untyped
+    # scale is Float64, and multiplying by it would widen a Float32 evaluation
+    # (and break the element type these functions promise their caller).
+    sφ = _evaluator_phi_scale(cfg, typeof(real(vr)))
     return real(vr) * sφ, real(vt) * sφ, real(vp) * sφ
 end
 
@@ -373,7 +379,7 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
         Vt .*= sinth
         Vp .*= sinth
     end
-    sφ = _evaluator_phi_scale(cfg)   # 1 under :dft; 1/2π under :quad
+    sφ = _evaluator_phi_scale(cfg, eltype(Vr))   # 1 under :dft; 1/2π under :quad
     if sφ != 1
         Vr .*= sφ; Vt .*= sφ; Vp .*= sφ
     end
