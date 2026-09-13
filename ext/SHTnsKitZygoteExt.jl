@@ -286,16 +286,20 @@ Zygote.@adjoint function SHTnsKit.SH_Zrotate(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
 end
 
 Zygote.@adjoint function SHTnsKit.SH_Yrotate(cfg::SHTnsKit.SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real, Rlm::AbstractVector{<:Complex})
+    # Snapshot BEFORE the primal: an in-place rotation (Rlm === Qlm) overwrites
+    # Qlm, and callers may reuse either buffer before the pullback runs. The dα
+    # formula needs the *input* coefficients, so they must be preserved here.
+    Qlm_saved = copy(Qlm)
     y = SHTnsKit.SH_Yrotate(cfg, Qlm, alpha, Rlm)
     function back(ȳ)
         inverse = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
         SHTnsKit.shtns_rotation_set_angles_ZYZ(inverse, 0.0, -alpha, 0.0)
-        Q̄ = similar(Qlm)
+        Q̄ = similar(Qlm_saved)
         _zyg_configured_rotation_adjoint!(cfg, inverse, ȳ, Q̄)
         # angle gradient via derivative of Wigner-d at beta=alpha
         dα = zero(float(alpha))
         lmax, mmax = cfg.lmax, cfg.mmax
-        Qlm_canonical = SHTnsKit._internal_coefficients(Qlm, cfg)
+        Qlm_canonical = SHTnsKit._internal_coefficients(Qlm_saved, cfg)
         ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
         for l in 0:lmax
             mm = min(l, mmax)

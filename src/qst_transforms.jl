@@ -331,12 +331,12 @@ function _synthesis_qst_l(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatr
 end
 
 """
-    analysis_qst_ml(cfg, im, Vr_m, Vt_m, Vp_m, ltr) -> (Ql, Sl, Tl)
+    analysis_qst_ml(cfg, mval, Vr_m, Vt_m, Vp_m, ltr) -> (Ql, Sl, Tl)
 
-Mode-limited transform for specific azimuthal mode im.
+Mode-limited transform for specific azimuthal mode mval.
 """
-function analysis_qst_ml(cfg::SHTConfig, im::Integer, Vr_m::AbstractVector{<:Complex}, Vt_m::AbstractVector{<:Complex}, Vp_m::AbstractVector{<:Complex}, ltr::Integer)
-    stored_im, _, lcap = _validate_stored_order(cfg, im, ltr)
+function analysis_qst_ml(cfg::SHTConfig, mval::Integer, Vr_m::AbstractVector{<:Complex}, Vt_m::AbstractVector{<:Complex}, Vp_m::AbstractVector{<:Complex}, ltr::Integer)
+    stored_im, _, lcap = _validate_stored_order(cfg, mval, ltr)
     # Transform each component for this specific mode
     Ql = analysis_packed_ml(cfg, stored_im, Vr_m, lcap)
     Sl, Tl = analysis_sphtor_ml(cfg, stored_im, Vt_m, Vp_m, lcap)
@@ -345,23 +345,23 @@ function analysis_qst_ml(cfg::SHTConfig, im::Integer, Vr_m::AbstractVector{<:Com
     return Ql, Sl, Tl
 end
 
-function analysis_qst_ml(::CPU, cfg::SHTConfig, im::Integer,
+function analysis_qst_ml(::CPU, cfg::SHTConfig, mval::Integer,
                          Vr::AbstractVector{<:Complex},
                          Vt::AbstractVector{<:Complex},
                          Vp::AbstractVector{<:Complex}, ltr::Integer)
     for value in (Vr, Vt, Vp)
         _require_cpu_storage(:analysis_qst_ml, value)
     end
-    return analysis_qst_ml(cfg, im, Vr, Vt, Vp, ltr)
+    return analysis_qst_ml(cfg, mval, Vr, Vt, Vp, ltr)
 end
 
 """
-    synthesis_qst_ml(cfg, im, Ql, Sl, Tl, ltr) -> (Vr_m, Vt_m, Vp_m)
+    synthesis_qst_ml(cfg, mval, Ql, Sl, Tl, ltr) -> (Vr_m, Vt_m, Vp_m)
 
-Mode-limited synthesis for specific azimuthal mode im.
+Mode-limited synthesis for specific azimuthal mode mval.
 """
-function synthesis_qst_ml(cfg::SHTConfig, im::Integer, Ql::AbstractVector{<:Complex}, Sl::AbstractVector{<:Complex}, Tl::AbstractVector{<:Complex}, ltr::Integer)
-    stored_im, _, lcap = _validate_stored_order(cfg, im, ltr)
+function synthesis_qst_ml(cfg::SHTConfig, mval::Integer, Ql::AbstractVector{<:Complex}, Sl::AbstractVector{<:Complex}, Tl::AbstractVector{<:Complex}, ltr::Integer)
+    stored_im, _, lcap = _validate_stored_order(cfg, mval, ltr)
     # Each fixed-mode sub-transform converts its component to canonical once.
     Vr_m = synthesis_packed_ml(cfg, stored_im, Ql, lcap)
     Vt_m, Vp_m = synthesis_sphtor_ml(cfg, stored_im, Sl, Tl, lcap)
@@ -369,12 +369,12 @@ function synthesis_qst_ml(cfg::SHTConfig, im::Integer, Ql::AbstractVector{<:Comp
     return Vr_m, Vt_m, Vp_m
 end
 
-function synthesis_qst_ml(::CPU, cfg::SHTConfig, im::Integer,
+function synthesis_qst_ml(::CPU, cfg::SHTConfig, mval::Integer,
                           Q::AbstractVector{<:Complex},
                           S::AbstractVector{<:Complex},
                           Tlm::AbstractVector{<:Complex}, ltr::Integer)
     for value in (Q, S, Tlm)
         _require_cpu_storage(:synthesis_qst_ml, value)
     end
-    return synthesis_qst_ml(cfg, im, Q, S, Tlm, ltr)
+    return synthesis_qst_ml(cfg, mval, Q, S, Tlm, ltr)
 end

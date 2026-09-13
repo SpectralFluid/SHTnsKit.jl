@@ -37,8 +37,91 @@ coefficient was `1/2π` too small — they inverted neither `synthesis_axisym` n
 the m=0 column of the full `analysis`. They now agree with both. Anything that
 compensated for the old scale downstream must drop that compensation.
 
+**`analysis` and the direct evaluators now honour `phi_scale`; an unset
+`phi_scale` resolves to `:dft`.** Two halves of one convention had drifted apart.
+
+*`analysis` ignored `phi_scale` entirely.* `synthesis` scales its Fourier bins by
+`phi_inv_scale(cfg)`, but `analysis` applied a fixed `cfg.cphi`, so under `:quad`
+the pair was not mutually inverse: `analysis(cfg, synthesis(cfg, alm))` came back
+as `alm / 2π` exactly. Analysis now applies `cphi · nlon / phi_inv_scale(cfg)`,
+which is `cphi` under `:dft` and restores the inverse property under `:quad`. The
+same factor was threaded through the batch, complex-packed, planned, distributed
+and adjoint analysis paths so they all agree.
+
+*The direct evaluators applied no φ factor at all.* `synthesis_point`,
+`synthesis_point_cplx`, `synthesis_axisym`, `synthesis_axisym_l`, `SH_to_lat`,
+`SH_to_lat_cplx`, `SHqst_to_point`, `SH_to_grad_point`, `SHqst_to_lat` and the
+PencilArray local evaluations each disagreed with the grid they claim to sample by
+exactly 2π under `:quad`. They now carry the same `phi_inv_scale(cfg)/nlon` factor
+`synthesis` does.
+
+*An unset `phi_scale` (`:auto`) used to fall back to a grid-type guess* —
+`grid_type == :gauss ? nlon : nlon/2π` — so a regular grid built through the
+exported `SHTConfig(; …)` keyword constructor disagreed by 2π with the identical
+grid from `create_regular_config`, which sets `:dft` explicitly. Every constructor
+emits `:dft`, so an unset value now means `:dft` too.
+
+**Default `:dft` behaviour is unchanged in all three cases**; only `:quad` and
+hand-built `:auto` configurations move, and they move to the values that make
+`analysis` and `synthesis` inverses.
+
+**Order-mixing rotations now reject `mmax < lmax` instead of truncating.**
+A Wigner-d rotation through a general `β` couples `Y_l^m` to every `Y_l^{m'}` with
+`|m'| ≤ l`. When storage stopped at `mmax < lmax`, the `|m'| > mmax` components
+were silently dropped — measured at `lmax = 8`, that discarded **14.8 %** of the
+field's energy at `mmax = 5` and **24.0 %** at `mmax = 3`, with no error and no
+warning. `SH_Yrotate`, `SH_Yrotate90`, `SH_Xrotate90` and the Euler-angle API now
+raise an `ArgumentError` on such a configuration. Pure Z-rotations are unaffected:
+`β ≡ 0` is diagonal and `β ≡ π` is anti-diagonal (`m' = -m`), so both still work
+at any `mmax`.
+
+*Porting:* use `mmax == lmax` for anything but a Z-rotation. Results that appeared
+to work before were missing the truncated energy.
+
+**Structural `SHTConfig` fields are no longer silently inconsistent.**
+Assigning `cfg.lmax = 10` left `size(cfg.Nlm) == (7, 7)` while the transforms index
+it as `(lmax+1, mmax+1)` under `@inbounds` — an out-of-bounds read of a live array.
+`lmax`, `mmax` and `mres` now rebuild the derived spectral layout (`Nlm`, `nlm`,
+`li`, `mi`, cached scale matrix and m-ordering) and drop the now-stale Legendre
+tables; `nlat`, `nlon`, `grid_type`, `nlm`, `li`, `mi` and `nspat` raise an
+`ArgumentError` pointing at the `create_*_config` constructors, because there is no
+grid-type-independent way to regenerate the quadrature in place.
+
+**The exported `SHTConfig(; …)` keyword constructor validates its invariants.**
+It previously checked nothing, so a hand-built configuration could violate
+`nlon ≥ 2*mmax+1` and then silently synthesize an all-zero field for any mode it
+could not resolve, or hand `use_rfft=true` a raw `BoundsError`. It now enforces the
+same constraints the `create_*_config` helpers always have. The exported keyword
+signature is otherwise unchanged.
+
 ### Fixed
 
+- **`analysis_turbo` / `synthesis_turbo` ignored `mres`.** Both walked a bare
+  `0:mmax` instead of `0:mres:mmax`, so `analysis_turbo` populated — and
+  `synthesis_turbo` consumed — coefficient columns an `mres > 1` transform has no
+  storage for. The disagreement with `analysis`/`synthesis` was O(1), not
+  roundoff. Both now share the core's cached `m` ordering. The turbo pair also
+  nested `@threads :static`, which is illegal inside an outer threaded region;
+  they now fall back to a serial loop there, using the same predicate the core
+  orchestrators use.
+- **Rotation pullbacks read coefficients the primal had already overwritten.**
+  `SH_Yrotate`, `shtns_rotation_apply_cplx` and `shtns_rotation_apply_real`
+  captured their primal *input* and read it lazily, so an in-place call
+  (`Rlm === Qlm`) — or any caller reusing the buffer before the pullback ran —
+  silently corrupted the angle gradient. Each rule now snapshots what it needs at
+  primal time. Applies to both the ChainRules and Zygote adjoints.
+- **`rrule`s for `analysis`/`synthesis`/`analysis_sphtor`/`synthesis_sphtor`
+  declared fewer keyword arguments than their primals.** Passing `use_rfft` or
+  `fft_scratch` — even at its default — made ChainRules skip the rule entirely and
+  fall through to source tracing. The keywords select a different FFT
+  implementation of the same linear operator, so the adjoints are unchanged.
+- **`synthesis_qst` and `analysis_qst` had no `rrule` at all**, so
+  differentiating a QST pipeline fell through to Zygote's source tracing and
+  crashed inside FFTW. Each adjoint is the existing scalar and sphtor adjoints
+  side by side.
+- **`shtns_rotation_apply_real` reported a bare size mismatch for `mres > 1`
+  configurations**, leaving the caller to reverse-engineer why. The message now
+  names `mres` and states the restriction, matching `dist_SH_Yrotate`.
 - **Silent precision loss in batch QST/sphtor transforms.** `analysis_qst_batch`,
   `_synthesis_qst_batch` and the sphtor batch pair derived their output element
   type from one input array instead of promoting across all of them, truncating
@@ -94,6 +177,43 @@ compensated for the old scale downstream must drop that compensation.
 - Batch FFT helpers reuse the shared plan cache instead of re-planning per call.
 
 ### Internal
+
+- **Removed the dead parallel FFT-plan cache.** The `SHTNSKIT_CACHE_PENCILFFTS`
+  environment variable and the `fft_plan_cache_enabled` / `set_fft_plan_cache!` /
+  `enable_fft_plan_cache!` / `disable_fft_plan_cache!` controls forwarded to a
+  cache in the parallel extension whose only reader, `_get_or_plan`, had no call
+  sites — the "plans" it stored were `NamedTuple` placeholders the FFT wrappers
+  ignored, so every knob was a no-op. The cache the transforms actually use is now
+  in `src/fftutils.jl`, shared by the serial and distributed paths, and the same
+  four controls address it without requiring the extension to be loaded.
+  `SHTNSKIT_FFT_PLAN_CACHE` is the current spelling; the old name still works.
+- **`DistributedSpectralPlan2D` no longer attaches a finalizer.** `close` frees
+  the plan's `l_comm` / `m_comm` sub-communicators, and `MPI_Comm_free` is
+  collective; a finalizer runs at whatever point that rank's garbage collector
+  fires, which is rank-local and nondeterministic. Cleanup is explicit only — call
+  `close(plan)` collectively. Leaking two communicators until `MPI_Finalize` is
+  strictly better than a nondeterministic collective.
+- **`spatial_view(cfg, A)` is exported**, the missing bridge in the padding API:
+  `allocate_padded_spatial` returns an array with `nlat_padded ≥ nlat` rows while
+  every transform requires exactly `nlat`, so the padded buffer could not be passed
+  to `analysis` at all. The view keeps the padded column stride, so it preserves
+  what the padding is for.
+- **`set_batch_size!` is documented as advisory.** `howmany` / `spec_dist` mirror
+  the SHTns C batch descriptors and are stored for interoperability, but the Julia
+  batch entry points take the field count from `size(fields, 3)`; the old docstring
+  claimed otherwise.
+- **Regular-grid quadrature exactness is documented.** Fejér and Clenshaw–Curtis
+  rules with `nlat` nodes are exact only through degree `nlat - 1`, and analysis
+  integrates degree `2*lmax`, so the equiangular grids need `nlat ≥ 2*lmax + 1` —
+  where Gauss–Legendre needs `nlat = lmax + 1`. Below that threshold nothing warns
+  and `analysis ∘ synthesis` is not an identity (7.2e-2 relative error at
+  `lmax = 8, nlat = 10`). Both `create_regular_config` and `docs/src/grids.md` now
+  say so with measured numbers.
+- New regression coverage: planned-vs-`cfg` conformance across the tables / rfft /
+  Robert-form matrix; the `mmax < lmax` rotation guard; angle-gradient survival
+  under an in-place primal; evaluator `phi_scale` agreement; turbo `mres`; and a
+  4-rank `test_mpi_2d_alignment.jl` for the 2D spectral-plan alignment
+  preconditions, wired into CI.
 
 - `pack_lm!`/`pack_lm`/`unpack_lm!`/`unpack_lm` in `src/layout.jl` replace six
   open-coded copies of the packed↔dense `(l,m)` mapping. The `m % mres` guard had

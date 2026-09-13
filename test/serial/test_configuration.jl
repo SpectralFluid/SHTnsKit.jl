@@ -2,6 +2,7 @@
 # Tests for grid configuration, indexing, and normalization
 
 using Test
+using Random
 using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
@@ -329,33 +330,97 @@ using SHTnsKit
         @test size(spatial_scratch) == (nlat, nlon)
     end
 
-    @testset "FFT plan cache control" begin
-        # FFT plan cache requires the parallel extension
-        # Skip if not available
-        try
-            # Save initial state
-            initial_state = fft_plan_cache_enabled()
-            @test typeof(initial_state) == Bool
+    @testset "structural field assignment keeps derived state consistent" begin
+        # `cfg.lmax = 10` used to leave `size(cfg.Nlm) == (7,7)` while the
+        # transforms index it as (lmax+1, mmax+1) under `@inbounds` — a live
+        # out-of-bounds read. lmax/mmax/mres now rebuild the spectral layout;
+        # the fields that cannot be made consistent are rejected outright.
+        cfg = create_gauss_config(6, 8)
+        prepare_plm_tables!(cfg)
+        @test SHTnsKit.has_fused_scalar_tables(cfg)
 
-            # Test enable/disable
-            enable_fft_plan_cache!()
-            @test fft_plan_cache_enabled() == true
+        cfg.lmax = 10
+        @test size(cfg.Nlm) == (cfg.lmax + 1, cfg.mmax + 1)
+        @test cfg.nlm == SHTnsKit.nlm_calc(cfg.lmax, cfg.mmax, cfg.mres)
+        @test length(cfg.li) == cfg.nlm && length(cfg.mi) == cfg.nlm
+        @test !SHTnsKit.has_fused_scalar_tables(cfg)   # stale tables dropped
 
-            disable_fft_plan_cache!()
-            @test fft_plan_cache_enabled() == false
+        cfg2 = create_gauss_config(6, 8; mres=1)
+        cfg2.mres = 2
+        @test cfg2.nlm == SHTnsKit.nlm_calc(6, cfg2.mmax, 2)
+        @test all(m -> m % 2 == 0, cfg2.mi)
 
-            # Test set function
-            set_fft_plan_cache!(true)
-            @test fft_plan_cache_enabled() == true
-
-            set_fft_plan_cache!(false)
-            @test fft_plan_cache_enabled() == false
-
-            # Restore initial state
-            set_fft_plan_cache!(initial_state)
-        catch e
-            @info "Skipping FFT plan cache tests (requires parallel extension)" exception=e
+        for bad in (:nlat, :nlon, :grid_type, :nlm, :nspat)
+            @test_throws ArgumentError setproperty!(create_gauss_config(4, 6), bad,
+                                                    bad === :grid_type ? :regular : 99)
         end
+        # An inconsistent spectral triple is rejected rather than stored.
+        @test_throws ArgumentError (c = create_gauss_config(6, 8); c.mmax = 99)
+    end
+
+    @testset "kwarg SHTConfig constructor validates its invariants" begin
+        # This constructor is exported and used to check nothing, so a hand-built
+        # config could violate nlon >= 2*mmax+1 and then silently synthesize an
+        # all-zero field for any mode it could not resolve.
+        lmax = mmax = 6
+        mk(; nlon=2*mmax + 2, nlat=8, kw...) = begin
+            θ = collect(range(0.1, 3.0; length=nlat))
+            base = (; lmax, mmax, mres=1, nlat, nlon,
+                    θ, φ=collect(range(0, 2π; length=nlon+1))[1:nlon],
+                    x=cos.(θ), w=fill(2/nlat, nlat), st=sin.(θ),
+                    Nlm=SHTnsKit.Nlm_table(lmax, mmax), cphi=2π/nlon,
+                    nlm=SHTnsKit.nlm_calc(lmax, mmax, 1),
+                    li=SHTnsKit.build_li_mi(lmax, mmax, 1)[1],
+                    mi=SHTnsKit.build_li_mi(lmax, mmax, 1)[2],
+                    nspat=nlat*nlon, norm=:orthonormal, cs_phase=true,
+                    real_norm=false, robert_form=false)
+            SHTnsKit.SHTConfig(; base..., kw...)
+        end
+        @test mk() isa SHTnsKit.SHTConfig                       # the valid case still builds
+        @test_throws ArgumentError mk(nlon=8)                    # nlon < 2*mmax+1
+        @test_throws ArgumentError mk(mres=0)
+        @test_throws ArgumentError mk(nspat=1)                   # nspat != nlat*nlon
+        @test_throws DimensionMismatch mk(w=fill(0.25, 4))       # w shorter than nlat
+        @test_throws DimensionMismatch mk(Nlm=zeros(2, 2))        # Nlm not (lmax+1, mmax+1)
+    end
+
+    @testset "FFT plan cache control" begin
+        # These knobs used to forward to a cache in the parallel extension that
+        # nothing ever read (`_get_or_plan` had no call sites), so the whole
+        # documented feature was a no-op and this testset was wrapped in a
+        # try/catch that skipped it whenever MPI was absent. They now control the
+        # φ-FFT plan cache every transform actually goes through, serial or
+        # distributed, so assert the behaviour rather than just the flag.
+        initial_state = fft_plan_cache_enabled()
+        @test typeof(initial_state) == Bool
+
+        enable_fft_plan_cache!()
+        @test fft_plan_cache_enabled() == true
+        disable_fft_plan_cache!()
+        @test fft_plan_cache_enabled() == false
+        set_fft_plan_cache!(true)
+        @test fft_plan_cache_enabled() == true
+        set_fft_plan_cache!(false)
+        @test fft_plan_cache_enabled() == false
+
+        enable_fft_plan_cache!()
+        cfg_cache = create_gauss_config(4, 6)
+        field = randn(MersenneTwister(77), cfg_cache.nlat, cfg_cache.nlon)
+        ref = analysis(cfg_cache, field)
+        @test !isempty(SHTnsKit._LOCAL_FFT_PLAN_CACHE)
+
+        disable_fft_plan_cache!()                        # clears by default
+        @test isempty(SHTnsKit._LOCAL_FFT_PLAN_CACHE)
+        @test analysis(cfg_cache, field) ≈ ref           # same answer, unplanned
+        @test isempty(SHTnsKit._LOCAL_FFT_PLAN_CACHE)    # and still bypassed
+
+        enable_fft_plan_cache!()
+        @test analysis(cfg_cache, field) ≈ ref
+        @test !isempty(SHTnsKit._LOCAL_FFT_PLAN_CACHE)
+
+        @test SHTnsKit.fft_plan_cache_max!(SHTnsKit.fft_plan_cache_max!(8)) == 8
+
+        set_fft_plan_cache!(initial_state)
     end
 
     @testset "Pencil grid suggestion" begin

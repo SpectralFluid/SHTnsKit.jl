@@ -101,7 +101,9 @@ ENVIRONMENT VARIABLES
 --------------------
 - SHTNSKIT_PHI_SCALE: "dft" or "quad" for φ scaling convention
 - SHTNSKIT_VERBOSE_STORAGE: "1" to print storage optimization info
-- SHTNSKIT_CACHE_PENCILFFTS: "0" to disable FFT plan caching (parallel ext)
+- SHTNSKIT_FFT_PLAN_CACHE: "0" to disable φ-FFT plan caching (serial and distributed)
+  (legacy alias: SHTNSKIT_CACHE_PENCILFFTS)
+- SHTNSKIT_FFT_PLAN_CACHE_MAX: cap on distinct cached plans (default 64; ≤0 = no cap)
 
 DEBUGGING TIPS
 --------------
@@ -146,12 +148,57 @@ function phi_inv_scale(cfg::SHTConfig)
     end
     if cfg.phi_scale === :quad
         return cfg.nlon / (2π)
-    elseif cfg.phi_scale === :dft
-        return Float64(cfg.nlon)
     else
-        return cfg.grid_type == :gauss ? Float64(cfg.nlon) : cfg.nlon / (2π)
+        # `:dft` and anything unset (`:auto`). The old fallback keyed on
+        # `grid_type` and handed every non-Gauss grid `nlon/2π` — so a regular
+        # grid built through the exported keyword constructor (which defaulted to
+        # `:auto`) disagreed by 2π with the identical grid from
+        # `create_regular_config`, which sets `:dft` explicitly. Both constructors
+        # emit `:dft`, so `:dft` is the right default for an unset value.
+        return Float64(cfg.nlon)
     end
 end
+
+"""
+    _analysis_phi_scale(cfg) -> Float64
+
+The φ quadrature factor `analysis` must apply so that it inverts `synthesis`.
+
+`synthesis` scales its Fourier bins by `phi_inv_scale(cfg)` and the inverse FFT
+divides by `nlon`, a net spatial factor of `σ = phi_inv_scale(cfg)/nlon`. For the
+pair to be mutually inverse, analysis must carry `cphi/σ`.
+
+Under the default `:dft` mode `σ = 1` and this is just `cphi = 2π/nlon`, exactly
+what analysis always used — so nothing changes for any configuration the
+`create_*_config` constructors produce. Under `:quad` (`σ = 1/2π`) the old fixed
+`cphi` made `analysis(synthesis(alm))` come back as `alm/2π`: the two halves of
+the transform pair simply disagreed about the convention, with synthesis honouring
+`phi_scale` and analysis ignoring it.
+"""
+@inline _analysis_phi_scale(cfg::SHTConfig) = cfg.cphi * cfg.nlon / phi_inv_scale(cfg)
+
+"""
+    _evaluator_phi_scale(cfg) -> Float64
+
+The factor a point/latitude evaluator must apply to reproduce the value
+`synthesis` writes on the grid: `phi_inv_scale(cfg)/nlon`, i.e. 1 under `:dft`
+and `1/2π` under `:quad`. Omitting it made every direct evaluator disagree with
+the very grid it claims to sample by a factor of 2π.
+"""
+@inline _evaluator_phi_scale(cfg::SHTConfig) = phi_inv_scale(cfg) / cfg.nlon
+
+"""
+    _evaluator_phi_scale(cfg, ::Type{T}) -> T
+
+`_evaluator_phi_scale` narrowed to the evaluator's own real type.
+
+The evaluators promise their caller the element type their coefficients carry —
+`Float32` coefficients give `Float32` values, and a `Dual` stays a `Dual`. The
+untyped scale is a `Float64`, so multiplying by it silently widens every
+`Float32` result to `Float64`. Convert once, at the boundary.
+"""
+@inline _evaluator_phi_scale(cfg::SHTConfig, ::Type{T}) where {T} =
+    convert(real(T), _evaluator_phi_scale(cfg))
 
 include("buffer_utils.jl")                   # Common buffer allocation patterns
 include("kernels.jl")                       # Legendre accumulation kernels
@@ -185,6 +232,7 @@ export set_allow_padding!, disable_padding!, is_padding_enabled       # Memory p
 export get_nlat_padded, get_spat_dist, compute_optimal_padding        # Padding queries
 export allocate_padded_spatial, allocate_padded_spatial_batch         # Padded array allocation
 export copy_to_padded!, copy_from_padded!, estimate_padding_overhead  # Padding utilities
+export spatial_view                                                   # Padded buffer → transform-shaped view
 
 # ===== BASIC TRANSFORMS =====
 # The `*_cplx` helpers are intentionally separate from `real_output=false`
@@ -340,52 +388,15 @@ function DistQstPlan(args...; kwargs...)
     return getproperty(ext, :DistQstPlan)(args...; kwargs...)
 end
 
-function fft_plan_cache_enabled()
-    ext = _parallel_ext_module()
-    return ext === nothing ? false : getproperty(ext, :_fft_plan_cache_enabled_impl)()
-end
-
-function set_fft_plan_cache!(flag::Bool; clear::Bool=true)
-    ext = _parallel_ext_module()
-    ext === nothing && error("Parallel extension not loaded")
-    return getproperty(ext, :_fft_plan_cache_set_impl)(flag; clear=clear)
-end
-
-function enable_fft_plan_cache!()
-    ext = _parallel_ext_module()
-    ext === nothing && error("Parallel extension not loaded")
-    return getproperty(ext, :_fft_plan_cache_enable_impl)()
-end
-
-function disable_fft_plan_cache!(; clear::Bool=true)
-    ext = _parallel_ext_module()
-    ext === nothing && error("Parallel extension not loaded")
-    return getproperty(ext, :_fft_plan_cache_disable_impl)(; clear=clear)
-end
-
-Base.@doc """
-    fft_plan_cache_enabled() -> Bool
-
-Return whether distributed FFT plan caching is currently enabled.
-""" fft_plan_cache_enabled
-
-Base.@doc """
-    set_fft_plan_cache!(flag::Bool; clear::Bool=true)
-
-Enable or disable caching of distributed FFT plans. When disabling and `clear=true`, cached plans are freed.
-""" set_fft_plan_cache!
-
-Base.@doc """
-    enable_fft_plan_cache!()
-
-Convenience wrapper to enable distributed FFT plan caching.
-""" enable_fft_plan_cache!
-
-Base.@doc """
-    disable_fft_plan_cache!(; clear::Bool=true)
-
-Disable distributed FFT plan caching. Pass `clear=false` to retain existing cache entries.
-""" disable_fft_plan_cache!
+# NOTE: the φ-FFT plan cache and its `fft_plan_cache_enabled` /
+# `set_fft_plan_cache!` / `enable_fft_plan_cache!` / `disable_fft_plan_cache!`
+# controls live in src/fftutils.jl. They used to forward to the parallel
+# extension, where the cache they addressed had no readers at all — `_get_or_plan`
+# was never called from anywhere, so every one of these knobs (and the
+# `SHTNSKIT_CACHE_PENCILFFTS` environment variable the distributed guide
+# advertises) was a no-op. The cache that every transform actually uses, serial
+# and distributed alike, is the one in fftutils.jl, so the controls now address
+# that and no longer require the extension to be loaded.
 
 # ===== PENCIL GRID SUGGESTION =====
 function _suggest_pencil_grid_fallback(comm_or_nprocs::Any, nlat::Integer, nlon::Integer;

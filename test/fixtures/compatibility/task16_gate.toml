@@ -6,13 +6,13 @@ platform = "aarch64-apple-darwin"
 [local_gate]
 evidence_kind = "local_readiness"
 certifying = false
-audited_tree_digest = "1bae4f3a0acc933d30369fe3e11d2333379b40dbc55e4dbadf9c705bb860cbd3"
+audited_tree_digest = "34289cc58102e077f0a420f00eafab9f7c3629255ebfc5ab9c749e972fc10f44"
 audited_scope = ["Project.toml", ".github/workflows", "docs/src/shtns37-parity.md", "ext", "src", "test"]
 audited_exclusions = ["test/fixtures/compatibility/task16_gate.toml", "test/fixtures/compatibility/task16_local_commands.txt", "test/fixtures/compatibility/task16_local_summary.log"]
 commands_file = "test/fixtures/compatibility/task16_local_commands.txt"
-commands_sha256 = "524f0421f4f3aa013f8e4805b5ae2a0d5ffe5c858ff8140f062a77e6c8447712"
+commands_sha256 = "a9c74fca5943848f977389ff4519e17125037f1b0cae8b3e20f59e8942573cf5"
 summary_log = "test/fixtures/compatibility/task16_local_summary.log"
-summary_log_sha256 = "c41fe35538fca5cd7b927bbff92c39412816c5f46339fba4a3ab5da518a59818"
+summary_log_sha256 = "eaa7e8adbbed059f6604bfa1dfc4e4c45c86eef17703869b1aade77b3aa3794d"
 # Historical readiness counts; current review runs are recorded in the summary.
 pkg_exit_code = 0
 serial_pass = 76347
@@ -26,7 +26,7 @@ mpi_cpu_fixture_pass_per_rank = 66
 [host_transfer_audit]
 allowlist = "test/fixtures/compatibility/host_transfer_allowlist.toml"
 scanner = "test/support/host_transfer_inventory.jl"
-entry_count = 685
+entry_count = 676
 allowscalar_match_count = 0
 legacy_cuda_host_result_bridges = 2
 

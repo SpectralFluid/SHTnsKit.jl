@@ -515,7 +515,7 @@ function _dist_transpose_analysis_unchecked!(
     fill!(A, zero(eltype(A)))
 
     w       = plan.cfg.w
-    scaleφ  = plan.cfg.cphi   # 2π/nlon — converts unnormalized rFFT sum to integral
+    scaleφ  = SHTnsKit._analysis_phi_scale(plan.cfg)   # 2π/nlon under :dft; inverts synthesis under any phi_scale
     lmax    = plan.lmax
     nlat    = plan.nlat
     nlev    = plan.nlev
@@ -657,7 +657,7 @@ function _dist_transpose_analysis_sphtor_unchecked!(
     fill!(T, zero(eltype(T)))
 
     w       = plan.cfg.w
-    scaleφ  = plan.cfg.cphi    # 2π/nlon — converts unnormalized rFFT sum to integral
+    scaleφ  = SHTnsKit._analysis_phi_scale(plan.cfg)    # 2π/nlon under :dft; inverts synthesis under any phi_scale
     lmax    = plan.lmax
     nlat    = plan.nlat
     nlev    = plan.nlev

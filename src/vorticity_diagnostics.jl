@@ -210,7 +210,14 @@ function grad_loss_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_target:
     gζlm = analysis(cfg, residual)
     # Analysis includes the loss's quadrature weights, but the adjoint also
     # carries synthesis's inverse-FFT scale (1 for :dft, 1/2π for :quad).
-    synthesis_scale = phi_inv_scale(cfg) / cfg.nlon
+    # `analysis` is used here as a stand-in for the synthesis adjoint: with
+    # σ = phi_inv_scale(cfg)/nlon the spatial factor of synthesis, and
+    # g = ∂L/∂ζ_grid = cphi·w·r, the true adjoint is
+    #     ∂L/∂ζlm = σ · Λᴴ(g) = σ · analysis_dft(r),
+    # where `analysis_dft` is analysis with the fixed cphi factor. Analysis now
+    # carries cphi/σ instead, i.e. `analysis(r) = analysis_dft(r)/σ`, so the
+    # compensation picks up σ a second time. Exactly 1 in the default :dft mode.
+    synthesis_scale = (phi_inv_scale(cfg) / cfg.nlon)^2
     
     # Apply chain rule: ∂L/∂T_lm = ∂L/∂ζ_lm * ∂ζ_lm/∂T_lm
     lmax, mmax = cfg.lmax, cfg.mmax
@@ -218,7 +225,9 @@ function grad_loss_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_target:
     gT = similar(Tlm)
     fill!(gT, 0.0)
     
-    for m in 0:mmax, l in max(1,m):lmax
+    # Stride by mres like every other diagnostic: orders that are not multiples
+    # of mres have no packed storage, so a gradient entry there is meaningless.
+    for m in 0:cfg.mres:mmax, l in max(1,m):lmax
         L2 = l * (l + 1)  # Note: negative sign from ζ = -l(l+1)T
         gT[l+1, m+1] = -L2 * synthesis_scale * _convention_metric(scale_matrix, l, m) * gζlm[l+1, m+1]
     end
@@ -239,13 +248,13 @@ function loss_and_grad_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_tar
     
     # Backward pass for gradient
     gζlm = analysis(cfg, residual)
-    synthesis_scale = phi_inv_scale(cfg) / cfg.nlon
+    synthesis_scale = (phi_inv_scale(cfg) / cfg.nlon)^2  # see grad_loss_vorticity_Tlm
     lmax, mmax = cfg.lmax, cfg.mmax
     scale_matrix = _diagnostic_scale_matrix(cfg)
     gT = similar(Tlm)
     fill!(gT, 0.0)
     
-    for m in 0:mmax, l in max(1,m):lmax
+    for m in 0:cfg.mres:mmax, l in max(1,m):lmax
         L2 = l * (l + 1)
         gT[l+1, m+1] = -L2 * synthesis_scale * _convention_metric(scale_matrix, l, m) * gζlm[l+1, m+1]
     end

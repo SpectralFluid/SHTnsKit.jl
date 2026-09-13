@@ -5,7 +5,7 @@ certifying=false
 manual_cuda_tool_command=python3 -B -m unittest discover -s test/support -p test_manual_cuda.py -v
 manual_cuda_contract_command=/Users/subha/.julia/juliaup/julia-1.12.4+0.aarch64.apple.darwin14/bin/julia --startup-file=no --project=. test/serial/test_shtns37_contract.jl
 manual_cuda_numerical_source_unchanged_from=3b8b2fe118900f2431208088932631db4a162908
-audited_tree_digest=1bae4f3a0acc933d30369fe3e11d2333379b40dbc55e4dbadf9c705bb860cbd3
+audited_tree_digest=34289cc58102e077f0a420f00eafab9f7c3629255ebfc5ab9c749e972fc10f44
 audited_scope=Project.toml,.github/workflows,docs/src/shtns37-parity.md,ext,src,test
 audited_exclusions=test/fixtures/compatibility/task16_gate.toml,test/fixtures/compatibility/task16_local_commands.txt,test/fixtures/compatibility/task16_local_summary.log
 pkg_command=/usr/bin/env JULIA_DEPOT_PATH=/private/tmp/julia_depot_shtnskit:/Users/subha/.julia SHTNSKIT_RUN_JET_TESTS=1 SHTNSKIT_RUN_AQUA_TESTS=1 /Users/subha/.julia/juliaup/julia-1.12.4+0.aarch64.apple.darwin14/bin/julia --startup-file=no --project=. -e 'using Pkg; Pkg.test()'
@@ -67,3 +67,26 @@ qst_communicator_full_parity_file=test/parity/runtests_mpi.jl with no ARGS
 qst_communicator_mpi_timeout_seconds=900 per test file, including JIT compilation
 qst_communicator_audit_command=using SHTnsKit; include("test/serial/test_final_parity_gate.jl")
 qst_communicator_full_parity_ranks=2,4
+
+# Convention/AD/dead-cache audit integration, 2026-09-13. Historical and prior
+# review runs above are NOT re-runs; the keys below record only what was
+# executed for this change.
+audit2_date=2026-09-13
+audit2_base_commit=f06d13d1
+audit2_julia=/Users/subha/.julia/juliaup/julia-1.11.1+0.aarch64.apple.darwin14/bin/julia
+audit2_julia_version=1.11.1
+audit2_platform=arm64-apple-darwin22.4.0
+audit2_threads=1
+audit2_serial_env=/private/tmp/shtkit_testenv (Test, Random, ForwardDiff, Zygote, ChainRulesCore, LoopVectorization; SHTnsKit dev'd from the worktree)
+audit2_mpi_env=/private/tmp/shtkit_mpienv (MPI, PencilArrays, PencilFFTs; SHTnsKit dev'd from the worktree)
+audit2_serial_command=julia --startup-file=no --project=/private/tmp/shtkit_testenv test/serial/runtests.jl
+audit2_parallel_grid_command=julia --startup-file=no --project=/private/tmp/shtkit_mpienv test/parallel/runtests.jl
+audit2_mpi_launcher=MPI.mpiexec() from the MPI env with the same Julia executable and project
+audit2_mpi_files_4rank=test/parallel/test_mpi_comprehensive.jl,test/parallel/test_mpi_extended.jl,test/parallel/test_mpi_audit_fixes.jl,test/parallel/test_mpi_2d_alignment.jl
+audit2_mpi_files_2rank=test/parallel/test_mpi_parallel_local_correctness.jl,test/parallel/test_mpi_comm_cleanup.jl,test/parallel/test_mpi_plan_preflight.jl,test/parallel/test_mpi_transpose_operand_preflight.jl,test/parallel/test_transpose_sht.jl,test/parallel/test_disttranspose_dealiased.jl,test/parallel/test_dist_plan_alloc.jl
+audit2_host_transfer_regen_command=julia --startup-file=no --project=/private/tmp/shtkit_testenv test/support/generate_host_transfer_allowlist.jl
+audit2_pkg_test_rerun=false
+audit2_jet_rerun=false
+audit2_aqua_rerun=false
+audit2_gpu_rerun=false
+audit2_parity_runtests_rerun=false
