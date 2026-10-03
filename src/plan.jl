@@ -212,7 +212,7 @@ function analysis_sphtor!(plan::SHTPlan, Slm_out::AbstractMatrix, Tlm_out::Abstr
     size(Tlm_out,1)==cfg.lmax+1 && size(Tlm_out,2)==cfg.mmax+1 || throw(DimensionMismatch("Tlm_out dims"))
     
     lmax, mmax = cfg.lmax, cfg.mmax
-    scaleφ = cfg.cphi
+    scaleφ = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     fill!(Slm_out, zero(eltype(Slm_out))); fill!(Tlm_out, zero(eltype(Tlm_out)))
 
     # Two passes over (Vt, Vp): each packs the component into a real/complex
@@ -421,7 +421,7 @@ function analysis!(plan::SHTPlan, alm_out::AbstractMatrix, f::AbstractMatrix)
     ))
 
     lmax, mmax = cfg.lmax, cfg.mmax
-    scaleφ = cfg.cphi
+    scaleφ = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     if plan.use_rfft
         eltype(f) <: Real || throw(ArgumentError("use_rfft plan requires real-valued f"))

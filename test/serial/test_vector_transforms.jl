@@ -8,6 +8,17 @@ using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
+# Allocation budgets below are calibrated for a SINGLE-THREADED run, where they
+# are exact. The shared m-loop orchestrators start `@threads` tasks whenever
+# threads are available, and each threaded region costs a few hundred bytes to
+# spawn — a constant independent of problem size, and not the kind of regression
+# these budgets exist to catch (a per-row temporary or a dense zero spectrum
+# costs tens of KB and grows with lmax). Allow a per-thread slack rather than
+# letting the whole suite go red on any multi-core machine; note this makes the
+# budgets coarse at `nthreads > 1`, so the tight check is the 1-thread run.
+@isdefined(_thread_alloc_slack) ||
+    (_thread_alloc_slack() = Threads.nthreads() > 1 ? 4_096 * Threads.nthreads() : 0)
+
 @testset "Vector Transforms (Spheroidal-Toroidal)" begin
     @testset "Sphtor roundtrip" begin
         lmax = 8
@@ -87,8 +98,8 @@ using SHTnsKit
         synthesis_tor(cfg, Tlm)
         GC.gc()
 
-        @test @allocated(synthesis_sph(cfg, Slm)) <= 15_000
-        @test @allocated(synthesis_tor(cfg, Tlm)) <= 15_000
+        @test @allocated(synthesis_sph(cfg, Slm)) <= 15_000 + _thread_alloc_slack()
+        @test @allocated(synthesis_tor(cfg, Tlm)) <= 15_000 + _thread_alloc_slack()
     end
 
     @testset "Gradient transform" begin
@@ -451,6 +462,22 @@ using SHTnsKit
         Gt_ref, Gp_ref = synthesis_sph(cfg, alm_z)
         @test isapprox(Gt_l, Gt_ref; rtol=1e-10, atol=1e-12)
         @test isapprox(Gp_l, Gp_ref; rtol=1e-10, atol=1e-12)
+    end
+
+
+    @testset "mode-limited sphtor validates its order and truncation" begin
+        # Out-of-range arguments used to walk off the end of the norm-scale table
+        # and return ±Inf coefficients; the scalar twin already raised.
+        cfg = create_gauss_config(3, 5; nlon=8)
+        v = randn(MersenneTwister(3311), ComplexF64, cfg.nlat)
+        sl = zeros(ComplexF64, cfg.lmax + 1)
+        @test_throws ArgumentError SHTnsKit.analysis_sphtor_ml(cfg, 9, v, v, 12)
+        @test_throws ArgumentError SHTnsKit.analysis_sphtor_ml(cfg, -1, v, v, 3)
+        @test_throws ArgumentError SHTnsKit.analysis_sphtor_ml(cfg, 1, v, v, 99)
+        @test_throws ArgumentError SHTnsKit.synthesis_sphtor_ml(cfg, 9, sl, sl, 12)
+        # a valid call still returns finite coefficients
+        S, T = SHTnsKit.analysis_sphtor_ml(cfg, 1, v, v, 3)
+        @test all(isfinite, S) && all(isfinite, T)
     end
 
 end

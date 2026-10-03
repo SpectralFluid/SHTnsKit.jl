@@ -402,4 +402,75 @@ end
 
         @test isapprox(dE_ad, dE_fd; rtol=5e-4, atol=1e-8)
     end
+
+end
+
+
+if _HAS_CHAINRULES
+@testset "QST rrules and implementation-detail kwargs" begin
+    # The QST family had no rrule at all, so differentiating a QST pipeline fell
+    # through to source tracing and crashed inside FFTW. And every rrule that
+    # declared fewer kwargs than its primal was skipped the moment a caller
+    # passed one, even at its default value.
+    cfg = create_gauss_config(5, 7; nlon=12)
+    rng = MersenneTwister(9412)
+    rnd() = begin
+        a = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+        for m in 0:cfg.mmax, l in m:cfg.lmax
+            a[l+1, m+1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+        end
+        a
+    end
+    ε = 1e-6
+
+    @testset "synthesis_qst pullback vs finite differences" begin
+        Q, S, T = rnd(), rnd(), rnd()
+        Cr, Ct, Cp = randn(rng, cfg.nlat, cfg.nlon), randn(rng, cfg.nlat, cfg.nlon), randn(rng, cfg.nlat, cfg.nlon)
+        loss(q, s, t) = (V = synthesis_qst(cfg, q, s, t);
+                         sum(Cr .* V[1]) + sum(Ct .* V[2]) + sum(Cp .* V[3]))
+        _, back = rrule(synthesis_qst, cfg, Q, S, T)
+        _, _, Q̄, S̄, T̄, _ = back((Cr, Ct, Cp))
+        for (slot, ḡ, perturb) in ((:Q, Q̄, (h, q, s, t) -> (q .+ h, s, t)),
+                                   (:S, S̄, (h, q, s, t) -> (q, s .+ h, t)),
+                                   (:T, T̄, (h, q, s, t) -> (q, s, t .+ h)))
+            h = rnd()
+            fd = (loss(perturb(ε .* h, Q, S, T)...) - loss(perturb(-ε .* h, Q, S, T)...)) / (2ε)
+            @test real(sum(conj(ḡ) .* h)) ≈ fd rtol=1e-6 atol=1e-8
+        end
+    end
+
+    @testset "analysis_qst pullback vs finite differences" begin
+        Vr, Vt, Vp = randn(rng, cfg.nlat, cfg.nlon), randn(rng, cfg.nlat, cfg.nlon), randn(rng, cfg.nlat, cfg.nlon)
+        G1, G2, G3 = rnd(), rnd(), rnd()
+        loss(vr, vt, vp) = (A = analysis_qst(cfg, vr, vt, vp);
+                            real(sum(conj(G1) .* A[1]) + sum(conj(G2) .* A[2]) + sum(conj(G3) .* A[3])))
+        _, back = rrule(analysis_qst, cfg, Vr, Vt, Vp)
+        _, _, V̄r, V̄t, V̄p = back((G1, G2, G3))
+        for (ḡ, perturb) in ((V̄r, (h, a, b, c) -> (a .+ h, b, c)),
+                             (V̄t, (h, a, b, c) -> (a, b .+ h, c)),
+                             (V̄p, (h, a, b, c) -> (a, b, c .+ h)))
+            h = randn(rng, cfg.nlat, cfg.nlon)
+            fd = (loss(perturb(ε .* h, Vr, Vt, Vp)...) - loss(perturb(-ε .* h, Vr, Vt, Vp)...)) / (2ε)
+            @test sum(real(ḡ) .* h) ≈ fd rtol=1e-6 atol=1e-8
+        end
+    end
+
+    @testset "rrules accept the primal's implementation-detail kwargs" begin
+        alm = rnd()
+        f = randn(rng, cfg.nlat, cfg.nlon)
+        Vt, Vp = randn(rng, cfg.nlat, cfg.nlon), randn(rng, cfg.nlat, cfg.nlon)
+        @test rrule(synthesis, cfg, alm; use_rfft=false) !== nothing
+        @test rrule(synthesis, cfg, alm; real_output=true, fft_scratch=nothing) !== nothing
+        @test rrule(analysis, cfg, f; use_rfft=false) !== nothing
+        @test rrule(analysis_sphtor, cfg, Vt, Vp; use_rfft=false) !== nothing
+        @test rrule(synthesis_sphtor, cfg, alm, alm; use_rfft=false) !== nothing
+        # and the rfft path gives the same adjoint as the complex one
+        ȳ = randn(rng, cfg.nlat, cfg.nlon)
+        _, b1 = rrule(synthesis, cfg, alm)
+        _, b2 = rrule(synthesis, cfg, alm; use_rfft=true)
+        @test b1(ȳ)[3] ≈ b2(ȳ)[3] rtol=1e-10
+    end
+end
+else
+    @info "Skipping QST rrule tests (ChainRulesCore not available)"
 end

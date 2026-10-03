@@ -1100,7 +1100,7 @@ function _analysis_owned_block!(block::AbstractMatrix{CT}, cfg::SHTnsKit.SHTConf
     fill!(block, zero(CT))
     P = Vector{Float64}(undef, cfg.lmax + 1)
     RT = typeof(real(zero(CT)))
-    cphi = RT(cfg.cphi)
+    cphi = RT(SHTnsKit._analysis_phi_scale(cfg))
     use_tbl = cfg.use_plm_tables && !isempty(cfg.NP_tables)
     @inbounds for (local_m, m_index) in pairs(m_indices)
         m = m_index - 1
@@ -1374,7 +1374,7 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
     if use_packed_storage
         # Original inline loop for packed storage (not the hot path).
         # Uses normalized rows (Plm_norm_row! / NP_tables): Nlm is already baked in.
-        xv = cfg.x; cphi = cfg.cphi  # hoist field reads out of the loops below (cfg is mutable, so not auto-hoisted)
+        xv = cfg.x; cphi = SHTnsKit._analysis_phi_scale(cfg)  # hoisted; inverts synthesis under any phi_scale
         # Stride by mres: create_packed_storage_info only assigns lm_to_packed for
         # m % mres == 0, leaving every other entry 0. Walking all m under @inbounds
         # therefore wrote Alm_local[0] — one element before the buffer.
@@ -1441,7 +1441,7 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
         if !use_packed_storage
             # Apply φ scaling (cphi = 2π/nlon). Nlm is NOT applied here: the
             # normalized recurrence Plm_norm_row! already bakes Nlm into P̄.
-            cphi = cfg.cphi  # hoist field read out of the normalization loop (cfg is mutable)
+            cphi = SHTnsKit._analysis_phi_scale(cfg)  # hoisted; inverts synthesis under any phi_scale
             @inbounds for m in 0:cfg.mres:mmax
                 @simd ivdep for l in m:lmax
                     Alm_local[l+1, m+1] *= cphi
@@ -1451,7 +1451,7 @@ Decompose latitude instead: `SHTnsKit.create_spatial_pencil(cfg; comm)` or `Penc
     else
         # θ is not distributed - no reduction needed, just apply φ scaling
         if !use_packed_storage
-            cphi = cfg.cphi  # hoist field read out of the normalization loop (cfg is mutable)
+            cphi = SHTnsKit._analysis_phi_scale(cfg)  # hoisted; inverts synthesis under any phi_scale
             @inbounds for m in 0:cfg.mres:mmax
                 @simd ivdep for l in m:lmax
                     Alm_local[l+1, m+1] *= cphi
@@ -1515,7 +1515,7 @@ function _dist_analysis_plan_core!(plan::DistAnalysisPlan,
     end
 
     # φ scaling (Nlm already baked into the normalized Legendre rows)
-    cphi = cfg.cphi
+    cphi = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     @inbounds for m in 0:cfg.mres:mmax
         @simd ivdep for l in m:lmax
             plan.Alm_work[l+1, m+1] *= cphi
@@ -2054,7 +2054,7 @@ function _analysis_sphtor_owned_block!(Sblock::AbstractMatrix{CT},
             for l in max(1, m):lcap
                 d = RT(dtheta[l + 1])
                 term = complex(zero(RT), RT(m * over_sin[l + 1]))
-                factor = wi * RT(cfg.cphi) / RT(l * (l + 1))
+                factor = wi * RT(SHTnsKit._analysis_phi_scale(cfg)) / RT(l * (l + 1))
                 Sblock[l + 1, local_m] +=
                     factor * (Ft * d + conj(term) * Fp)
                 Tblock[l + 1, local_m] +=
@@ -2383,7 +2383,7 @@ function _analysis_sphtor_mode_pencil(cfg::SHTnsKit.SHTConfig,
                 l >= max(1, physical_m) || continue
                 derivative = RT(dtheta[l + 1])
                 term = complex(zero(RT), RT(physical_m * over_sin[l + 1]))
-                coefficient = weight * RT(cfg.cphi) / RT(l * (l + 1))
+                coefficient = weight * RT(SHTnsKit._analysis_phi_scale(cfg)) / RT(l * (l + 1))
                 Ssend[k] += coefficient *
                     (Ftheta * derivative + conj(term) * Fphi)
                 Tsend[k] += coefficient *
@@ -2571,7 +2571,7 @@ function _legacy_dist_analysis_sphtor(cfg::SHTnsKit.SHTConfig,
     dPdtheta   = Vector{Float64}(undef, lmax + 1)
     P_over_sth = Vector{Float64}(undef, lmax + 1)
     Pbuf       = Vector{Float64}(undef, lmax + 2)  # scratch for normalized dθ recurrence
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     # Main vector analysis loop — via the same function barriers the planned
     # path uses (concrete argument types; the previous inline loop boxed its
@@ -2763,12 +2763,12 @@ function _dist_analysis_sphtor_plan_core!(
         _sphtor_analysis_loop_tbl!(cfg, plan.Slm_work, plan.Tlm_work, cfg.NP_tables, cfg.NdP_tables,
                                    plan.Ftθm, plan.Fpθm, plan.θ_globals,
                                    plan.sθ_cache, plan.weights_cache,
-                                   cfg.robert_form, cfg.cphi, lmax, mmax)
+                                   cfg.robert_form, SHTnsKit._analysis_phi_scale(cfg), lmax, mmax)
     else
         _sphtor_analysis_loop_otf!(plan.Slm_work, plan.Tlm_work, plan.P, plan.dPdtheta,
                                    plan.P_over_sth, plan.Pbuf, plan.Ftθm, plan.Fpθm,
                                    plan.x_cache, plan.sθ_cache, plan.inv_sθ_cache,
-                                   plan.weights_cache, cfg.robert_form, cfg.cphi,
+                                   plan.weights_cache, cfg.robert_form, SHTnsKit._analysis_phi_scale(cfg),
                                    cfg.mres, lmax, mmax)
     end
 
@@ -3930,7 +3930,7 @@ function dist_analysis_distributed(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
 
     # Compute local contributions to ALL coefficients (same as standard analysis)
     local_contrib = zeros(ComplexF64, lmax + 1, mmax + 1)
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     # Pre-cache weights
     weights_cache = Vector{Float64}(undef, nθ_local)
@@ -4177,6 +4177,19 @@ end
     return false
 end
 
+"""
+    close(plan::DistributedSpectralPlan2D)
+
+Free the plan's `l_comm` / `m_comm` sub-communicators.
+
+!!! warning "Collective"
+    `MPI_Comm_free` is a collective operation: **every** rank holding this plan
+    must call `close` on it, and in the same order relative to other collectives.
+    It is therefore not attached to a finalizer — garbage collection is
+    rank-local and would call it at divergent points. Closing twice is safe
+    (the second call is a no-op); never closing only leaks the communicators
+    until `MPI_Finalize`.
+"""
 function Base.close(plan::DistributedSpectralPlan2D)
     plan.closed && return nothing
     plan.closed = true
@@ -4520,12 +4533,21 @@ function create_distributed_spectral_plan_2d(lmax::Int, mmax::Int, comm::MPI.Com
             m_group_nlm,
             with_scratch, scratch, scratch_context, false
         )
-        finalizer(plan) do p
-            try
-                close(p)
-            catch
-            end
-        end
+        # NO finalizer here, deliberately.
+        #
+        # `close(plan)` frees the `l_comm` / `m_comm` sub-communicators, and
+        # `MPI_Comm_free` is a COLLECTIVE: every rank in the communicator must
+        # call it, in the same order relative to other collectives. A finalizer
+        # runs whenever that rank's garbage collector happens to fire, which is
+        # rank-local and nondeterministic — so attaching one meant ranks could
+        # enter `Comm_free` at completely different points in the program, or
+        # some not at all before the next collective. That is a hang or worse,
+        # and it contradicts the policy `ParallelPlans.jl` states for its own
+        # `Comm_split` bookkeeping.
+        #
+        # Leaking two communicators until `MPI_Finalize` is strictly better than
+        # a nondeterministic collective, so cleanup is explicit only: call
+        # `close(plan)` (collectively) when you are done with it.
         return plan
     catch
         _safe_comm_free(l_comm)
@@ -4880,7 +4902,7 @@ function _dist_analysis_2d_safe(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
         x_cache[ii] = cfg.x[iglob]
     end
 
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     # Use NP_tables (already normalized P̄) if available; fall back to OTF normalized rows.
     use_tbl = use_tables && cfg.use_plm_tables && !isempty(cfg.NP_tables)
     P = Vector{Float64}(undef, lmax + 1)
@@ -5388,7 +5410,7 @@ function _dist_analysis_2d_aligned(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
         copyto!(Fθm, Fθm_temp)
     end
 
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     # Use NP_tables (already normalized P̄) if available; fall back to OTF normalized rows.
     use_tbl = use_tables && cfg.use_plm_tables && !isempty(cfg.NP_tables)
 

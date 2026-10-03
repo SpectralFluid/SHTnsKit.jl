@@ -13,6 +13,7 @@
 # - test_disttranspose_dealiased.jl : DistTransposePlan on dealiased nlon>2*mmax+1 (mpiexec)
 # - test_dist_plan_alloc.jl    : DistAnalysisPlan correctness + per-call allocation budget (mpiexec)
 # - test_mpi_audit_fixes.jl    : Regressions for the 2026-08 distributed audit fixes (mpiexec)
+# - test_mpi_2d_alignment.jl   : 2D spectral-plan alignment preconditions (mpiexec, 4 ranks)
 #
 # To run MPI tests:
 #   mpiexec -n 4 julia --project test/parallel/test_mpi_comprehensive.jl
@@ -21,6 +22,7 @@
 #   mpiexec -n 2 julia --project test/parallel/test_disttranspose_dealiased.jl
 #   mpiexec -n 2 julia --project test/parallel/test_dist_plan_alloc.jl
 #   mpiexec -n 4 julia --project test/parallel/test_mpi_audit_fixes.jl
+#   mpiexec -n 4 julia --project test/parallel/test_mpi_2d_alignment.jl
 #   mpiexec -n 1 julia --project test/parallel/test_parallel_ad_storage.jl
 
 using Test

@@ -7,6 +7,17 @@ using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
+# Allocation budgets below are calibrated for a SINGLE-THREADED run, where they
+# are exact. The shared m-loop orchestrators start `@threads` tasks whenever
+# threads are available, and each threaded region costs a few hundred bytes to
+# spawn — a constant independent of problem size, and not the kind of regression
+# these budgets exist to catch (a per-row temporary or a dense zero spectrum
+# costs tens of KB and grows with lmax). Allow a per-thread slack rather than
+# letting the whole suite go red on any multi-core machine; note this makes the
+# budgets coarse at `nthreads > 1`, so the tight check is the 1-thread run.
+@isdefined(_thread_alloc_slack) ||
+    (_thread_alloc_slack() = Threads.nthreads() > 1 ? 4_096 * Threads.nthreads() : 0)
+
 @testset "QST (3D Vector) Transforms" begin
     @testset "QST roundtrip" begin
         lmax = 6
@@ -90,7 +101,7 @@ using SHTnsKit
         # Array header/alignment overhead differs across Julia patch versions
         # and platforms (notably Windows CI). Keep this below an extra
         # component-sized scratch allocation while allowing that fixed floor.
-        qst_l_alloc_budget = 13_000
+        qst_l_alloc_budget = 13_000 + _thread_alloc_slack()
         @test @allocated(synthesis_qst_l(cfg, Qlm, Slm, Tlm, ltr; real_output=true)) <= qst_l_alloc_budget
     end
 

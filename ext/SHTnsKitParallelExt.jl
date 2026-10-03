@@ -63,7 +63,9 @@ DEBUGGING TIPS
 
 ENVIRONMENT VARIABLES
 --------------------
-- SHTNSKIT_CACHE_PENCILFFTS: "1" (default) to cache FFT plans, "0" to disable
+- SHTNSKIT_FFT_PLAN_CACHE: "1" (default) to cache φ-FFT plans, "0" to disable.
+  Read by SHTnsKit proper — the cache is shared with the serial transforms.
+  (legacy alias: SHTNSKIT_CACHE_PENCILFFTS)
 - SHTNSKIT_VERBOSE_STORAGE: "1" to print storage optimization info
 ================================================================================
 =#
@@ -75,8 +77,9 @@ Parallel extension module providing MPI-distributed spherical harmonic transform
 See module-level comments for architecture overview and debugging tips.
 
 # Module state
-The extension keeps its FFT plan caches, locks, and cache controls in direct
-module constants.
+The extension keeps its locks and caches in direct module constants. The φ-FFT
+plan cache itself lives in SHTnsKit proper (src/fftutils.jl) and is shared with
+the serial transforms.
 """
 
 using Base.Threads                       # Threads.@threads and locks/macros
@@ -132,118 +135,19 @@ import SHTnsKit                          # Core spherical harmonic functionality
 end
 
 # ===== MODULE STATE =====
-const _CACHE_PENCILFFTS = Ref(get(ENV, "SHTNSKIT_CACHE_PENCILFFTS", "1") == "1")
-const _pfft_cache = IdDict{Any,Any}()
-const _PFFT_CACHE_MAX = Ref(parse(Int, get(ENV, "SHTNSKIT_PFFT_CACHE_MAX", "64")))
-const _cache_lock = Threads.ReentrantLock()
-const _fftw_cache_lock = Threads.ReentrantLock()
-
-"""
-    pfft_cache_max!(n::Int) -> Int
-
-Set the maximum number of cached FFT plans (shared across all grids and
-communicators). Set `n <= 0` to disable the cap entirely. Returns the previous
-value.
-"""
-function pfft_cache_max!(n::Int)
-    prev = _PFFT_CACHE_MAX[]
-    _PFFT_CACHE_MAX[] = n
-    return prev
-end
+# The φ-FFT plan cache (and its `enable_fft_plan_cache!` / `disable_fft_plan_cache!`
+# / `set_fft_plan_cache!` / `fft_plan_cache_enabled` controls) lives in
+# src/fftutils.jl and is shared with the serial transforms. This extension used to
+# carry a second, parallel-only cache keyed on the pencil decomposition — but the
+# only function that ever consulted it, `_get_or_plan`, had no call sites, and the
+# "plans" it stored were `NamedTuple` placeholders that the FFT wrappers ignored.
+# Every knob pointed at it was therefore inert. It has been deleted rather than
+# left in place; recover it from git history if a PencilFFTs-level cache is ever
+# actually needed.
 
 # Compat helper: `ceildiv` was added in Julia 1.11
 const _ceildiv = isdefined(Base, :ceildiv) ? Base.ceildiv : (a, b) -> cld(a, b)
 ceildiv(a::Integer, b::Integer) = _ceildiv(a, b)
-
-function _fft_plan_cache_enabled_impl()
-    return _CACHE_PENCILFFTS[]
-end
-
-function _fft_plan_cache_set_impl(flag::Bool; clear::Bool=true)
-    _CACHE_PENCILFFTS[] = flag
-    if !flag && clear
-        lock(_cache_lock) do
-            empty!(_pfft_cache)
-        end
-    end
-    return flag
-end
-
-function _fft_plan_cache_enable_impl()
-    return _fft_plan_cache_set_impl(true)
-end
-
-function _fft_plan_cache_disable_impl(; clear::Bool=true)
-    return _fft_plan_cache_set_impl(false; clear=clear)
-end
-
-@inline function _decomp_hash(A)
-    if hasfield(typeof(A), :pencil)
-        pencil = getfield(A, :pencil)
-        if hasfield(typeof(pencil), :decomposition)
-            return hash(getfield(pencil, :decomposition))
-        elseif hasfield(typeof(pencil), :plan)
-            return hash(getfield(pencil, :plan))
-        end
-    end
-    return hash(size(A))
-end
-
-# Generate cache key based on array characteristics for FFT plan reuse
-function _cache_key(kind::Symbol, A)
-    # Basic array characteristics
-    base_key = (kind, size(A,1), size(A,2), eltype(A))
-    
-    # Add communicator size with robust error handling
-    comm_size = try
-        MPI.Comm_size(communicator(A))
-    catch
-        1  # Default to single process
-    end
-    
-    # Decomposition hash — no try/catch to avoid closure-box allocations on hot path.
-    decomp_hash = _decomp_hash(A)
-    
-    return (base_key..., comm_size, decomp_hash)
-end
-
-function _get_or_plan(kind::Symbol, A)
-    # If caching disabled, create plan directly without storing
-    if !_CACHE_PENCILFFTS[]
-        return kind === :fft  ? plan_fft(A; dims=2) :     # Forward FFT along longitude (dim 2)
-               kind === :ifft ? plan_ifft(A; dims=2) :     # Inverse FFT along longitude
-               kind === :rfft ? (try plan_rfft(A; dims=2) catch; nothing end) :   # Real-to-complex FFT
-               kind === :irfft ? (try plan_irfft(A; dims=2) catch; nothing end) : # Complex-to-real IFFT
-               error("unknown plan kind")
-    end
-    
-    # Thread-safe caching with optimized lookup
-    key = _cache_key(kind, A)
-    
-    # Thread-safe plan lookup and creation
-    return lock(_cache_lock) do
-        # Double-check pattern: another thread might have created the plan
-        if haskey(_pfft_cache, key)
-            return _pfft_cache[key]
-        end
-        
-        # Create new plan and cache it for future use
-        plan = kind === :fft  ? plan_fft(A; dims=2) :     # Forward FFT along longitude
-               kind === :ifft ? plan_ifft(A; dims=2) :     # Inverse FFT along longitude
-               kind === :rfft ? (try plan_rfft(A; dims=2) catch; nothing end) :   # Real-to-complex FFT
-               kind === :irfft ? (try plan_irfft(A; dims=2) catch; nothing end) : # Complex-to-real IFFT
-               error("unknown plan kind")
-
-        # Enforce the soft cap: flush before inserting so the fresh entry survives.
-        cap = _PFFT_CACHE_MAX[]
-        if cap > 0 && length(_pfft_cache) >= cap
-            empty!(_pfft_cache)
-        end
-        _pfft_cache[key] = plan
-        return plan
-    end
-end
-
 
 # ===== PENCIL GRID SUGGESTION =====
 @inline function _infer_comm_size(comm_or_nprocs::Any)
@@ -404,44 +308,6 @@ end
 # Use FFTW for 1D FFTs along the longitude dimension (not PencilFFTs which is for multi-D)
 # PencilArrays provides the distributed array framework, FFTW provides the FFTs
 
-# Cache for FFTW 1D plans (key includes inplace flag)
-const _fftw_plan_cache = Dict{Tuple{Symbol, Int, DataType, Bool}, Any}()
-
-"""
-    get_fftw_plan(kind, n, T) -> plan
-
-Get or create a cached FFTW plan for 1D transforms.
-"""
-function get_fftw_plan(kind::Symbol, n::Int, ::Type{T}; inplace::Bool=false) where T
-    key = (kind, n, T, inplace)
-    lock(_fftw_cache_lock) do
-        if haskey(_fftw_plan_cache, key)
-            return _fftw_plan_cache[key]
-        end
-
-        # Create sample array for planning
-        if kind == :fft
-            sample = zeros(Complex{real(T)}, n)
-            plan = inplace ? FFTW.plan_fft!(sample) : FFTW.plan_fft(sample)
-        elseif kind == :ifft
-            sample = zeros(Complex{real(T)}, n)
-            plan = inplace ? FFTW.plan_ifft!(sample) : FFTW.plan_ifft(sample)
-        elseif kind == :rfft
-            sample = zeros(real(T), n)
-            plan = FFTW.plan_rfft(sample)  # rfft is always out-of-place
-        elseif kind == :irfft
-            # For irfft, input size is n÷2+1
-            sample = zeros(Complex{real(T)}, n ÷ 2 + 1)
-            plan = FFTW.plan_irfft(sample, n)
-        else
-            error("Unknown FFT kind: $kind")
-        end
-
-        _fftw_plan_cache[key] = plan
-        return plan
-    end
-end
-
 """
     fft_along_dim2!(output, input)
 
@@ -525,71 +391,6 @@ function ifft_along_dim2!(output::AbstractMatrix{Complex{T}}, input::AbstractMat
         # Copy back to output
         for j in 1:nlon
             output[i, j] = temp[j]
-        end
-    end
-    return output
-end
-
-# Local FFT wrappers used by the extension's plan cache.
-function plan_fft(A::PencilArray; dims=:)
-    # Return a placeholder that indicates we'll use FFTW on local data
-    return (kind=:fft, local_size=size(parent(A)))
-end
-
-function plan_ifft(A::PencilArray; dims=:)
-    return (kind=:ifft, local_size=size(parent(A)))
-end
-
-function fft(A::PencilArray, p)
-    local_data = parent(A)
-    nlat, nlon = size(local_data)
-    output = similar(local_data, Complex{Float64})
-    fft_along_dim2!(output, local_data)
-    return output
-end
-
-function ifft(A::PencilArray, p)
-    local_data = parent(A)
-    nlat, nlon = size(local_data)
-    output = similar(local_data)
-    ifft_along_dim2!(output, local_data)
-    return output
-end
-
-# RFFT/IRFFT variants
-function plan_rfft(A::PencilArray; dims=:)
-    return (kind=:rfft, local_size=size(parent(A)))
-end
-
-function plan_irfft(A::PencilArray; dims=:)
-    return (kind=:irfft, local_size=size(parent(A)))
-end
-
-function rfft(A::PencilArray, p)
-    local_data = parent(A)
-    nlat, nlon = size(local_data)
-    nk = nlon ÷ 2 + 1
-    output = Matrix{ComplexF64}(undef, nlat, nk)
-    @inbounds for i in 1:nlat
-        row = Vector{Float64}(collect(view(local_data, i, :)))
-        fft_result = FFTW.rfft(row)
-        for j in 1:nk
-            output[i, j] = fft_result[j]
-        end
-    end
-    return output
-end
-
-function irfft(A::AbstractMatrix{<:Complex}, p)
-    nlat, nk = size(A)
-    # Assume original nlon was 2*(nk-1) for even-length arrays
-    nlon = 2 * (nk - 1)
-    output = Matrix{Float64}(undef, nlat, nlon)
-    @inbounds for i in 1:nlat
-        row = Vector{ComplexF64}(collect(view(A, i, :)))
-        ifft_result = FFTW.irfft(row, nlon)
-        for j in 1:nlon
-            output[i, j] = ifft_result[j]
         end
     end
     return output
@@ -711,38 +512,6 @@ function distributed_rfft_phi!(Fθm_out::AbstractMatrix{Complex{T}},
 end
 
 """
-    distributed_irfft_phi!(local_out, Fθm, θ_range, φ_range, nlon, comm)
-
-Complex-to-real inverse FFT for distributed synthesis. `Fθm` is `(nlat_local,
-nlon÷2+1)` and must be identical on every rank in a given θ-slab (caller
-responsibility — typical pattern replicates the Fourier buffer). After local
-`irfft` to full `(nlat_local, nlon)` real, the function slices this rank's
-local φ window into `local_out`.
-"""
-function distributed_irfft_phi!(local_out::AbstractMatrix{<:Real},
-                                 Fθm::AbstractMatrix{<:Complex},
-                                 θ_range::AbstractRange, φ_range::AbstractRange,
-                                 nlon::Int, comm)
-    nlat_local = length(θ_range)
-    nlon_local = length(φ_range)
-    size(Fθm, 2) == nlon ÷ 2 + 1 || throw(DimensionMismatch("Fθm must have nlon÷2+1 columns"))
-    size(Fθm, 1) == nlat_local || throw(DimensionMismatch("Fθm must have nlat_local rows"))
-    size(local_out) == (nlat_local, nlon_local) || throw(DimensionMismatch("local_out must be (nlat_local, nlon_local)"))
-
-    spatial_full = Matrix{eltype(local_out)}(undef, nlat_local, nlon)
-    spatial_full .= FFTW.irfft(Fθm, nlon, 2)
-
-    φ_start = first(φ_range)
-    @inbounds for j in 1:nlon_local
-        for i in 1:nlat_local
-            local_out[i, j] = spatial_full[i, φ_start + j - 1]
-        end
-    end
-
-    return local_out
-end
-
-"""
     distributed_ifft_phi!(local_out, Fθm, θ_range, φ_range, nlon, comm)
 
 Optimized distributed IFFT along φ (longitude) dimension.
@@ -799,52 +568,6 @@ end
 function efficient_spectral_reduce!(local_data::AbstractVector, comm)
     MPI.Allreduce!(local_data, +, comm)
     return local_data
-end
-
-"""
-    bandwidth_aware_broadcast!(data, root, comm)
-
-Bandwidth-aware broadcasting that adapts to network topology and data size.
-Uses pipeline broadcasting for large data and tree broadcasting for small data.
-"""
-function bandwidth_aware_broadcast!(data::AbstractArray, root::Int, comm)
-    nprocs = MPI.Comm_size(comm)
-    data_size_mb = (sizeof(data)) / (1024 * 1024)
-    
-    if nprocs > 32 && data_size_mb > 10.0
-        # Use pipeline broadcast for large data on large clusters
-        pipeline_broadcast!(data, root, comm)
-    else
-        # Use standard tree broadcast for smaller cases
-        MPI.Bcast!(data, root, comm)
-    end
-    
-    return data
-end
-
-"""
-    pipeline_broadcast!(data, root, comm)
-
-Pipeline broadcast that overlaps communication with local copying for better bandwidth utilization.
-"""
-function pipeline_broadcast!(data::AbstractArray, root::Int, comm)
-    rank = MPI.Comm_rank(comm)
-    nprocs = MPI.Comm_size(comm)
-    
-    # Determine pipeline parameters
-    pipeline_stages = min(nprocs, 8)  # Limit pipeline depth
-    chunk_size = max(1, length(data) ÷ pipeline_stages)
-    
-    for stage in 1:pipeline_stages
-        start_idx = (stage - 1) * chunk_size + 1
-        end_idx = stage == pipeline_stages ? length(data) : stage * chunk_size
-        chunk_view = view(data, start_idx:end_idx)
-        
-        # Pipeline broadcast of this chunk
-        MPI.Bcast!(chunk_view, root, comm)
-    end
-    
-    return data
 end
 
 # Note: Avoid forwarding Base.zeros(Pencil) to PencilArrays.zeros to prevent

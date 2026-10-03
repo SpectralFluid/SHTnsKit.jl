@@ -37,6 +37,26 @@ Gauss–Legendre quadrature with `nlat` points integrates polynomials in
 quadrature is exact at the intended band limit when `nlat = 2*(lmax + 1)`;
 `nlat` must be even.
 
+!!! warning "Equiangular grids need `nlat ≥ 2*lmax + 1`"
+    Fejér and Clenshaw–Curtis rules with `nlat` nodes are exact only through
+    degree ``n_\mathrm{lat} - 1``, and analysis integrates a product of two
+    degree-`lmax` Legendre functions — degree ``2\,l_\mathrm{max}``. So the
+    two regular grids reproduce `alm` from `analysis(synthesis(alm))` only from
+    `nlat = 2*lmax + 1` upward, where Gauss–Legendre needs just `nlat = lmax + 1`.
+
+    Below the threshold nothing warns; the answer is simply wrong. Measured
+    relative round-trip error at `lmax = 8`:
+
+    | `nlat` | `:gauss` | regular midpoint | regular with poles |
+    |---:|---:|---:|---:|
+    | 10 | 8e-16 | 7.2e-2 | 3.6e-1 |
+    | 14 | 8e-16 | 1.3e-2 | 7.1e-3 |
+    | 16 | 8e-16 | 4.2e-3 | 1.3e-3 |
+    | 17 (`2*lmax+1`) | 8e-16 | 7e-16 | 7e-16 |
+
+    Size the grid deliberately, or use Gauss–Legendre (or Driscoll–Healy, exact
+    at `nlat = 2*(lmax+1)`) when round-trip accuracy matters.
+
 !!! tip "Which grid should I choose?"
     Start with Gauss–Legendre unless you need to exchange data with a particular
     equiangular layout. Use regular midpoint for cell-centred data, regular with

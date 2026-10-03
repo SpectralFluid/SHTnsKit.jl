@@ -978,7 +978,9 @@ end
         end
         MPI.Barrier(adapter.comm)
         divergent_packed_size = deepcopy(layout_cfg)
-        rank == 0 && (divergent_packed_size.nlm += 1)
+        # Deliberately corrupt internal metadata: the public setter rejects nlm
+        # changes before this test can exercise collective divergence detection.
+        rank == 0 && setfield!(divergent_packed_size, :nlm, divergent_packed_size.nlm + 1)
         @test _all_ranks_catch(adapter.comm) do
             extension._validate_cfg_replicated(
                 divergent_packed_size, adapter.comm,

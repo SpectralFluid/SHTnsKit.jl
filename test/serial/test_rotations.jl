@@ -33,6 +33,56 @@ using SHTnsKit
         end
     end
 
+    @testset "Z-rotation sign convention is pinned to physical ground truth" begin
+        # The `exp(-imα)` sign is not a free choice: flipping it to `exp(+imα)`
+        # (the passive convention) silently desynchronises SH_Zrotate from the
+        # actual spatial rotation, from the general Wigner engine, and from the
+        # distributed twins. Pin all three so it cannot drift again.
+        lmax = 6
+        nlon = 2 * lmax + 2              # even, so an exact grid shift exists
+        cfg = create_gauss_config(lmax, lmax + 2; nlon=nlon)
+        rng = MersenneTwister(4242)
+
+        A = zeros(ComplexF64, lmax + 1, cfg.mmax + 1)
+        for m in 0:cfg.mmax, l in m:lmax
+            A[l + 1, m + 1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+        end
+        Qlm = SHTnsKit.pack_lm(cfg, A)
+
+        shift = 3                        # α is an exact multiple of the φ spacing
+        α = 2π * shift / nlon
+        Rlm = similar(Qlm)
+        SH_Zrotate(cfg, Qlm, α, Rlm)
+
+        # (1) Ground truth: rotating the FIELD by +α about ẑ is g(θ,φ) = f(θ,φ-α),
+        #     which on this grid is a pure column shift.
+        f = synthesis(cfg, A)
+        g = similar(f)
+        for j in 1:nlon
+            g[:, j] .= @view f[:, mod(j - 1 - shift, nlon) + 1]
+        end
+        spatial = SHTnsKit.pack_lm(cfg, analysis(cfg, g))
+        @test isapprox(Rlm, spatial; rtol=1e-10, atol=1e-12)
+
+        # ...and the opposite sign is the OTHER rotation, not a rounding detail.
+        flipped = [Qlm[k] * cis(+cfg.mi[k] * α) for k in 1:cfg.nlm]
+        @test !isapprox(flipped, spatial; rtol=1e-3, atol=1e-6)
+
+        # (2) The general ZYZ engine must agree for both the α and γ slots.
+        for angles in ((α, 0.0, 0.0), (0.0, 0.0, α))
+            r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
+            SHTnsKit.shtns_rotation_set_angles_ZYZ(r, angles...)
+            Rzyz = similar(Qlm)
+            SHTnsKit.shtns_rotation_apply_real(r, Qlm, Rzyz)
+            @test isapprox(Rzyz, Rlm; rtol=1e-10, atol=1e-12)
+        end
+
+        # (3) The dense distributed twin must agree coefficient for coefficient.
+        Rdense = zeros(ComplexF64, lmax + 1, cfg.mmax + 1)
+        SHTnsKit.dist_SH_Zrotate(cfg, A, α, Rdense)
+        @test isapprox(SHTnsKit.pack_lm(cfg, Rdense), Rlm; rtol=1e-12, atol=1e-14)
+    end
+
     @testset "Z-axis rotation in-place" begin
         lmax = 6
         cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
@@ -126,6 +176,104 @@ using SHTnsKit
 
         # Four 90° rotations = 360° = identity
         @test isapprox(Rlm4, Qlm; rtol=1e-8, atol=1e-10)
+    end
+
+    @testset "X-rotation 90 is Rx(+pi/2), not its inverse" begin
+        # `SH_Xrotate90` must be the +90° turn its name promises. The existing
+        # "four 90° rotations = identity" check passes for either sign, so pin
+        # the direction explicitly against the ZXZ entry point.
+        lmax = 5
+        cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 2)
+        rng = MersenneTwister(8801)
+        Qlm = randn(rng, ComplexF64, cfg.nlm)
+        Qlm[1:lmax+1] .= real.(Qlm[1:lmax+1])
+
+        X = similar(Qlm)
+        SH_Xrotate90(cfg, Qlm, X)
+
+        # Ground truth: a pure Rx(+π/2) via the ZXZ entry point, whose own
+        # converter documents Rx(β) = Rz(-π/2)·Ry(β)·Rz(π/2).
+        fwd = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
+        SHTnsKit.shtns_rotation_set_angles_ZXZ(fwd, 0.0, π/2, 0.0)
+        Xref = similar(Qlm)
+        SHTnsKit.shtns_rotation_apply_real(fwd, Qlm, Xref)
+        @test isapprox(X, Xref; rtol=1e-10, atol=1e-12)
+
+        # ...and it is NOT the inverse rotation.
+        inv_rot = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
+        SHTnsKit.shtns_rotation_set_angles_ZXZ(inv_rot, 0.0, -π/2, 0.0)
+        Xinv = similar(Qlm)
+        SHTnsKit.shtns_rotation_apply_real(inv_rot, Qlm, Xinv)
+        @test !isapprox(X, Xinv; rtol=1e-3, atol=1e-6)
+
+        # Three forward turns equal one backward turn.
+        a = similar(Qlm); b = similar(Qlm); c = similar(Qlm)
+        SH_Xrotate90(cfg, Qlm, a); SH_Xrotate90(cfg, a, b); SH_Xrotate90(cfg, b, c)
+        @test isapprox(c, Xinv; rtol=1e-9, atol=1e-11)
+    end
+
+    @testset "angle-axis half-turns pick the right axis" begin
+        # At β≈π the observable Euler combination is α-γ read off the NEGATED
+        # first column; reusing the β≈0 formula there returns a rotation about
+        # the wrong axis (a 180° turn about x̂ came back as Ry(π)). Only exact
+        # half-turns are affected, so pin them.
+        cfg = create_gauss_config(5, 7; nlon=12)
+        rng = MersenneTwister(6041)
+        Q = randn(rng, ComplexF64, cfg.nlm)
+        Q[1:cfg.lmax+1] .= real.(Q[1:cfg.lmax+1])
+        apply(r) = (R = similar(Q); SHTnsKit.shtns_rotation_apply_real(r, Q, R); R)
+        byaxis(θ, ax...) = (r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax);
+                            SHTnsKit.shtns_rotation_set_angle_axis(r, θ, ax...); apply(r))
+        byzxz(β) = (r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax);
+                    SHTnsKit.shtns_rotation_set_angles_ZXZ(r, 0.0, β, 0.0); apply(r))
+        byzyz(β) = (r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax);
+                    SHTnsKit.shtns_rotation_set_angles_ZYZ(r, 0.0, β, 0.0); apply(r))
+
+        @test isapprox(byaxis(π, 1.0, 0.0, 0.0), byzxz(π);  rtol=1e-10, atol=1e-12)  # x̂ half-turn
+        @test isapprox(byaxis(π, 0.0, 1.0, 0.0), byzyz(π);  rtol=1e-10, atol=1e-12)  # ŷ half-turn
+        @test !isapprox(byaxis(π, 1.0, 0.0, 0.0), byzyz(π); rtol=1e-3,  atol=1e-6)   # and they differ
+        @test isapprox(byaxis(π/2, 1.0, 0.0, 0.0), byzxz(π/2); rtol=1e-10, atol=1e-12)
+        @test isapprox(byaxis(0.0, 1.0, 0.0, 0.0), Q; rtol=1e-10, atol=1e-12)
+
+        # A half-turn about any axis must square to the identity.
+        for ax in ((1.0,0.0,0.0), (0.0,1.0,0.0), (0.0,0.0,1.0), (1.0,1.0,0.0), (1.0,1.0,1.0))
+            r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
+            SHTnsKit.shtns_rotation_set_angle_axis(r, π, ax...)
+            once = similar(Q); SHTnsKit.shtns_rotation_apply_real(r, Q, once)
+            twice = similar(Q); SHTnsKit.shtns_rotation_apply_real(r, once, twice)
+            @test isapprox(twice, Q; rtol=1e-9, atol=1e-11)
+        end
+    end
+
+    @testset "order-mixing rotations reject mmax < lmax" begin
+        # A Wigner-d rotation through a general β couples every |m'| ≤ l. With
+        # mmax < lmax the |m'| > mmax components were silently dropped — 14.8 %
+        # of the field energy at lmax=8/mmax=5, 24.0 % at mmax=3.
+        full = create_gauss_config(8, 10; mmax=8, nlon=18)
+        cut  = create_gauss_config(8, 10; mmax=5, nlon=18)
+        rng = MersenneTwister(6042)
+        qf = randn(rng, ComplexF64, full.nlm); qf[1:full.lmax+1] .= real.(qf[1:full.lmax+1])
+        qc = randn(rng, ComplexF64, cut.nlm);  qc[1:cut.lmax+1]  .= real.(qc[1:cut.lmax+1])
+
+        # mmax == lmax is unaffected and conserves energy.
+        Rf = similar(qf); SH_Yrotate(full, qf, 0.7, Rf)
+        w = Float64[full.mi[k] == 0 ? 1.0 : 2.0 for k in 1:full.nlm]
+        @test sum(w .* abs2.(Rf)) ≈ sum(w .* abs2.(qf)) rtol=1e-10
+
+        # mmax < lmax with an order-mixing β must raise, not truncate.
+        @test_throws ArgumentError SH_Yrotate(cut, qc, 0.7, similar(qc))
+        @test_throws ArgumentError SH_Xrotate90(cut, qc, similar(qc))
+
+        # ...but the two non-mixing angles still work at reduced mmax:
+        # β ≡ 0 is diagonal (a pure Z-rotation) and β ≡ π is anti-diagonal.
+        for β in (0.0, π)
+            r = SHTnsKit.SHTRotation(cut.lmax, cut.mmax)
+            SHTnsKit.shtns_rotation_set_angles_ZYZ(r, 0.4, β, 0.0)
+            R = similar(qc)
+            @test (SHTnsKit.shtns_rotation_apply_real(r, qc, R); true)
+            wc = Float64[cut.mi[k] == 0 ? 1.0 : 2.0 for k in 1:cut.nlm]
+            @test sum(wc .* abs2.(R)) ≈ sum(wc .* abs2.(qc)) rtol=1e-10
+        end
     end
 
     @testset "Wigner-d matrix orthogonality" begin

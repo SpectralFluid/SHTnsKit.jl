@@ -83,6 +83,102 @@ end
     end
 end
 
+@testset "Angle gradients survive an in-place primal" begin
+    # `SH_Zrotate` is covered above. Its siblings capture the primal INPUT and
+    # read it lazily in the pullback, so the same hazard applies to them: an
+    # in-place call (Rlm === Qlm) overwrites those coefficients, and so does any
+    # caller that reuses the buffer before the pullback runs. Each rrule must
+    # snapshot what it needs at primal time.
+    rng = MersenneTwister(20931)
+    ε = 1e-6
+
+    @testset "SH_Yrotate dα" begin
+        cfg = create_gauss_config(4, 6; nlon=9)
+        Q = randn(rng, ComplexF64, cfg.nlm)
+        C = randn(rng, ComplexF64, cfg.nlm)
+        α = 0.7
+        loss(q, a) = real(sum(conj(C) .* SH_Yrotate(cfg, copy(q), a, similar(q))))
+        fd = (loss(Q, α + ε) - loss(Q, α - ε)) / (2ε)
+
+        q = copy(Q)
+        _, back_sep = ChainRulesCore.rrule(SH_Yrotate, cfg, q, α, similar(q))
+        @test back_sep(C)[4] ≈ fd rtol=1e-6 atol=1e-8
+
+        inplace = copy(Q)                      # Rlm === Qlm
+        _, back_ip = ChainRulesCore.rrule(SH_Yrotate, cfg, inplace, α, inplace)
+        @test back_ip(C)[4] ≈ fd rtol=1e-6 atol=1e-8
+
+        reused = copy(Q)                       # caller clobbers the input afterwards
+        _, back_reuse = ChainRulesCore.rrule(SH_Yrotate, cfg, reused, α, similar(reused))
+        fill!(reused, 0)
+        @test back_reuse(C)[4] ≈ fd rtol=1e-6 atol=1e-8
+
+        if _HAS_ZYGOTE_ROT
+            zq = copy(Q)
+            _, zback = Zygote.pullback(SH_Yrotate, cfg, zq, α, zq)
+            @test zback(C)[3] ≈ fd rtol=1e-6 atol=1e-8
+        end
+    end
+
+    @testset "shtns_rotation_apply_cplx dβ" begin
+        lmax = mmax = 4
+        mkrot(β) = (r = SHTnsKit.SHTRotation(lmax, mmax);
+                    SHTnsKit.shtns_rotation_set_angles_ZYZ(r, 0.3, β, 0.2); r)
+        n = SHTnsKit.nlm_cplx_calc(lmax, mmax, 1)
+        Z = randn(rng, ComplexF64, n)
+        C = randn(rng, ComplexF64, n)
+        β = 0.7
+        loss(r, z) = (R = similar(z);
+                      SHTnsKit.shtns_rotation_apply_cplx(r, copy(z), R);
+                      real(sum(conj(C) .* R)))
+        fd = (loss(mkrot(β + ε), Z) - loss(mkrot(β - ε), Z)) / (2ε)
+
+        z = copy(Z)
+        _, back_sep = ChainRulesCore.rrule(SHTnsKit.shtns_rotation_apply_cplx, mkrot(β), z, similar(z))
+        @test back_sep(C)[2].β ≈ fd rtol=1e-6 atol=1e-8
+
+        zi = copy(Z)                            # Rlm === Zlm
+        _, back_ip = ChainRulesCore.rrule(SHTnsKit.shtns_rotation_apply_cplx, mkrot(β), zi, zi)
+        @test back_ip(C)[2].β ≈ fd rtol=1e-6 atol=1e-8
+    end
+
+    @testset "shtns_rotation_apply_real dβ" begin
+        cfg = create_gauss_config(4, 7; nlon=11)
+        mkrot(β) = (r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax);
+                    SHTnsKit.shtns_rotation_set_angles_ZYZ(r, 0.3, β, 0.2); r)
+        Q = randn(rng, ComplexF64, cfg.nlm)
+        C = randn(rng, ComplexF64, cfg.nlm)
+        β = 0.7
+        loss(r, q) = (R = similar(q);
+                      SHTnsKit.shtns_rotation_apply_real(r, copy(q), R);
+                      real(sum(conj(C) .* R)))
+        fd = (loss(mkrot(β + ε), Q) - loss(mkrot(β - ε), Q)) / (2ε)
+
+        q = copy(Q)
+        _, back_sep = ChainRulesCore.rrule(SHTnsKit.shtns_rotation_apply_real, mkrot(β), q, similar(q))
+        @test back_sep(C)[2].β ≈ fd rtol=1e-6 atol=1e-8
+
+        qi = copy(Q)                            # Rlm === Qlm
+        _, back_ip = ChainRulesCore.rrule(SHTnsKit.shtns_rotation_apply_real, mkrot(β), qi, qi)
+        @test back_ip(C)[2].β ≈ fd rtol=1e-6 atol=1e-8
+    end
+end
+
+@testset "Order-mixing rotations reject mres > 1 with a usable message" begin
+    cfg = create_gauss_config(4, 6; mres=2)
+    Q = randn(MersenneTwister(5), ComplexF64, cfg.nlm)
+    err = try
+        SH_Yrotate(cfg, Q, 0.3, similar(Q)); nothing
+    catch e
+        e
+    end
+    # Either guard is fine — SH_Yrotate's own mres check or the packed-length
+    # check inside the Wigner engine — as long as the message names `mres`, so
+    # the caller is not left reverse-engineering a bare size mismatch.
+    @test err isa Union{ArgumentError,DimensionMismatch}
+    @test occursin("mres", sprint(showerror, err))
+end
+
 @testset "Complex-packed analysis rrule respects configured convention" begin
     lmax = 4
     cfg = create_gauss_config(lmax, 7; nlon=11, norm=:schmidt,

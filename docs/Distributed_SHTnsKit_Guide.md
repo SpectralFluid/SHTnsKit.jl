@@ -148,7 +148,7 @@ SHTnsKit.dist_synthesis!(spln, fθφ_out, PencilArray(Alm))
 
 Enable plan caching across calls (optional)
 ```bash
-export SHTNSKIT_CACHE_PENCILFFTS=1
+export SHTNSKIT_FFT_PLAN_CACHE=1   # legacy alias: SHTNSKIT_CACHE_PENCILFFTS
 ```
 
 ---
@@ -242,7 +242,10 @@ Both use the distributed transform paths internally and return gradients in the 
   ```
 - Robert form: for vector transforms, set `robert_form=true` in your config to stabilize polar behavior.
 - Normalization/phase: match `cfg.norm` and `cfg.cs_phase` to your data; conversions are handled internally on input/output.
-- FFT plan caching: `ENV["SHTNSKIT_CACHE_PENCILFFTS"] = "1"` to reuse PencilFFTs plans.
+- FFT plan caching: `ENV["SHTNSKIT_FFT_PLAN_CACHE"] = "1"` (default) to reuse the
+  per-rank φ-FFT plans. Equivalently `SHTnsKit.enable_fft_plan_cache!()` /
+  `disable_fft_plan_cache!()`. The cache is shared with the serial transforms;
+  cap it with `SHTnsKit.fft_plan_cache_max!(n)`.
 - Y-rotation strategy: truncated gather typically reduces bandwidth; switch to allgather for high-m–dominated spectra.
 
 ---

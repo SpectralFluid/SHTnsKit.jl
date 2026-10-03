@@ -8,6 +8,41 @@ using Base.Threads: @threads
 # SHTnsKit.analysis_turbo, synthesis_turbo, etc., when LoopVectorization is loaded.
 
 """
+    _turbo_threads_ok() -> Bool
+
+Whether this call may start its own threaded loop. `@threads :static` cannot be
+nested or started concurrently, so a turbo transform invoked from inside an
+outer threaded region (or from a worker task) must run serially on that worker.
+Delegates to the same predicate the core orchestrators use, so the two agree.
+"""
+@inline _turbo_threads_ok() = SHTnsKit._use_internal_mloop_threads()
+
+"""Run a `for` loop with the given `@threads` schedule when safe, else serially."""
+macro _lv_threads(sched, loop)
+    loop isa Expr && loop.head === :for ||
+        throw(ArgumentError("@_lv_threads requires a for loop"))
+    return esc(quote
+        if $(_turbo_threads_ok)()
+            Base.Threads.@threads $sched $loop
+        else
+            $loop
+        end
+    end)
+end
+
+"""
+    _turbo_m_order(cfg) -> Vector{Int}
+
+The azimuthal orders this config actually represents: `0, mres, 2mres, …`.
+Iterating a bare `0:mmax` here made `analysis_turbo` populate — and
+`synthesis_turbo` consume — coefficient columns that an `mres > 1` transform has
+no storage for, so the turbo pair silently disagreed with `analysis`/`synthesis`
+(the disagreement is O(1), not roundoff). Shares the core's cached, load-balanced
+ordering so the two stay in lockstep.
+"""
+@inline _turbo_m_order(cfg::SHTnsKit.SHTConfig) = SHTnsKit.cached_m_order(cfg)
+
+"""
     SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
 
 Forward transform with LoopVectorization-optimized inner loops. Same API and
@@ -18,27 +53,30 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
     size(f, 1) == nlat || throw(DimensionMismatch("first dim must be nlat=$(nlat)"))
     size(f, 2) == nlon || throw(DimensionMismatch("second dim must be nlon=$(nlon)"))
 
-    fC = complex.(f)
-    Fφ = SHTnsKit.fft_phi(fC)
+    # One buffer + the shared cached FFTW plan, matching the core `analysis`.
+    # The old `fft_phi(complex.(f))` made a complex copy AND re-planned an
+    # out-of-place FFT on every call.
+    Fφ = SHTnsKit.fft_phi!(Matrix{complex(float(eltype(f)))}(undef, nlat, nlon), f)
 
     lmax, mmax = cfg.lmax, cfg.mmax
     CT = eltype(Fφ)
     alm = Matrix{CT}(undef, lmax + 1, mmax + 1)
     fill!(alm, 0.0 + 0.0im)
 
-    scaleφ = cfg.cphi
+    scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     # Bind cfg fields to locals so the @tturbo loops below operate on plain arrays.
     # LoopVectorization can't analyze property access (cfg.Nlm) inside @tturbo, and cfg is mutable.
     xv = cfg.x; wv = cfg.w
     # Adaptive threading: use nested parallelism for better load balancing
     n_threads = Threads.nthreads()
-    if mmax + 1 < n_threads ÷ 2 && nlat > 32
+    m_order = _turbo_m_order(cfg)
+    if length(m_order) < n_threads ÷ 2 && nlat > 32
         # Few m modes: parallelize over latitude points with thread-local accumulators
         n_tid = Threads.maxthreadid()
         CT = eltype(alm)  # eltype-derived accumulators (this branch uses plain loops, not @tturbo)
         thread_alm = [Vector{CT}(undef, lmax + 1) for _ in 1:n_tid]
         thread_P_bufs = [Vector{Float64}(undef, lmax + 1) for _ in 1:n_tid]  # per-thread Legendre scratch (hoisted out of the latitude loop)
-        for m in 0:mmax
+        for m in m_order
             col = m + 1
             for t in 1:n_tid
                 fill!(thread_alm[t], zero(CT))
@@ -46,7 +84,7 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
             if cfg.use_plm_tables && length(cfg.NP_tables) == mmax + 1
                 # NP_tables[col][l+1, i] = P̄_l^m already; no extra Nlm multiply
                 tbl = cfg.NP_tables[m + 1]
-                @threads :static for i in 1:nlat   # :static pins iterations → threadid() stable (no buffer race under task migration)
+                @_lv_threads :static for i in 1:nlat   # :static pins iterations → threadid() stable (no buffer race under task migration)
                     tid = Threads.threadid()
                     local_acc = thread_alm[tid]
                     Fi = Fφ[i, col]
@@ -56,7 +94,7 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
                     end
                 end
             else
-                @threads :static for i in 1:nlat   # :static pins iterations → threadid() stable (no buffer race under task migration)
+                @_lv_threads :static for i in 1:nlat   # :static pins iterations → threadid() stable (no buffer race under task migration)
                     tid = Threads.threadid()
                     local_acc = thread_alm[tid]
                     thread_P = thread_P_bufs[tid]
@@ -79,7 +117,8 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
         end
     else
         # Standard m-parallel approach with dynamic scheduling
-        @threads :dynamic for m in 0:mmax
+        @_lv_threads :dynamic for idx in eachindex(m_order)
+            m = m_order[idx]
             col = m + 1
             if cfg.use_plm_tables && length(cfg.NP_tables) == mmax + 1
                 # NP_tables[col][l+1, i] = P̄_l^m already; no extra Nlm multiply
@@ -124,9 +163,11 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
 
     alm_int = SHTnsKit._internal_coefficients(alm, cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = eltype(alm_int)
+    # Fourier bins are complex even when every spectral coefficient is real
+    # (matches the core `_synthesis`).
+    CT = complex(float(eltype(alm_int)))
     Fφ = Matrix{CT}(undef, nlat, nlon)
-    fill!(Fφ, 0.0 + 0.0im)
+    fill!(Fφ, zero(CT))
 
     inv_scaleφ = SHTnsKit.phi_inv_scale(cfg)
     # Bind cfg fields to locals so the @tturbo loops below operate on plain arrays.
@@ -135,17 +176,18 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
 
     # Adaptive threading: use nested parallelism for better load balancing
     n_threads = Threads.nthreads()
-    if mmax + 1 < n_threads ÷ 2 && nlat > 32
+    m_order = _turbo_m_order(cfg)
+    if length(m_order) < n_threads ÷ 2 && nlat > 32
         # Few m modes: parallelize over latitude points instead
         n_tid = Threads.maxthreadid()
         thread_P_bufs = [Vector{Float64}(undef, lmax + 1) for _ in 1:n_tid]  # per-thread Legendre scratch (hoisted out of the latitude loop)
         G = Vector{CT}(undef, nlat)  # shared latitude scratch (few-m branch: outer m-loop is serial)
-        for m in 0:mmax
+        for m in m_order
             col = m + 1
             if cfg.use_plm_tables && length(cfg.NP_tables) == mmax + 1
                 # NP_tables[col][l+1, i] = P̄_l^m already; no extra Nlm multiply
                 tbl = cfg.NP_tables[m + 1]
-                @threads for i in 1:nlat
+                @_lv_threads :dynamic for i in 1:nlat
                     g_re = 0.0
                     g_im = 0.0
                     @tturbo warn_check_args=false for l in m:lmax
@@ -157,7 +199,7 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
                     G[i] = complex(g_re, g_im)
                 end
             else
-                @threads :static for i in 1:nlat   # :static pins iterations → threadid() stable
+                @_lv_threads :static for i in 1:nlat   # :static pins iterations → threadid() stable
                     thread_P = thread_P_bufs[Threads.threadid()]
                     SHTnsKit.Plm_norm_row!(thread_P, xv[i], lmax, m)
                     g_re = 0.0
@@ -186,7 +228,8 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
         # Per-m latitude scratch as columns of one pre-allocated matrix (each m owns
         # a distinct column → race-free, no per-iteration allocation).
         Gcols = Matrix{CT}(undef, nlat, mmax + 1)
-        @threads :dynamic for m in 0:mmax
+        @_lv_threads :dynamic for idx in eachindex(m_order)
+            m = m_order[idx]
             col = m + 1
             thread_G = view(Gcols, :, col)
             if cfg.use_plm_tables && length(cfg.NP_tables) == mmax + 1

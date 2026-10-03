@@ -248,6 +248,33 @@ function SHTConfig(;
     nlat_padded::Integer = 0,
     spat_dist::Integer = 0,
 )
+    # Validate the invariants the transforms rely on. This constructor is
+    # exported and was previously unchecked, so a hand-built configuration could
+    # violate e.g. `nlon >= 2*mmax+1` and then silently synthesize an all-zero
+    # field for any mode it could not resolve.
+    lmax >= 0 || throw(ArgumentError("lmax must be ≥ 0, got $lmax"))
+    mmax >= 0 || throw(ArgumentError("mmax must be ≥ 0, got $mmax"))
+    mmax <= lmax || throw(ArgumentError("mmax must be ≤ lmax, got mmax=$mmax, lmax=$lmax"))
+    mres >= 1 || throw(ArgumentError("mres must be ≥ 1, got $mres"))
+    nlat >= 1 || throw(ArgumentError("nlat must be ≥ 1, got $nlat"))
+    nlon >= 2*mmax + 1 || throw(ArgumentError(
+        "nlon must be ≥ 2*mmax+1 = $(2*mmax+1) to resolve every azimuthal order, got nlon=$nlon"))
+    length(θ) == nlat || throw(DimensionMismatch("θ must have nlat=$nlat entries, got $(length(θ))"))
+    length(x) == nlat || throw(DimensionMismatch("x must have nlat=$nlat entries, got $(length(x))"))
+    length(w) == nlat || throw(DimensionMismatch("w must have nlat=$nlat entries, got $(length(w))"))
+    length(st) == nlat || throw(DimensionMismatch("st must have nlat=$nlat entries, got $(length(st))"))
+    length(φ) == nlon || throw(DimensionMismatch("φ must have nlon=$nlon entries, got $(length(φ))"))
+    size(Nlm) == (lmax + 1, mmax + 1) || throw(DimensionMismatch(
+        "Nlm must be ($(lmax+1), $(mmax+1)), got $(size(Nlm))"))
+    let expected_nlm = nlm_calc(lmax, mmax, mres)
+        nlm == expected_nlm || throw(ArgumentError(
+            "nlm must be nlm_calc(lmax, mmax, mres) = $expected_nlm, got $nlm"))
+    end
+    length(li) == nlm || throw(DimensionMismatch("li must have nlm=$nlm entries, got $(length(li))"))
+    length(mi) == nlm || throw(DimensionMismatch("mi must have nlm=$nlm entries, got $(length(mi))"))
+    nspat == nlat * nlon || throw(ArgumentError(
+        "nspat must be nlat*nlon = $(nlat*nlon), got $nspat"))
+
     # Concretize vectors/matrices so SHTGrid/SHTNorm/SHTTables fields always
     # carry the exact declared types. Lets callers pass ranges, views, etc.
     grid = SHTGrid(collect(Float64, θ), collect(Float64, φ),
@@ -392,9 +419,61 @@ function Base.setproperty!(cfg::SHTConfig, name::Symbol, val)
         return setfield!(getfield(cfg, :_scratch), :otf_Pb, val)
     elseif name === :_m_order
         return setfield!(getfield(cfg, :_scratch), :m_order, val)
+    # ----- structural fields: keep derived state consistent -----
+    elseif name === :lmax || name === :mmax || name === :mres
+        setfield!(cfg, name, Int(val))
+        _rebuild_spectral_layout!(cfg)
+        return val
+    elseif name === :nlat || name === :nlon || name === :grid_type ||
+           name === :nlm || name === :li || name === :mi || name === :nspat
+        throw(ArgumentError(
+            "`cfg.$(name)` cannot be reassigned: the quadrature nodes, weights and " *
+            "packed index tables are all derived from it, and there is no grid-type-" *
+            "independent way to regenerate them in place. Build a new configuration " *
+            "with `create_gauss_config` / `create_regular_config` / `create_config` " *
+            "instead. (`lmax`, `mmax` and `mres` may be assigned; the spectral layout " *
+            "is rebuilt for you.)"))
     else
         return setfield!(cfg, name, val)
     end
+end
+
+"""
+    _rebuild_spectral_layout!(cfg::SHTConfig)
+
+Regenerate everything derived from `lmax`/`mmax`/`mres` after one of them is
+reassigned: the normalization table, the packed mode count and its `li`/`mi`
+lookups, and the cached norm-scale matrix and m-ordering.
+
+Without this, assigning `cfg.lmax = 10` left `size(cfg.Nlm) == (7, 7)` while the
+transforms indexed it as `(lmax+1, mmax+1)` under `@inbounds` — an out-of-bounds
+read of a live array. Precomputed Legendre tables are sized `(lmax+1, nlat)` and
+cannot survive the change either, so they are dropped; transforms fall back to
+the on-the-fly path until `prepare_plm_tables!` is called again.
+"""
+function _rebuild_spectral_layout!(cfg::SHTConfig)
+    lmax = getfield(cfg, :lmax); mmax = getfield(cfg, :mmax); mres = getfield(cfg, :mres)
+    lmax >= 0 || throw(ArgumentError("lmax must be ≥ 0, got $lmax"))
+    mmax >= 0 || throw(ArgumentError("mmax must be ≥ 0, got $mmax"))
+    mmax <= lmax || throw(ArgumentError("mmax must be ≤ lmax, got mmax=$mmax, lmax=$lmax"))
+    mres >= 1 || throw(ArgumentError("mres must be ≥ 1, got $mres"))
+
+    setfield!(cfg, :nlm, nlm_calc(lmax, mmax, mres))
+    li, mi = build_li_mi(lmax, mmax, mres)
+    setfield!(cfg, :li, li)
+    setfield!(cfg, :mi, mi)
+
+    nrm = getfield(cfg, :_norm)
+    nrm.Nlm = Nlm_table(lmax, mmax)
+    nrm.scale_matrix[] = Matrix{Float64}(undef, 0, 0)   # rebuilt lazily at the new size
+
+    tbl = getfield(cfg, :_tables)
+    tbl.enabled = false
+    tbl.plm = Matrix{Float64}[]; tbl.dplm = Matrix{Float64}[]
+    tbl.NP = Matrix{Float64}[];  tbl.NdP = Matrix{Float64}[]
+
+    empty!(getfield(cfg, :_scratch).m_order)            # rebuilt lazily by cached_m_order
+    return cfg
 end
 
 function Base.propertynames(::SHTConfig, private::Bool=false)
@@ -940,13 +1019,58 @@ The first nlat rows contain the actual data; remaining rows are padding.
 ```julia
 cfg = create_gauss_config(64, 66)
 set_allow_padding!(cfg)
-field = allocate_padded_spatial(cfg)
-# field has size (nlat_padded, nlon), use field[1:cfg.nlat, :] for data
+field = allocate_padded_spatial(cfg)          # (nlat_padded, nlon)
+copy_to_padded!(field, data, cfg)
+alm = analysis(cfg, spatial_view(cfg, field)) # transforms need exactly nlat rows
 ```
+
+The transforms require an array with exactly `nlat` rows, so a padded buffer must
+go through [`spatial_view`](@ref) (or an equivalent `view(field, 1:cfg.nlat, :)`).
+The view keeps the padded column stride, preserving what the padding is for.
 """
 function allocate_padded_spatial(cfg::SHTConfig, T::Type=Float64)
     nlat_p = get_nlat_padded(cfg)
     return zeros(T, nlat_p, cfg.nlon)
+end
+
+"""
+    spatial_view(cfg::SHTConfig, A::AbstractArray) -> SubArray
+
+The `(nlat, nlon)` (or `(nlat, nlon, nfields)`) window of a padded spatial buffer,
+in the form the transforms accept.
+
+`allocate_padded_spatial` deliberately returns an array whose first dimension is
+`nlat_padded ≥ nlat`, while every transform requires exactly `nlat` rows — so the
+padded buffer could not be handed to `analysis` at all, which left the whole
+padding API unusable. This is the missing bridge:
+
+```julia
+cfg = create_gauss_config(64, 66)
+set_allow_padding!(cfg)
+pad = allocate_padded_spatial(cfg)
+copy_to_padded!(pad, field, cfg)
+alm = analysis(cfg, spatial_view(cfg, pad))     # padded stride preserved
+```
+
+The view does not throw the padding away: a `SubArray` over the leading rows keeps
+the padded column stride (`nlat_padded`, not `nlat`), which is exactly the
+cache-conflict avoidance the padding exists for. Results are bit-identical to the
+unpadded layout.
+"""
+function spatial_view(cfg::SHTConfig, A::AbstractMatrix)
+    size(A, 1) >= cfg.nlat || throw(DimensionMismatch(
+        "padded spatial array needs ≥ nlat=$(cfg.nlat) rows, got $(size(A, 1))"))
+    size(A, 2) == cfg.nlon || throw(DimensionMismatch(
+        "spatial array second dim must be nlon=$(cfg.nlon), got $(size(A, 2))"))
+    return view(A, 1:cfg.nlat, 1:cfg.nlon)
+end
+
+function spatial_view(cfg::SHTConfig, A::AbstractArray{<:Any,3})
+    size(A, 1) >= cfg.nlat || throw(DimensionMismatch(
+        "padded spatial batch needs ≥ nlat=$(cfg.nlat) rows, got $(size(A, 1))"))
+    size(A, 2) == cfg.nlon || throw(DimensionMismatch(
+        "spatial batch second dim must be nlon=$(cfg.nlon), got $(size(A, 2))"))
+    return view(A, 1:cfg.nlat, 1:cfg.nlon, :)
 end
 
 """
@@ -1017,6 +1141,27 @@ Fejér's first rule on `θ = (i+0.5)π/nlat` nodes by default; set
 `include_poles=true` to use pole-inclusive Clenshaw–Curtis nodes and weights.
 By default associated Legendre tables are precomputed, which mirrors SHTns'
 regular-grid behaviour and improves performance.
+
+!!! warning "Needs `nlat ≥ 2*lmax + 1` to be exact"
+    Fejér and Clenshaw–Curtis rules with `nlat` nodes integrate polynomials in
+    `x = cosθ` through degree `nlat - 1` exactly, and analysis integrates a
+    product of two degree-`lmax` Legendre functions — degree `2*lmax`. So these
+    grids are exact only from `nlat = 2*lmax + 1` upward, whereas Gauss–Legendre
+    needs just `nlat = lmax + 1`.
+
+    Below that threshold `analysis(cfg, synthesis(cfg, alm))` does not return
+    `alm`. Measured relative error at `lmax = 8`:
+
+    | `nlat` | `:regular` | `:regular_poles` |
+    |---:|---:|---:|
+    | 10 | 7.2e-2 | 3.6e-1 |
+    | 14 | 1.3e-2 | 7.1e-3 |
+    | 16 | 4.2e-3 | 1.3e-3 |
+    | 17 (`2*lmax+1`) | 7e-16 | 7e-16 |
+
+    Nothing warns at run time, so size the grid deliberately: pass
+    `nlat ≥ 2*lmax + 1` here, or use [`create_gauss_config`](@ref) (exact at
+    `nlat = lmax + 1`) or `use_dh_weights=true` (exact at `nlat = 2*(lmax+1)`).
 
 # Driscoll-Healy Quadrature
 
@@ -1215,6 +1360,7 @@ function prepare_plm_tables!(cfg::SHTConfig)
     # Working arrays for computing one row at a time
     P = Vector{Float64}(undef, lmax + 1)      # P̄_l^m(x) normalized values
     dPdtheta = Vector{Float64}(undef, lmax + 1)  # dP̄_l^m/dθ normalized θ-derivatives
+    Pbuf = Vector{Float64}(undef, lmax + 2)   # extended P̄ row reused across all nlat*(mmax+1) calls
 
     # Compute tables for each azimuthal order m using bounded normalized recurrence
     # plm_tables[m+1][l+1, i]  = P̄_l^m(x_i)   (orthonormal; no overflow at high lmax)
@@ -1227,7 +1373,7 @@ function prepare_plm_tables!(cfg::SHTConfig)
         # Compute normalized Legendre polynomials at each latitude point
         for i in 1:nlat
             s_i = sqrt(max(0.0, 1.0 - cfg.x[i]^2))
-            Plm_norm_and_dPdtheta_row!(P, dPdtheta, cfg.x[i], lmax, m)
+            Plm_norm_and_dPdtheta_row!(P, dPdtheta, cfg.x[i], lmax, m, Pbuf)
 
             # Store normalized values — no Nlm multiply needed (P̄ already = Nlm * rawP)
             @inbounds @views tbl[:, i] .= P         # P̄_l^m(x_i) for l=0:lmax

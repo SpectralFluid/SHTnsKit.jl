@@ -627,7 +627,7 @@ function _amdgpu_scalar_analysis_direct!(owner, cfg::SHTConfig,
         end
         backend = ROCBackend()
         scalar_analysis_kernel!(backend)(
-            output, fourier, tables.Plm, tables.weights, RT(cfg.cphi),
+            output, fourier, tables.Plm, tables.weights, RT(SHTnsKit._analysis_phi_scale(cfg)),
             cfg.lmax, cfg.mmax, cfg.mres, cfg.lmax;
             ndrange=(cfg.lmax + 1, cfg.mmax + 1),
         )
@@ -716,7 +716,7 @@ function _amdgpu_scalar_analysis(cfg::SHTConfig, field::AMDGPU.AnyROCArray;
     backend = ROCBackend()
     canonical = AMDGPU.zeros(CT, cfg.lmax + 1, cfg.mmax + 1)
     analyze! = scalar_analysis_kernel!(backend)
-    analyze!(canonical, fourier, tables.Plm, tables.weights, RT(cfg.cphi),
+    analyze!(canonical, fourier, tables.Plm, tables.weights, RT(SHTnsKit._analysis_phi_scale(cfg)),
              cfg.lmax, cfg.mmax, cfg.mres, lcap;
              ndrange=(lcap + 1, min(cfg.mmax, lcap) + 1))
 
@@ -849,7 +849,7 @@ function _amdgpu_vector_analysis_direct!(owner, cfg::SHTConfig,
         vector_analysis_kernel!(ROCBackend())(
             Sout, Tout, workspace.Ftheta, workspace.Fphi,
             tables.dtheta, tables.over_sin, tables.weights, tables.scales,
-            tables.x, RT(cfg.cphi), lcap, min(cfg.mmax, lcap), cfg.mres,
+            tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), lcap, min(cfg.mmax, lcap), cfg.mres,
             cfg.robert_form; ndrange=(lcap + 1, min(cfg.mmax, lcap) + 1),
         )
         AMDGPU.synchronize()
@@ -1044,7 +1044,7 @@ function _amdgpu_vector_mode_analysis(cfg::SHTConfig, stored_im::Integer,
     S = AMDGPU.zeros(CT, lcap - physical_m + 1); Tlm = similar(S)
     vector_mode_analysis_kernel!(ROCBackend())(
         S, Tlm, Vt, Vp, tables.dtheta, tables.over_sin, tables.weights,
-        tables.scales, tables.x, RT(cfg.cphi), physical_m, lcap,
+        tables.scales, tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), physical_m, lcap,
         cfg.robert_form; ndrange=length(S),
     )
     AMDGPU.synchronize()
@@ -1181,7 +1181,7 @@ function _amdgpu_vector_batch_analysis(cfg::SHTConfig,
     S = AMDGPU.zeros(CT, cfg.lmax + 1, cfg.mmax + 1, nfields); Tlm = similar(S)
     vector_batch_analysis_kernel!(ROCBackend())(
         S, Tlm, Ft, Fp, tables.dtheta, tables.over_sin, tables.weights,
-        tables.scales, tables.x, RT(cfg.cphi), cfg.lmax, cfg.mmax,
+        tables.scales, tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), cfg.lmax, cfg.mmax,
         cfg.mres, cfg.robert_form; ndrange=size(S),
     )
     AMDGPU.synchronize()
@@ -1537,7 +1537,7 @@ function analysis_axisym(::SHTnsKit.GPU, cfg::SHTConfig,
     length(field) == cfg.nlat || throw(DimensionMismatch(
         "field must have length nlat=$(cfg.nlat)",
     ))
-    return _amdgpu_mode_analysis(cfg, 0, field, cfg.lmax, cfg.cphi * cfg.nlon)
+    return _amdgpu_mode_analysis(cfg, 0, field, cfg.lmax, SHTnsKit._analysis_phi_scale(cfg) * cfg.nlon)
 end
 analysis_axisym(cfg::SHTConfig, field::AMDGPU.AnyROCArray{T,1}) where {T<:Real} =
     analysis_axisym(SHTnsKit.GPU(), cfg, field)
@@ -1559,7 +1559,7 @@ function analysis_axisym_l(::SHTnsKit.GPU, cfg::SHTConfig,
     length(field) == cfg.nlat || throw(DimensionMismatch(
         "field must have length nlat=$(cfg.nlat)",
     ))
-    return _amdgpu_mode_analysis(cfg, 0, field, lcap, cfg.cphi * cfg.nlon)
+    return _amdgpu_mode_analysis(cfg, 0, field, lcap, SHTnsKit._analysis_phi_scale(cfg) * cfg.nlon)
 end
 analysis_axisym_l(cfg::SHTConfig, field::AMDGPU.AnyROCArray{T,1},
                   ltr::Integer) where {T<:Real} =
@@ -1599,7 +1599,7 @@ function analysis_packed_ml(::SHTnsKit.GPU, cfg::SHTConfig, im::Int,
     length(mode) == cfg.nlat || throw(DimensionMismatch(
         "mode must have length nlat=$(cfg.nlat)",
     ))
-    return _amdgpu_mode_analysis(cfg, physical_m, mode, lcap, cfg.cphi)
+    return _amdgpu_mode_analysis(cfg, physical_m, mode, lcap, SHTnsKit._analysis_phi_scale(cfg))
 end
 analysis_packed_ml(cfg::SHTConfig, im::Int, mode::AMDGPU.AnyROCArray{T,1},
                    ltr::Integer) where {T<:Complex} =
@@ -1637,7 +1637,7 @@ function _amdgpu_analysis_packed_cplx(cfg::SHTConfig,
     mcap = min(cfg.mmax, lcap)
     kernel! = complex_packed_analysis_kernel!(ROCBackend())
     kernel!(packed, fourier, tables.Plm, tables.weights, tables.scales,
-            RT(cfg.cphi), cfg.nlon, lcap, cfg.mmax, mcap;
+            RT(SHTnsKit._analysis_phi_scale(cfg)), cfg.nlon, lcap, cfg.mmax, mcap;
             ndrange=(lcap + 1, 2mcap + 1))
     AMDGPU.synchronize()
     return packed
@@ -1723,7 +1723,7 @@ function _amdgpu_batch_analysis(cfg::SHTConfig, fields::AMDGPU.AnyROCArray;
     FFTW.fft!(fourier, 2)
     canonical = AMDGPU.zeros(CT, cfg.lmax + 1, cfg.mmax + 1, size(fields, 3))
     kernel! = scalar_batch_analysis_kernel!(ROCBackend())
-    kernel!(canonical, fourier, tables.Plm, tables.weights, RT(cfg.cphi),
+    kernel!(canonical, fourier, tables.Plm, tables.weights, RT(SHTnsKit._analysis_phi_scale(cfg)),
             cfg.lmax, cfg.mmax, cfg.mres; ndrange=size(canonical))
     configured = canonical ./ reshape(
         tables.scales, cfg.lmax + 1, cfg.mmax + 1, 1,
@@ -1765,7 +1765,7 @@ function _amdgpu_batch_analysis_direct!(cfg::SHTConfig,
         end
         backend = ROCBackend()
         scalar_batch_analysis_kernel!(backend)(
-            output, fourier, tables.Plm, tables.weights, RT(cfg.cphi),
+            output, fourier, tables.Plm, tables.weights, RT(SHTnsKit._analysis_phi_scale(cfg)),
             cfg.lmax, cfg.mmax, cfg.mres; ndrange=size(output),
         )
         coefficient_batch_conversion_kernel!(backend)(
