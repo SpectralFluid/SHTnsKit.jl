@@ -24,6 +24,39 @@ function _rand_vec_alm(rng, lmax, mmax)
 end
 
 @testset "Sphtor transforms (extended)" begin
+    @testset "Real coefficient matrices retain complex Fourier storage" begin
+        for T in (Float32, Float64), norm in (:orthonormal, :schmidt)
+            cfg = create_gauss_config(2, 4; nlon=7, norm)
+            S = zeros(T, 3, 3); S[2, 2] = T(0.75)
+            Tlm = zero(S); Tlm[3, 2] = T(-0.25)
+            Sc, Tc = complex.(S), complex.(Tlm)
+            tol = T === Float32 ? 2f-6 : 2e-14
+            for real_output in (false, true)
+                reference = synthesis_sphtor(cfg, Sc, Tc; real_output)
+                expected_type = real_output ? T : Complex{T}
+                for actual in (synthesis_sphtor(cfg, S, Tlm; real_output),
+                               synthesis_sphtor_l(cfg, S, Tlm, 2; real_output))
+                    @test all(eltype(v) === expected_type for v in actual)
+                    @test actual[1] ≈ reference[1] atol=tol rtol=tol
+                    @test actual[2] ≈ reference[2] atol=tol rtol=tol
+                end
+            end
+            reference = synthesis_sphtor(cfg, Sc, Tc)
+            rfft_result = synthesis_sphtor(cfg, S, Tlm; use_rfft=true)
+            @test rfft_result[1] ≈ reference[1] atol=tol rtol=tol
+            @test rfft_result[2] ≈ reference[2] atol=tol rtol=tol
+            qst = synthesis_qst(cfg, S, S, Tlm)
+            @test qst[1] ≈ synthesis(cfg, Sc) atol=tol rtol=tol
+            @test qst[2] ≈ reference[1] atol=tol rtol=tol
+            @test qst[3] ≈ reference[2] atol=tol rtol=tol
+            for (actual, expected) in ((synthesis_sph(cfg, S), synthesis_sph(cfg, Sc)),
+                                       (synthesis_tor(cfg, Tlm), synthesis_tor(cfg, Tc)))
+                @test actual[1] ≈ expected[1] atol=tol rtol=tol
+                @test actual[2] ≈ expected[2] atol=tol rtol=tol
+            end
+        end
+    end
+
     @testset "Robert form roundtrip" begin
         lmax = 6
         cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1, robert_form=true)
@@ -36,6 +69,55 @@ end
 
         @test isapprox(Slm_rec, Slm; rtol=1e-9, atol=1e-11)
         @test isapprox(Tlm_rec, Tlm; rtol=1e-9, atol=1e-11)
+    end
+
+    @testset "Robert analysis rejects nonzero-weight m=1 poles" begin
+        cfg = create_regular_config(2, 9; nlon=7, include_poles=true,
+                                    robert_form=true)
+        S = zeros(ComplexF64, 3, 3); S[2, 2] = 1
+        Tlm = zero(S)
+        Vt, Vp = synthesis_sphtor(cfg, S, Tlm)
+        @test all(isfinite, Vt) && all(isfinite, Vp)
+        for tables in (false, true)
+            tables ? set_use_tables!(cfg) : set_on_the_fly!(cfg)
+            @test_throws ArgumentError analysis_sphtor(cfg, Vt, Vp)
+            @test_throws ArgumentError analysis_sphtor(cfg, Vt, Vp; use_rfft=true)
+            @test_throws ArgumentError analysis_sphtor_l(cfg, Vt, Vp, 2)
+            @test_throws ArgumentError analysis_sphtor_cplx(cfg, complex.(Vt), complex.(Vp))
+            @test_throws ArgumentError analysis_qst(cfg, zero(Vt), Vt, Vp)
+            @test_throws ArgumentError analysis_sphtor_batch(
+                cfg, reshape(Vt, cfg.nlat, cfg.nlon, 1), reshape(Vp, cfg.nlat, cfg.nlon, 1))
+            plan = SHTPlan(cfg)
+            Sout, Tout = fill(7.0 + 2im, 3, 3), fill(8.0 + 3im, 3, 3)
+            @test_throws ArgumentError analysis_sphtor!(plan, Sout, Tout, Vt, Vp)
+            @test all(==(7 + 2im), Sout) && all(==(8 + 3im), Tout)
+        end
+        mode = zeros(ComplexF64, cfg.nlat)
+        @test_throws ArgumentError analysis_sphtor_ml(cfg, 1, mode, mode, 2)
+        @test all(iszero, first(analysis_sphtor_ml(cfg, 0, mode, mode, 2)))
+        @test all(iszero, first(analysis_sphtor_ml(cfg, 2, mode, mode, 2)))
+        @test all(iszero, first(analysis_sphtor_l(cfg, Vt, Vp, 0)))
+        @test all(value -> all(iszero, value), analysis_qst_l(cfg, zero(Vt), Vt, Vp, 0))
+
+        # Zero-weight DH poles and layouts without m=1 retain their inverse.
+        for safe_cfg in (
+            create_regular_config(2, 6; nlon=7, include_poles=true,
+                                  use_dh_weights=true, robert_form=true),
+            create_regular_config(2, 9; nlon=7, include_poles=true,
+                                  mmax=0, robert_form=true),
+            create_regular_config(2, 9; nlon=7, include_poles=true,
+                                  mres=2, robert_form=true),
+        )
+            safe_S = zeros(ComplexF64, safe_cfg.lmax+1, safe_cfg.mmax+1)
+            safe_S[2, 1] = 0.5
+            safe_cfg.mres == 1 && safe_cfg.mmax > 0 && (safe_S[2, 2] = 1)
+            safe_cfg.mres == 2 && (safe_S[3, 3] = 0.2 - 0.1im)
+            safe_T = zero(safe_S)
+            v = synthesis_sphtor(safe_cfg, safe_S, safe_T)
+            recovered = analysis_sphtor(safe_cfg, v...)
+            @test recovered[1] ≈ safe_S atol=2e-14 rtol=2e-14
+            @test recovered[2] ≈ safe_T atol=2e-14 rtol=2e-14
+        end
     end
 
     @testset "PLM tables path: sphtor roundtrip" begin

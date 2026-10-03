@@ -1,12 +1,17 @@
 [deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 Literate = "98b081ad-f1c9-55d3-8b20-4c87d4299306"
-SHTnsKit = "1b9d0af0-2e90-4fb0-9eae-4a2e2cdf5320"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
-BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+SHTnsKit = "1b9d0af0-2e90-4fb0-9eae-4a2e2cdf5320"
+
+[sources]
+SHTnsKit = {path = ".."}
 
 [compat]
+BenchmarkTools = "1"
+CairoMakie = "0.15"
 Documenter = "1"
 Literate = "2"
 Plots = "1"
-BenchmarkTools = "1"

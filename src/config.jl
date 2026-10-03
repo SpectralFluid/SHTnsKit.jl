@@ -565,6 +565,27 @@ kernels need the derivative table too).
            length(cfg.NdP_tables) == cfg.mmax + 1
 end
 
+# Robert components vanish at the poles. For physical m=1, the unscaled
+# tangential field has a nonzero pole limit, which cannot be recovered by the
+# pointwise division used by vector analysis. Grids with nonzero pole weights
+# would silently discard that contribution. DH's zero-weight pole is safe.
+@inline function _validate_robert_analysis(cfg::SHTConfig;
+                                           m::Union{Nothing,Integer}=nothing,
+                                           ltr::Integer=cfg.lmax)
+    if cfg.robert_form && cfg.mres == 1 && cfg.mmax >= 1 && ltr >= 1 &&
+       (m === nothing || m == 1)
+        @inbounds for i in eachindex(cfg.x, cfg.w)
+            if abs(cfg.x[i]) == 1 && !iszero(cfg.w[i])
+                throw(ArgumentError(
+                    "Robert-form vector analysis with m=1 is unsupported at nonzero-weight pole nodes; " *
+                    "use a Gauss, pole-free regular, or Driscoll-Healy grid",
+                ))
+            end
+        end
+    end
+    return nothing
+end
+
 """
     create_gauss_config(lmax::Int, nlat::Int; mmax::Int=lmax, nlon::Int=_default_nlon(lmax)) -> SHTConfig
 

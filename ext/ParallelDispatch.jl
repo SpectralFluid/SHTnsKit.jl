@@ -678,6 +678,10 @@ function _validate_pencil_batch!(cfg::SHTnsKit.SHTConfig, values::Tuple,
             nfields > 0 ? UInt32(0) : UInt32(0x0001)
     for value in values
         size_global(value) == global_shape || (flags |= 0x0001)
+        # Batch fields are copied from physical parent slices into unpermuted
+        # pencils, so their original permutation must be rejected here.
+        PencilArrays.permutation(value) isa PencilArrays.NoPermutation ||
+            (flags |= 0x0002)
         ndims(parent(value)) == 3 && size(parent(value), 3) == nfields ||
             (flags |= 0x0002)
         eltype(value) === eltype(reference) || (flags |= 0x0004)

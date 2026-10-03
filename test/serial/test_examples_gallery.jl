@@ -32,6 +32,21 @@ end
 
     @test length(gallery_julia_blocks()) == 6
     @test !occursin("using MPI", gallery)
+    @test occursin("@repl inspect", gallery)
+end
+
+@testset "Examples Gallery figures" begin
+    gallery = read(EXAMPLES_GALLERY, String)
+    for name in (
+        "example-scalar-roundtrip.svg",
+        "example-power-spectrum.svg",
+        "example-vector-decomposition.svg",
+        "example-stream-function.svg",
+        "example-rotation.svg",
+    )
+        @test occursin(name, gallery)
+        @test isfile(joinpath(DOCS_ROOT, "src", "assets", name))
+    end
 end
 
 @testset "Examples Gallery serial snippets" begin

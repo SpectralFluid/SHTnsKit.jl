@@ -64,6 +64,8 @@ end
 
 function _test_qst_case(adapter::QSTParityAdapter, cfg, ::Type{T}) where {T<:AbstractFloat}
     tol = _vector_tol(T)
+    unsupported_analysis = cfg.grid_type === :regular_poles && cfg.robert_form &&
+                           cfg.mres == 1 && cfg.mmax >= 1
     Q_can, S_can, T_can = _qst_modes(cfg, T)
     Q = _qst_external(cfg, Q_can)
     S = _qst_external(cfg, S_can)
@@ -88,17 +90,22 @@ function _test_qst_case(adapter::QSTParityAdapter, cfg, ::Type{T}) where {T<:Abs
         @test host ≈ expected atol=tol.atol rtol=tol.rtol
     end
 
-    Qa, Sa, Ta = qst_analysis(
+    analyze_real = () -> qst_analysis(
         adapter, cfg,
         qst_place(adapter, cfg, Vr_ref, :spatial),
         qst_place(adapter, cfg, Vt_ref, :spatial),
         qst_place(adapter, cfg, Vp_ref, :spatial),
     )
-    for (got, expected) in zip((Qa, Sa, Ta), (Q, S, Tlm))
-        qst_resident(adapter, got)
-        host = qst_collect(adapter, got, cfg)
-        @test eltype(host) === Complex{T}
-        @test host ≈ expected atol=tol.atol rtol=tol.rtol
+    if unsupported_analysis
+        @test_throws ArgumentError analyze_real()
+    else
+        Qa, Sa, Ta = analyze_real()
+        for (got, expected) in zip((Qa, Sa, Ta), (Q, S, Tlm))
+            qst_resident(adapter, got)
+            host = qst_collect(adapter, got, cfg)
+            @test eltype(host) === Complex{T}
+            @test host ≈ expected atol=tol.atol rtol=tol.rtol
+        end
     end
 
     Q_complex = copy(Q)
@@ -115,14 +122,19 @@ function _test_qst_case(adapter::QSTParityAdapter, cfg, ::Type{T}) where {T<:Abs
         @test eltype(host) === Complex{T}
         @test host ≈ expected atol=tol.atol rtol=tol.rtol
     end
-    Qac, Sac, Tac = qst_analysis_cplx(
+    analyze_complex = () -> qst_analysis_cplx(
         adapter, cfg,
         qst_place(adapter, cfg, Vrc_ref, :spatial),
         qst_place(adapter, cfg, Vtc_ref, :spatial),
         qst_place(adapter, cfg, Vpc_ref, :spatial),
     )
-    for (got, expected) in zip((Qac, Sac, Tac), (Q_complex, S, Tlm))
-        @test qst_collect(adapter, got, cfg) ≈ expected atol=tol.atol rtol=tol.rtol
+    if unsupported_analysis
+        @test_throws ArgumentError analyze_complex()
+    else
+        Qac, Sac, Tac = analyze_complex()
+        for (got, expected) in zip((Qac, Sac, Tac), (Q_complex, S, Tlm))
+            @test qst_collect(adapter, got, cfg) ≈ expected atol=tol.atol rtol=tol.rtol
+        end
     end
     return nothing
 end

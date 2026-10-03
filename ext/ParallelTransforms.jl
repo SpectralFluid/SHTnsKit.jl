@@ -402,6 +402,7 @@ function _validate_sphtor_analysis_plan!(plan::DistSphtorPlan,
         plan.cfg, plan.cfg_fingerprint, comm, "dist_analysis_sphtor!",
     )
     _validate_cfg_replicated(plan.cfg, comm)
+    SHTnsKit._validate_robert_analysis(plan.cfg)
     _validate_spatial_pencil_against_prototype(
         plan.cfg, plan.prototype_θφ, Vt, "dist_analysis_sphtor!",
     )
@@ -523,6 +524,12 @@ function _validate_scalar_pencil!(cfg::SHTnsKit.SHTConfig, array::PencilArray,
     ranges = PencilArrays.range_local(pencil(array))
     local_size = size(parent(array))
     (local_size == (length(ranges[1]), length(ranges[2]))) || (flags |= 0x0002)
+    # These kernels index parent storage in logical (theta, phi)/(l, m) order.
+    # Extents alone cannot detect a permutation when the local block is square.
+    # Fold this verdict into the collective flags so a rank-local mismatch also
+    # rejects on peers before any transform communication or output mutation.
+    PencilArrays.permutation(array) isa PencilArrays.NoPermutation ||
+        (flags |= 0x0002)
     require_full_first_dim && length(ranges[1]) != expected[1] && (flags |= 0x0002)
     required_decomposition !== nothing &&
         PencilArrays.decomposition(pencil(array)) != required_decomposition &&
@@ -2073,6 +2080,9 @@ function dist_analysis_sphtor_pencil(cfg::SHTnsKit.SHTConfig,
                                      comm=communicator(Vt))
     _validate_sphtor_spatial_inputs!(cfg, Vt, Vp; use_rfft, comm)
     lcap = _collective_truncation(comm, ltr, cfg.lmax, :analysis_sphtor_l)
+    # Configuration and truncation are replicated before a local rejection, so
+    # no rank can advance to transform collectives while another rank throws.
+    SHTnsKit._validate_robert_analysis(cfg; ltr=lcap)
     Ft, theta_globals, phi_globals, phi_local, _ =
         _pencil_scalar_fourier(cfg, Vt; use_rfft, comm)
     Fp, theta_globals_p, phi_globals_p, phi_local_p, _ =
@@ -2348,6 +2358,7 @@ function _analysis_sphtor_mode_pencil(cfg::SHTnsKit.SHTConfig,
     stored, physical_m, lcap = _collective_fixed_order(
         comm, cfg, stored_im, ltr, :analysis_sphtor_ml,
     )
+    SHTnsKit._validate_robert_analysis(cfg; m=physical_m, ltr=lcap)
     _validate_mode_pencils!(comm, (Vt, Vp), cfg.nlat, :analysis_sphtor_ml)
     CT = complex(float(real(eltype(Vt))))
     RT = typeof(real(zero(CT)))

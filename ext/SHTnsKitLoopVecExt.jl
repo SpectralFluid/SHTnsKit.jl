@@ -287,8 +287,12 @@ function SHTnsKit.turbo_apply_laplacian!(cfg::SHTnsKit.SHTConfig, alm::AbstractM
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
-    @threads for m in 0:mmax
+    @_lv_threads :dynamic for m in 0:mmax
         col = m + 1
+        if m % cfg.mres != 0
+            fill!(view(alm, :, col), zero(eltype(alm)))
+            continue
+        end
         @tturbo warn_check_args=false for l in m:lmax
             alm[l + 1, col] *= -(l * (l + 1))
         end

@@ -25,6 +25,92 @@ catch
 end
 
 if _HAS_ZYGOTE
+@testset "analysis rrule forwards FFT options" begin
+    cfg = create_gauss_config(4, 7; nlon=11, norm=:schmidt,
+                              real_norm=true, cs_phase=false)
+    rng = MersenneTwister(4261)
+    field = randn(rng, cfg.nlat, cfg.nlon)
+    direction = randn(rng, cfg.nlat, cfg.nlon)
+    cotangent = randn(rng, ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+    epsilon = 1e-6
+    default_loss(x) = real(sum(conj(cotangent) .* analysis(cfg, x)))
+    default_gradient = Zygote.gradient(default_loss, field)[1]
+    for use_rfft in (false, true), with_scratch in (false, true)
+        @testset "use_rfft=$use_rfft, with_scratch=$with_scratch" begin
+            scratch = with_scratch ? zeros(ComplexF64, cfg.nlat,
+                use_rfft ? cfg.nlon ÷ 2 + 1 : cfg.nlon) : nothing
+            loss(x) = real(sum(conj(cotangent) .* analysis(
+                cfg, x; use_rfft, fft_scratch=scratch,
+            )))
+            gradient = Zygote.gradient(loss, field)[1]
+            fd = (loss(field .+ epsilon .* direction) -
+                  loss(field .- epsilon .* direction)) / (2epsilon)
+            @test sum(gradient .* direction) ≈ fd rtol=2e-6 atol=2e-8
+            @test gradient ≈ default_gradient rtol=2e-12 atol=2e-12
+        end
+    end
+end
+
+@testset "synthesis rrule forwards FFT options" begin
+    cfg = create_gauss_config(4, 7; nlon=11, norm=:schmidt,
+                              real_norm=true, cs_phase=false)
+    rng = MersenneTwister(4262)
+    coefficients = randn(rng, ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+    direction = randn(rng, ComplexF64, size(coefficients))
+    epsilon = 1e-6
+    for real_output in (false, true), use_rfft in (false, true),
+        with_scratch in (false, true)
+        use_rfft && !real_output && continue
+        @testset "real_output=$real_output, use_rfft=$use_rfft, with_scratch=$with_scratch" begin
+            scratch = with_scratch ? zeros(ComplexF64, cfg.nlat,
+                use_rfft ? cfg.nlon ÷ 2 + 1 : cfg.nlon) : nothing
+            cotangent = randn(rng, real_output ? Float64 : ComplexF64,
+                              cfg.nlat, cfg.nlon)
+            default_loss(x) = real(sum(conj(cotangent) .* synthesis(cfg, x; real_output)))
+            loss(x) = real(sum(conj(cotangent) .* synthesis(
+                cfg, x; real_output, use_rfft, fft_scratch=scratch,
+            )))
+            gradient = Zygote.gradient(loss, coefficients)[1]
+            fd = (loss(coefficients .+ epsilon .* direction) -
+                  loss(coefficients .- epsilon .* direction)) / (2epsilon)
+            @test real(sum(conj(gradient) .* direction)) ≈ fd rtol=2e-6 atol=2e-8
+            @test gradient ≈ Zygote.gradient(default_loss, coefficients)[1] rtol=2e-12 atol=2e-12
+        end
+    end
+end
+
+@testset "batch scalar rrules forward FFT options" begin
+    cfg = create_gauss_config(4, 7; nlon=11, norm=:schmidt,
+                              real_norm=true, cs_phase=false)
+    rng = MersenneTwister(4263)
+    fields = randn(rng, cfg.nlat, cfg.nlon, 2)
+    field_direction = randn(rng, size(fields))
+    coefficients = randn(rng, ComplexF64, cfg.lmax + 1, cfg.mmax + 1, 2)
+    coefficient_direction = randn(rng, ComplexF64, size(coefficients))
+    epsilon = 1e-6
+    for use_rfft in (false, true)
+        cotangent = randn(rng, ComplexF64, size(coefficients))
+        default_loss(x) = real(sum(conj(cotangent) .* analysis_batch(cfg, x)))
+        loss(x) = real(sum(conj(cotangent) .* analysis_batch(cfg, x; use_rfft)))
+        gradient = Zygote.gradient(loss, fields)[1]
+        fd = (loss(fields .+ epsilon .* field_direction) -
+              loss(fields .- epsilon .* field_direction)) / (2epsilon)
+        @test sum(gradient .* field_direction) ≈ fd rtol=2e-6 atol=2e-8
+        @test gradient ≈ Zygote.gradient(default_loss, fields)[1] rtol=2e-12 atol=2e-12
+    end
+    for real_output in (false, true), use_rfft in (false, true)
+        use_rfft && !real_output && continue
+        cotangent = randn(rng, real_output ? Float64 : ComplexF64, size(fields))
+        default_loss(x) = real(sum(conj(cotangent) .* synthesis_batch(cfg, x; real_output)))
+        loss(x) = real(sum(conj(cotangent) .* synthesis_batch(cfg, x; real_output, use_rfft)))
+        gradient = Zygote.gradient(loss, coefficients)[1]
+        fd = (loss(coefficients .+ epsilon .* coefficient_direction) -
+              loss(coefficients .- epsilon .* coefficient_direction)) / (2epsilon)
+        @test real(sum(conj(gradient) .* coefficient_direction)) ≈ fd rtol=2e-6 atol=2e-8
+        @test gradient ≈ Zygote.gradient(default_loss, coefficients)[1] rtol=2e-12 atol=2e-12
+    end
+end
+
 @testset "synthesis rrule: adjoint consistency with finite-difference" begin
     # Verifies that the rrule for `synthesis` implements the true mathematical
     # adjoint (not just `analysis`, which differs by Gauss-Legendre weights).

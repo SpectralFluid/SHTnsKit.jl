@@ -28,6 +28,173 @@ end
     spectral_dims = (lmax + 1, mmax + 1)
     pen_m = Pencil(spectral_dims, comm)
 
+    @testset "one-longitude latitude outputs ($phi_scale)" for phi_scale in (:dft, :quad)
+        eval_cfg = deepcopy(cfg)
+        eval_cfg.phi_scale = phi_scale
+        Q = zeros(ComplexF64, spectral_dims)
+        S = copy(Q)
+        T = copy(Q)
+        Q[1, 1], Q[3, 2] = 0.8, 0.3 - 0.2im
+        S[2, 1], T[4, 2] = 0.4, -0.1 + 0.3im
+        Qp, Sp, Tp = map(A -> scatter_spectral(pen_m, A), (Q, S, T))
+        Qpacked, Spacked, Tpacked = map(A -> SHTnsKit.pack_lm(eval_cfg, A), (Q, S, T))
+        cost = 0.2
+
+        expected = SH_to_lat(eval_cfg, Qpacked, cost; nphi=1)
+        for actual in (SH_to_lat(eval_cfg, Qp, cost; nphi=1),
+                       SHTnsKit.dist_SH_to_lat(eval_cfg, Qp, cost; nphi=1))
+            @test actual isa Vector{Float64}
+            @test size(actual) == (1,)
+            @test actual ≈ expected
+        end
+        expected_qst = SHqst_to_lat(eval_cfg, Qpacked, Spacked, Tpacked, cost; nphi=1)
+        for actual in (SHqst_to_lat(eval_cfg, Qp, Sp, Tp, cost; nphi=1),
+                       SHTnsKit.dist_SHqst_to_lat(eval_cfg, Qp, Sp, Tp, cost; nphi=1))
+            for k in 1:3
+                @test actual[k] isa Vector{Float64}
+                @test size(actual[k]) == (1,)
+                @test actual[k] ≈ expected_qst[k]
+            end
+        end
+        @test synthesis_point(eval_cfg, Qp, cost, 0.0) ≈ only(expected)
+        actual_point = SHqst_to_point(eval_cfg, Qp, Sp, Tp, cost, 0.0)
+        @test all(isapprox.(actual_point, only.(expected_qst)))
+
+        C = zeros(ComplexF64, SHTnsKit.nlm_cplx_calc(lmax, mmax, 1))
+        C[SHTnsKit.LM_cplx_index(lmax, mmax, 0, 0) + 1] = 0.8 + 0.1im
+        C[SHTnsKit.LM_cplx_index(lmax, mmax, 3, -2) + 1] = 0.3 - 0.2im
+        Cpen = Pencil((length(C), 1), (1,), comm)
+        Cp = scatter_spectral(Cpen, reshape(C, :, 1))
+        actual_complex = SH_to_lat_cplx(eval_cfg, Cp, cost; nphi=1)
+        expected_complex = SH_to_lat_cplx(eval_cfg, C, cost; nphi=1)
+        @test actual_complex isa Vector{ComplexF64}
+        @test size(actual_complex) == (1,)
+        @test actual_complex ≈ expected_complex
+        @test synthesis_point_cplx(eval_cfg, Cp, cost, 0.0) ≈ only(expected_complex)
+        @test SH_to_lat_cplx(eval_cfg, Cp, cost) ≈ SH_to_lat_cplx(eval_cfg, C, cost)
+    end
+
+    @testset "axisymmetric default latitude output remains a vector" begin
+        axis_cfg = create_gauss_config(lmax, lmax + 2; mmax=0, nlon=1)
+        A = zeros(ComplexF64, lmax + 1, 1)
+        A[1, 1], A[3, 1] = 0.7, -0.2
+        axis_pen = Pencil(size(A), (1,), comm)
+        Ap = scatter_spectral(axis_pen, A)
+        packed = SHTnsKit.pack_lm(axis_cfg, A)
+        actual = SH_to_lat(axis_cfg, Ap, 0.2)
+        @test actual isa Vector{Float64}
+        @test actual ≈ SH_to_lat(axis_cfg, packed, 0.2)
+        actual_qst = SHqst_to_lat(axis_cfg, Ap, Ap, Ap, 0.2)
+        expected_qst = SHqst_to_lat(axis_cfg, packed, packed, packed, 0.2)
+        for k in 1:3
+            @test actual_qst[k] isa Vector{Float64}
+            @test actual_qst[k] ≈ expected_qst[k]
+        end
+    end
+
+    @testset "square parent blocks cannot conceal unsupported permutations" begin
+        square_cfg = create_gauss_config(2, 6; nlon=6nprocs)
+        A = zeros(ComplexF64, 3, 3)
+        A[1, 1], A[3, 1], A[3, 2] = 1, 2, 0.5 + 0.2im
+        field = synthesis(square_cfg, A)
+        spatial_pen = Pencil(size(field), (2,), comm)
+        permuted_pen = Pencil(spatial_pen; permute=Permutation(2, 1))
+        ordinary = scatter_spectral(spatial_pen, field)
+        permuted = PencilArray{Float64}(undef, permuted_pen)
+        ranges = PencilArrays.range_local(permuted_pen)
+        for (j, gj) in enumerate(ranges[2]), (i, gi) in enumerate(ranges[1])
+            permuted[i, j] = field[gi, gj]
+        end
+        @test size(parent(ordinary)) == size(parent(permuted)) == (6, 6)
+        # Reuse the same topology/communicator, with only rank 0 permuted, to
+        # ensure the validation failure is collective before FFT/reduction work.
+        rank_varying = rank == 0 ? permuted : ordinary
+        for input in (permuted, rank_varying), use_rfft in (false, true)
+            @test_throws ArgumentError analysis(square_cfg, input; use_rfft)
+        end
+        @test SHTnsKit.spectral_pencil_to_matrix(
+            square_cfg, analysis(square_cfg, ordinary),
+        ) ≈ A
+
+        # Degree decomposition gives every rank a square 3x3 spectral block.
+        # Point/latitude kernels must reject it too, even though shapes match.
+        local_cfg = create_gauss_config(3nprocs - 1, 3nprocs + 1; mmax=2, nlon=5)
+        local_pen = Pencil((local_cfg.lmax + 1, 3), (1,), comm)
+        local_permuted_pen = Pencil(local_pen; permute=Permutation(2, 1))
+        local_ordinary = PencilArray{ComplexF64}(undef, local_pen)
+        local_permuted = PencilArray{ComplexF64}(undef, local_permuted_pen)
+        fill!(parent(local_ordinary), 0)
+        fill!(parent(local_permuted), 0)
+        @test size(parent(local_ordinary)) == size(parent(local_permuted)) == (3, 3)
+        local_rank_varying = rank == 0 ? local_permuted : local_ordinary
+        for input in (local_permuted, local_rank_varying)
+            @test_throws ArgumentError synthesis_point(local_cfg, input, 0.2, 0.4)
+            @test_throws ArgumentError SH_to_lat(local_cfg, input, 0.2; nphi=1)
+            @test_throws ArgumentError SHqst_to_point(
+                local_cfg, input, input, input, 0.2, 0.4,
+            )
+        end
+
+        batch_cfg = create_gauss_config(2, 6nprocs; nlon=6)
+        batch_pen = Pencil((batch_cfg.nlat, batch_cfg.nlon), (1,), comm)
+        batch_permuted_pen = Pencil(batch_pen; permute=Permutation(2, 1))
+        batch_ordinary = PencilArray{Float64}(undef, batch_pen, 2)
+        batch_permuted = PencilArray{Float64}(undef, batch_permuted_pen, 2)
+        fill!(parent(batch_ordinary), 0)
+        fill!(parent(batch_permuted), 0)
+        @test size(parent(batch_ordinary)) == size(parent(batch_permuted)) == (6, 6, 2)
+        batch_rank_varying = rank == 0 ? batch_permuted : batch_ordinary
+        for input in (batch_permuted, batch_rank_varying)
+            @test_throws ArgumentError analysis_sphtor_batch(batch_cfg, input, input)
+            @test_throws ArgumentError analysis_qst_batch(batch_cfg, input, input, input)
+        end
+    end
+
+    @testset "Robert analysis rejects lossy weighted-pole data collectively" begin
+        robert_cfg = create_regular_config(2, 6; nlon=5, include_poles=true,
+                                            robert_form=true)
+        spatial_pen = Pencil((robert_cfg.nlat, robert_cfg.nlon), (1,), comm)
+        field = PencilArray{Float64}(undef, spatial_pen)
+        fill!(parent(field), 0)
+        @test_throws ArgumentError analysis_sphtor(robert_cfg, field, field)
+        @test_throws ArgumentError SHTnsKit.dist_analysis_sphtor(robert_cfg, field, field)
+        @test_throws ArgumentError analysis_qst(robert_cfg, field, field, field)
+        @test_throws ArgumentError analysis_sphtor_l(robert_cfg, field, field, 1)
+        @test_throws ArgumentError analysis_qst_l(robert_cfg, field, field, field, 1)
+        @test all(A -> all(iszero, parent(A)),
+                  analysis_sphtor_l(robert_cfg, field, field, 0))
+
+        ParExt = Base.get_extension(SHTnsKit, :SHTnsKitParallelExt)
+        vector_plan = ParExt.DistSphtorPlan(robert_cfg, field)
+        qst_plan = ParExt.DistQstPlan(robert_cfg, field)
+        outputs = ntuple(_ -> fill(7.0 + 2.0im, 3, 3), 3)
+        @test_throws ArgumentError SHTnsKit.dist_analysis_sphtor!(
+            vector_plan, outputs[2], outputs[3], field, field,
+        )
+        @test_throws ArgumentError SHTnsKit.dist_analysis_qst!(
+            qst_plan, outputs..., field, field, field,
+        )
+        @test all(A -> all(==(7.0 + 2.0im), A), outputs)
+
+        mode_pen = Pencil((robert_cfg.nlat, 1), (1,), comm)
+        mode = PencilArray{ComplexF64}(undef, mode_pen)
+        fill!(parent(mode), 0)
+        @test_throws ArgumentError analysis_sphtor_ml(robert_cfg, 1, mode, mode, 2)
+        @test_throws ArgumentError analysis_qst_ml(robert_cfg, 1, mode, mode, mode, 2)
+        for m in (0, 2)
+            @test all(A -> all(iszero, parent(A)),
+                      analysis_sphtor_ml(robert_cfg, m, mode, mode, 2))
+        end
+
+        # A divergent cfg must fail on every rank before the local Robert guard
+        # can throw on only the rank whose configuration enables Robert form.
+        if nprocs > 1
+            divergent = create_regular_config(2, 6; nlon=5, include_poles=true,
+                                               robert_form=(rank == 0))
+            @test_throws ArgumentError analysis_sphtor(divergent, field, field)
+        end
+    end
+
     @testset "local vector evaluations honor Robert form" begin
         Q = zeros(ComplexF64, spectral_dims)
         S = copy(Q)
@@ -62,19 +229,23 @@ end
         end
     end
 
-    @testset "complex latitude evaluation is one-sided complex synthesis" begin
+    @testset "one-sided complex latitude synthesis ($phi_scale)" for phi_scale in (:dft, :quad)
+        eval_cfg = deepcopy(cfg)
+        eval_cfg.phi_scale = phi_scale
         A = zeros(ComplexF64, spectral_dims)
         A[5, 3] = 0.7 - 0.4im # (l,m) = (4,2), deliberately non-real
         A_p = scatter_spectral(pen_m, A)
         ilat = 3
 
         got = SHTnsKit.dist_SH_to_lat(
-            cfg, A_p, cfg.x[ilat]; nphi=cfg.nlon, real_output=false)
-        ref = vec(SHTnsKit.synthesis(cfg, A; real_output=false)[ilat, :])
+            eval_cfg, A_p, eval_cfg.x[ilat]; nphi=eval_cfg.nlon, real_output=false)
+        ref = vec(SHTnsKit.synthesis(eval_cfg, A; real_output=false)[ilat, :])
 
         @test eltype(got) <: Complex
         @test isapprox(got, ref; rtol=1e-11, atol=1e-12)
         @test maximum(abs, imag.(got)) > 1e-4
+        @test SHTnsKit.dist_SH_to_lat(
+            eval_cfg, A_p, eval_cfg.x[ilat]; nphi=1, real_output=false) ≈ ref[1:1]
     end
 
     @testset "configured global spectral dimensions are enforced" begin

@@ -815,6 +815,7 @@ function _amdgpu_vector_analysis_direct!(owner, cfg::SHTConfig,
     ))
     size(Vp) == size(Vt) || throw(DimensionMismatch("Vp must match Vt"))
     0 <= lcap <= cfg.lmax || throw(ArgumentError("invalid vector degree cap"))
+    SHTnsKit._validate_robert_analysis(cfg; ltr=lcap)
     expected = (cfg.lmax + 1, cfg.mmax + 1)
     size(Sout) == expected || throw(DimensionMismatch("Sout must have size $expected"))
     size(Tout) == expected || throw(DimensionMismatch("Tout must have size $expected"))
@@ -1036,6 +1037,7 @@ function _amdgpu_vector_mode_analysis(cfg::SHTConfig, stored_im::Integer,
                                       Vp::AMDGPU.AnyROCArray{R,1},
                                       ltr::Integer) where {T<:Complex,R<:Complex}
     physical_m, lcap = SHTnsKit._validate_vector_fixed_order(cfg, stored_im, ltr)
+    SHTnsKit._validate_robert_analysis(cfg; m=physical_m, ltr=lcap)
     length(Vt) == cfg.nlat || throw(DimensionMismatch("Vt mode length mismatch"))
     length(Vp) == cfg.nlat || throw(DimensionMismatch("Vp mode length mismatch"))
     RTt = typeof(float(real(zero(T)))); RTp = typeof(float(real(zero(R))))
@@ -1173,6 +1175,7 @@ function _amdgpu_vector_batch_analysis(cfg::SHTConfig,
     size(Vp) == size(Vt) || throw(DimensionMismatch("Vt/Vp batch shape mismatch"))
     nfields = size(Vt, 3)
     nfields > 0 || throw(ArgumentError("analysis_sphtor_batch requires at least one field"))
+    SHTnsKit._validate_robert_analysis(cfg)
     RTt = float(T); RTp = float(R)
     RTt === RTp || throw(ArgumentError("vector batches must use the same precision"))
     RT = RTt; CT = Complex{RT}; tables = _amdgpu_vector_tables(cfg, RT)

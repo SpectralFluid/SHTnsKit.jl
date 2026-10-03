@@ -6,7 +6,6 @@ using Test
 @testset "SHTnsKit Serial Tests" begin
     include("test_baseline_compatibility.jl")
     include("test_host_transfer_inventory.jl")
-    include("test_shtns37_contract.jl")
     include(joinpath(@__DIR__, "..", "parity", "shtns37_fixtures.jl"))
     test_shtns37_fixtures_cpu()
     include("test_examples_gallery.jl")

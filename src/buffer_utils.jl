@@ -55,32 +55,16 @@ end
     cached_m_order(cfg::SHTConfig) -> Vector{Int}
 
 Return the cfg's cached balanced m-ordering, building it on first use. Callers
-should not mutate the returned vector.
+should not mutate the returned vector. Configs are documented as frozen during
+parallel transforms, so the lazy build needs no lock.
 """
-const _M_ORDER_LOCK = Threads.ReentrantLock()
-
 @inline function cached_m_order(cfg)
-    lock(_M_ORDER_LOCK)
-    try
-        mo = cfg._m_order
-        expected_length = fld(cfg.mmax, cfg.mres) + 1
-        valid = length(mo) == expected_length
-        if valid
-            @inbounds for m in mo
-                if m < 0 || m > cfg.mmax || m % cfg.mres != 0
-                    valid = false
-                    break
-                end
-            end
-        end
-        if !valid
-            # Build into a private vector and publish it only after complete.
-            cfg._m_order = balanced_m_order(cfg.mmax, cfg.mres)
-        end
-        return cfg._m_order
-    finally
-        unlock(_M_ORDER_LOCK)
-    end
+    mo = cfg._m_order
+    expected_length = fld(cfg.mmax, cfg.mres) + 1
+    length(mo) == expected_length && return mo
+    # Build into a private vector and publish it only after it is complete.
+    cfg._m_order = balanced_m_order(cfg.mmax, cfg.mres)
+    return cfg._m_order
 end
 
 """

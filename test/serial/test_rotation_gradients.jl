@@ -26,17 +26,28 @@ catch
     false
 end
 
-@testset "Z-rotation pullbacks preserve primal coefficients" begin
+@testset "Axis-rotation pullbacks preserve primal coefficients" begin
     function check_saved_rotation(make_pullback)
-        for mres in (1, 2), storage in (:separate, :inplace, :overlapping_views)
-            @testset "mres=$mres, storage=$storage" begin
+        for apply in (SH_Zrotate, SH_Yrotate), mres in (1, 2),
+            storage in (:separate, :inplace, :overlapping_views)
+            apply === SH_Yrotate && mres != 1 && continue
+            @testset "$apply, mres=$mres, storage=$storage" begin
                 cfg = create_gauss_config(4, 6; nlon=9, mres=mres)
                 rng = MersenneTwister(4260 + mres)
                 Q = randn(rng, ComplexF64, cfg.nlm)
                 C = randn(rng, ComplexF64, cfg.nlm)
                 h = randn(rng, ComplexF64, cfg.nlm)
+                if apply === SH_Yrotate
+                    for k in eachindex(Q)
+                        if cfg.mi[k] == 0
+                            Q[k] = real(Q[k])
+                            C[k] = real(C[k])
+                            h[k] = real(h[k])
+                        end
+                    end
+                end
                 alpha, epsilon = 0.7, 1e-6
-                loss(q, a) = real(sum(conj(C) .* SH_Zrotate(cfg, q, a, similar(q))))
+                loss(q, a) = real(sum(conj(C) .* apply(cfg, q, a, similar(q))))
                 fd_alpha = (loss(Q, alpha + epsilon) - loss(Q, alpha - epsilon)) / (2epsilon)
                 fd_q = (loss(Q .+ epsilon .* h, alpha) - loss(Q .- epsilon .* h, alpha)) / (2epsilon)
 
@@ -49,9 +60,9 @@ end
                     q = copy(Q)
                     out = storage === :inplace ? q : similar(q)
                 end
-                y, back = make_pullback(cfg, q, alpha, out)
+                y, back = make_pullback(apply, cfg, q, alpha, out)
                 @test y === out
-                @test y ≈ SH_Zrotate(cfg, Q, alpha, similar(Q))
+                @test y ≈ apply(cfg, Q, alpha, similar(Q))
                 _, qbar, alphabar, _ = back(C)
                 @test real(sum(conj(qbar) .* h)) ≈ fd_q rtol=1e-6 atol=1e-8
                 @test alphabar ≈ fd_alpha rtol=1e-6 atol=1e-8
@@ -71,14 +82,90 @@ end
     end
 
     @testset "ChainRules" begin
-        check_saved_rotation() do cfg, q, alpha, out
-            y, back = ChainRulesCore.rrule(SH_Zrotate, cfg, q, alpha, out)
+        check_saved_rotation() do apply, cfg, q, alpha, out
+            y, back = ChainRulesCore.rrule(apply, cfg, q, alpha, out)
             y, cotangent -> Base.tail(back(cotangent))
         end
     end
     if _HAS_ZYGOTE_ROT
         @testset "Zygote" begin
-            check_saved_rotation((cfg, q, alpha, out) -> Zygote.pullback(SH_Zrotate, cfg, q, alpha, out))
+            check_saved_rotation((apply, cfg, q, alpha, out) -> Zygote.pullback(apply, cfg, q, alpha, out))
+        end
+    end
+end
+
+@testset "General rotation pullbacks preserve configured primal state" begin
+    lmax = mmax = 4
+    cfg = create_gauss_config(lmax, 7; mmax, nlon=11)
+    rng = MersenneTwister(4321)
+    angles = (0.23, 0.41, -0.17)
+    epsilon = 1e-6
+    conventions = (
+        (; norm=:orthonormal, real_norm=false, cs_phase=true),
+        (; norm=:orthonormal, real_norm=false, cs_phase=false),
+        (; norm=:orthonormal, real_norm=true, cs_phase=true),
+        (; norm=:schmidt, real_norm=true, cs_phase=false),
+    )
+    for apply in (shtns_rotation_apply_real, shtns_rotation_apply_cplx),
+        convention in conventions
+        @testset "$apply, $convention" begin
+            n = apply === shtns_rotation_apply_real ? cfg.nlm :
+                nlm_cplx_calc(lmax, mmax, 1)
+            input = randn(rng, ComplexF64, n)
+            direction = randn(rng, ComplexF64, n)
+            cotangent = randn(rng, ComplexF64, n)
+            if apply === shtns_rotation_apply_real
+                for k in eachindex(input)
+                    if cfg.mi[k] == 0
+                        input[k] = real(input[k])
+                        direction[k] = real(direction[k])
+                    end
+                end
+            end
+            make_rotation(values) = SHTRotation(
+                lmax, mmax; α=values[1], β=values[2], γ=values[3], convention...,
+            )
+            loss(coefficients, values) = real(sum(conj(cotangent) .* apply(
+                make_rotation(values), coefficients, similar(coefficients),
+            )))
+            fd_input = (loss(input .+ epsilon .* direction, angles) -
+                        loss(input .- epsilon .* direction, angles)) / (2epsilon)
+            fd_angles = ntuple(3) do index
+                plus = ntuple(k -> angles[k] + (k == index ? epsilon : 0.0), 3)
+                minus = ntuple(k -> angles[k] - (k == index ? epsilon : 0.0), 3)
+                (loss(input, plus) - loss(input, minus)) / (2epsilon)
+            end
+
+            for storage in (:separate, :inplace, :overlapping_views)
+                @testset "$storage" begin
+                    if storage === :overlapping_views
+                        buffer = vcat(zero(eltype(input)), input)
+                        q, output = view(buffer, 2:n+1), view(buffer, 1:n)
+                    else
+                        q = copy(input)
+                        output = storage === :inplace ? q : similar(q)
+                    end
+                    rotation = make_rotation(angles)
+                    y, back = ChainRulesCore.rrule(apply, rotation, q, output)
+                    @test y === output
+                    @test y ≈ apply(make_rotation(angles), input, similar(input))
+                    # Reusing the coefficient buffers or the mutable rotation
+                    # must not change derivatives of the completed primal call.
+                    fill!(q, 0)
+                    fill!(output, 0)
+                    shtns_rotation_set_angles_ZXZ(rotation, 0.0, 0.0, 0.0)
+                    for multiplier in (1.0, 2.0)
+                        _, rbar, qbar, _ = back(multiplier .* cotangent)
+                        @test real(sum(conj(qbar) .* direction)) ≈
+                              multiplier * fd_input rtol=2e-6 atol=2e-8
+                        actual_angles = (rbar.α, rbar.β, rbar.γ)
+                        for index in 1:3
+                            @test actual_angles[index] ≈
+                                  multiplier * fd_angles[index] rtol=2e-6 atol=2e-8
+                        end
+                    end
+                end
+            end
         end
     end
 end

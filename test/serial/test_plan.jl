@@ -152,7 +152,7 @@ end
         @test_throws DimensionMismatch synthesis_sphtor!(plan, Vt, zeros(cfg.nlat, 1), S, T)
     end
 
-    @testset "Noncanonical in-place synthesis stays allocation-free" begin
+    @testset "Noncanonical in-place synthesis reuses field storage" begin
         lmax = 32
         cfg = create_gauss_config(lmax, lmax + 2; nlon=2lmax + 1,
                                   norm=:schmidt, real_norm=true, cs_phase=false)

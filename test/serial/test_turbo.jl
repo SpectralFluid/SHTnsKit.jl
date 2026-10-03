@@ -47,6 +47,43 @@ else
             @test isapprox(a_rt, alm; rtol=1e-9, atol=1e-11)
         end
 
+        @testset "mres excludes unrepresented orders" begin
+            for precompute_plm in (false, true), mres in (2, 3)
+                cfgm = create_gauss_config(6, 40; nlon=15, mres)
+                precompute_plm && enable_plm_tables!(cfgm)
+                cfgfull = create_gauss_config(6, 40; nlon=15)
+                excluded = zeros(ComplexF64, 7, 7)
+                excluded[3, 2] = 0.7 - 0.2im
+                field = synthesis(cfgfull, excluded)
+                @test analysis_turbo(cfgm, field) ≈ analysis(cfgm, field) atol=1e-12
+                @test synthesis_turbo(cfgm, excluded) ≈ zeros(40, 15) atol=1e-12
+
+                allowed = copy(excluded)
+                allowed[4, mres + 1] = 0.3 + 0.5im
+                @test synthesis_turbo(cfgm, allowed) ≈ synthesis(cfgm, allowed) atol=1e-12
+                @test synthesis_turbo(cfgm, real.(allowed)) ≈
+                      synthesis(cfgm, real.(allowed)) atol=1e-12
+                @test analysis_turbo(cfgm, synthesis(cfgm, allowed)) ≈
+                      analysis(cfgm, synthesis(cfgm, allowed)) atol=1e-12
+                # In-place operators must also clear excluded m columns.
+                lap = copy(allowed)
+                turbo_apply_laplacian!(cfgm, lap)
+                @test lap ≈ SHTnsKit.dist_apply_laplacian!(cfgm, copy(allowed))
+            end
+        end
+
+        @testset "few-mode scheduling respects mres" begin
+            # With at least six threads this exercises the latitude-parallel
+            # branch; other thread counts still check its axisymmetric limit.
+            cfgm = create_gauss_config(3, 40; nlon=9, mres=4)
+            a = zeros(ComplexF64, 4, 4)
+            a[3, 1] = 1.0
+            a[3, 2] = 0.4im
+            field = synthesis(cfgm, a)
+            @test synthesis_turbo(cfgm, a) ≈ field atol=1e-12
+            @test analysis_turbo(cfgm, field) ≈ analysis(cfgm, field) atol=1e-12
+        end
+
         @testset "configured convention parity" begin
             convention_cases = (
                 (:fourpi, false, true),
