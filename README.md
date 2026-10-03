@@ -21,11 +21,7 @@
 SHTnsKit.jl provides a pure-Julia implementation of spherical harmonic
 transforms with serial CPU, CUDA, AMDGPU, and MPI/PencilArrays execution.
 
-SHTnsKit 2.0 uses typed `CPU()` / `GPU()` dispatch and consistent normalization
-and phase conventions across scalar, vector, QST, packed, batch, planned, GPU,
-and distributed transforms. See the [v2 migration
-guide](https://subhk.github.io/SHTnsKit.jl/dev/migration/) before upgrading an
-application that uses legacy flags, device symbols, or distributed plans.
+
 ## Key Features
 
 ### **High-Performance Computing**

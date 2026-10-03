@@ -26,6 +26,12 @@ function _rand_real_alm(rng, lmax, mmax)
     return alm
 end
 
+function _planned_sphtor_min_allocations(plan, Slm, Tlm, Vt, Vp)
+    analysis_sphtor!(plan, Slm, Tlm, Vt, Vp)
+    GC.gc()
+    return minimum(@allocated(analysis_sphtor!(plan, Slm, Tlm, Vt, Vp)) for _ in 1:3)
+end
+
 @testset "SHTPlan" begin
     @testset "Planned rfft scalar matches complex plan" begin
         for (lmax, nlon) in ((6, 13), (8, 20), (12, 25))
@@ -246,19 +252,25 @@ end
     end
 
     @testset "Planned sphtor: robert_form analysis does not allocate row slices" begin
-        lmax = 5
-        cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1, robert_form=true)
-        plan = SHTPlan(cfg)
-        rng = MersenneTwister(207)
+        for lmax in (5, 12), use_rfft in (false, true)
+            cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
+            plan = SHTPlan(cfg; use_rfft)
+            rng = MersenneTwister(207)
 
-        Vt = randn(rng, cfg.nlat, cfg.nlon)
-        Vp = randn(rng, cfg.nlat, cfg.nlon)
-        Slm = zeros(ComplexF64, lmax + 1, lmax + 1)
-        Tlm = zeros(ComplexF64, lmax + 1, lmax + 1)
+            Vt = randn(rng, cfg.nlat, cfg.nlon)
+            Vp = randn(rng, cfg.nlat, cfg.nlon)
+            Slm = zeros(ComplexF64, lmax + 1, lmax + 1)
+            Tlm = zeros(ComplexF64, lmax + 1, lmax + 1)
 
-        analysis_sphtor!(plan, Slm, Tlm, Vt, Vp)
-        GC.gc()
-        @test @allocated(analysis_sphtor!(plan, Slm, Tlm, Vt, Vp)) <= 128
+            # Match the exact plan, buffers, and measurement call site so
+            # platform/coverage overhead is shared by both measurements.
+            # Robert scaling must add no allocations; copied latitude rows
+            # would increase this count at either size and on either FFT path.
+            baseline_bytes = _planned_sphtor_min_allocations(plan, Slm, Tlm, Vt, Vp)
+            cfg.robert_form = true
+            robert_bytes = _planned_sphtor_min_allocations(plan, Slm, Tlm, Vt, Vp)
+            @test robert_bytes <= baseline_bytes
+        end
     end
 
     @testset "Planned scalar: complex output path (real_output=false) runs" begin
