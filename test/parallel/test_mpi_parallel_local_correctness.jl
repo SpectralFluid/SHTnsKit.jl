@@ -28,34 +28,36 @@ end
     spectral_dims = (lmax + 1, mmax + 1)
     pen_m = Pencil(spectral_dims, comm)
 
-    @testset "one-longitude latitude evaluations retain vector outputs" begin
+    @testset "one-longitude latitude outputs ($phi_scale)" for phi_scale in (:dft, :quad)
+        eval_cfg = deepcopy(cfg)
+        eval_cfg.phi_scale = phi_scale
         Q = zeros(ComplexF64, spectral_dims)
         S = copy(Q)
         T = copy(Q)
         Q[1, 1], Q[3, 2] = 0.8, 0.3 - 0.2im
         S[2, 1], T[4, 2] = 0.4, -0.1 + 0.3im
         Qp, Sp, Tp = map(A -> scatter_spectral(pen_m, A), (Q, S, T))
-        Qpacked, Spacked, Tpacked = map(A -> SHTnsKit.pack_lm(cfg, A), (Q, S, T))
+        Qpacked, Spacked, Tpacked = map(A -> SHTnsKit.pack_lm(eval_cfg, A), (Q, S, T))
         cost = 0.2
 
-        expected = SH_to_lat(cfg, Qpacked, cost; nphi=1)
-        for actual in (SH_to_lat(cfg, Qp, cost; nphi=1),
-                       SHTnsKit.dist_SH_to_lat(cfg, Qp, cost; nphi=1))
+        expected = SH_to_lat(eval_cfg, Qpacked, cost; nphi=1)
+        for actual in (SH_to_lat(eval_cfg, Qp, cost; nphi=1),
+                       SHTnsKit.dist_SH_to_lat(eval_cfg, Qp, cost; nphi=1))
             @test actual isa Vector{Float64}
             @test size(actual) == (1,)
             @test actual ≈ expected
         end
-        expected_qst = SHqst_to_lat(cfg, Qpacked, Spacked, Tpacked, cost; nphi=1)
-        for actual in (SHqst_to_lat(cfg, Qp, Sp, Tp, cost; nphi=1),
-                       SHTnsKit.dist_SHqst_to_lat(cfg, Qp, Sp, Tp, cost; nphi=1))
+        expected_qst = SHqst_to_lat(eval_cfg, Qpacked, Spacked, Tpacked, cost; nphi=1)
+        for actual in (SHqst_to_lat(eval_cfg, Qp, Sp, Tp, cost; nphi=1),
+                       SHTnsKit.dist_SHqst_to_lat(eval_cfg, Qp, Sp, Tp, cost; nphi=1))
             for k in 1:3
                 @test actual[k] isa Vector{Float64}
                 @test size(actual[k]) == (1,)
                 @test actual[k] ≈ expected_qst[k]
             end
         end
-        @test synthesis_point(cfg, Qp, cost, 0.0) ≈ only(expected)
-        actual_point = SHqst_to_point(cfg, Qp, Sp, Tp, cost, 0.0)
+        @test synthesis_point(eval_cfg, Qp, cost, 0.0) ≈ only(expected)
+        actual_point = SHqst_to_point(eval_cfg, Qp, Sp, Tp, cost, 0.0)
         @test all(isapprox.(actual_point, only.(expected_qst)))
 
         C = zeros(ComplexF64, SHTnsKit.nlm_cplx_calc(lmax, mmax, 1))
@@ -63,12 +65,13 @@ end
         C[SHTnsKit.LM_cplx_index(lmax, mmax, 3, -2) + 1] = 0.3 - 0.2im
         Cpen = Pencil((length(C), 1), (1,), comm)
         Cp = scatter_spectral(Cpen, reshape(C, :, 1))
-        actual_complex = SH_to_lat_cplx(cfg, Cp, cost; nphi=1)
-        expected_complex = SH_to_lat_cplx(cfg, C, cost; nphi=1)
+        actual_complex = SH_to_lat_cplx(eval_cfg, Cp, cost; nphi=1)
+        expected_complex = SH_to_lat_cplx(eval_cfg, C, cost; nphi=1)
         @test actual_complex isa Vector{ComplexF64}
         @test size(actual_complex) == (1,)
         @test actual_complex ≈ expected_complex
-        @test synthesis_point_cplx(cfg, Cp, cost, 0.0) ≈ only(expected_complex)
+        @test synthesis_point_cplx(eval_cfg, Cp, cost, 0.0) ≈ only(expected_complex)
+        @test SH_to_lat_cplx(eval_cfg, Cp, cost) ≈ SH_to_lat_cplx(eval_cfg, C, cost)
     end
 
     @testset "axisymmetric default latitude output remains a vector" begin
@@ -226,19 +229,23 @@ end
         end
     end
 
-    @testset "complex latitude evaluation is one-sided complex synthesis" begin
+    @testset "one-sided complex latitude synthesis ($phi_scale)" for phi_scale in (:dft, :quad)
+        eval_cfg = deepcopy(cfg)
+        eval_cfg.phi_scale = phi_scale
         A = zeros(ComplexF64, spectral_dims)
         A[5, 3] = 0.7 - 0.4im # (l,m) = (4,2), deliberately non-real
         A_p = scatter_spectral(pen_m, A)
         ilat = 3
 
         got = SHTnsKit.dist_SH_to_lat(
-            cfg, A_p, cfg.x[ilat]; nphi=cfg.nlon, real_output=false)
-        ref = vec(SHTnsKit.synthesis(cfg, A; real_output=false)[ilat, :])
+            eval_cfg, A_p, eval_cfg.x[ilat]; nphi=eval_cfg.nlon, real_output=false)
+        ref = vec(SHTnsKit.synthesis(eval_cfg, A; real_output=false)[ilat, :])
 
         @test eltype(got) <: Complex
         @test isapprox(got, ref; rtol=1e-11, atol=1e-12)
         @test maximum(abs, imag.(got)) > 1e-4
+        @test SHTnsKit.dist_SH_to_lat(
+            eval_cfg, A_p, eval_cfg.x[ilat]; nphi=1, real_output=false) ≈ ref[1:1]
     end
 
     @testset "configured global spectral dimensions are enforced" begin

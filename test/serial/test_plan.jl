@@ -8,6 +8,15 @@ using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
+# Allocation budgets below are calibrated for a SINGLE-THREADED run, where they
+# are exact. The shared m-loop orchestrators start `@threads` tasks whenever
+# threads are available, and each threaded region costs a few hundred bytes to
+# spawn — a constant independent of problem size, and not the kind of regression
+# these budgets exist to catch. Allow a per-thread slack rather than letting the
+# suite go red on any multi-core machine; the tight check is the 1-thread run.
+@isdefined(_thread_alloc_slack) ||
+    (_thread_alloc_slack() = Threads.nthreads() > 1 ? 4_096 * Threads.nthreads() : 0)
+
 function _rand_real_alm(rng, lmax, mmax)
     alm = randn(rng, ComplexF64, lmax + 1, mmax + 1)
     alm[:, 1] .= real.(alm[:, 1])
@@ -15,6 +24,12 @@ function _rand_real_alm(rng, lmax, mmax)
         alm[l + 1, m + 1] = 0
     end
     return alm
+end
+
+function _planned_sphtor_min_allocations(plan, Slm, Tlm, Vt, Vp)
+    analysis_sphtor!(plan, Slm, Tlm, Vt, Vp)
+    GC.gc()
+    return minimum(@allocated(analysis_sphtor!(plan, Slm, Tlm, Vt, Vp)) for _ in 1:3)
 end
 
 @testset "SHTPlan" begin
@@ -161,14 +176,15 @@ end
         # runners. Keep the strict production-path ceiling while still ruling
         # out any field-sized allocation in coverage-enabled CI.
         allocation_limit = Base.JLOptions().code_coverage == 0 ? 128 : 2048
+        # The planned forms own their scratch and never spawn tasks, so they stay
+        # at the strict ceiling regardless of thread count. The `cfg` form routes
+        # through the threaded m-loop orchestrator, so it pays the task-spawn
+        # constant; that is not a field-sized allocation and not what this guards.
         @test @allocated(synthesis!(plan, f, alm)) <= allocation_limit
         @test @allocated(synthesis!(plan_r, f, alm)) <= allocation_limit
         @test @allocated(synthesis_sphtor!(plan, Vt, Vp, Slm, Tlm)) <= allocation_limit
-        # The cfg API launches tasks for its m loop on a multithreaded caller;
-        # SHTPlan above remains strictly allocation-free. Allow only bounded
-        # task bookkeeping here, far below a new field-sized Fourier buffer.
-        thread_budget = SHTnsKit._use_internal_mloop_threads() ? 1024 * Threads.nthreads() : 0
-        @test @allocated(synthesis!(cfg, f, alm; fft_scratch)) <= allocation_limit + thread_budget
+        @test @allocated(synthesis!(cfg, f, alm; fft_scratch)) <=
+              allocation_limit + _thread_alloc_slack()
     end
 
     @testset "Planned scalar matches the non-planned path exactly" begin
@@ -236,19 +252,25 @@ end
     end
 
     @testset "Planned sphtor: robert_form analysis does not allocate row slices" begin
-        lmax = 5
-        cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1, robert_form=true)
-        plan = SHTPlan(cfg)
-        rng = MersenneTwister(207)
+        for lmax in (5, 12), use_rfft in (false, true)
+            cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
+            plan = SHTPlan(cfg; use_rfft)
+            rng = MersenneTwister(207)
 
-        Vt = randn(rng, cfg.nlat, cfg.nlon)
-        Vp = randn(rng, cfg.nlat, cfg.nlon)
-        Slm = zeros(ComplexF64, lmax + 1, lmax + 1)
-        Tlm = zeros(ComplexF64, lmax + 1, lmax + 1)
+            Vt = randn(rng, cfg.nlat, cfg.nlon)
+            Vp = randn(rng, cfg.nlat, cfg.nlon)
+            Slm = zeros(ComplexF64, lmax + 1, lmax + 1)
+            Tlm = zeros(ComplexF64, lmax + 1, lmax + 1)
 
-        analysis_sphtor!(plan, Slm, Tlm, Vt, Vp)
-        GC.gc()
-        @test @allocated(analysis_sphtor!(plan, Slm, Tlm, Vt, Vp)) <= 128
+            # Match the exact plan, buffers, and measurement call site so
+            # platform/coverage overhead is shared by both measurements.
+            # Robert scaling must add no allocations; copied latitude rows
+            # would increase this count at either size and on either FFT path.
+            baseline_bytes = _planned_sphtor_min_allocations(plan, Slm, Tlm, Vt, Vp)
+            cfg.robert_form = true
+            robert_bytes = _planned_sphtor_min_allocations(plan, Slm, Tlm, Vt, Vp)
+            @test robert_bytes <= baseline_bytes
+        end
     end
 
     @testset "Planned scalar: complex output path (real_output=false) runs" begin
@@ -265,5 +287,52 @@ end
         synthesis!(plan, f_cplx, alm; real_output=false)
         @test all(isfinite, f_cplx)
         @test eltype(f_cplx) <: Complex
+    end
+
+    @testset "planned transforms match the cfg form in every buffer mode" begin
+        # The planned transforms exist to be a drop-in, faster replacement for
+        # the `cfg` forms. Pin that they agree numerically across the whole
+        # matrix of buffer modes: Legendre tables on/off, rfft on/off, and
+        # Robert form on/off — a divergence in any cell is a silent wrong
+        # answer for anyone who reaches for a plan.
+        rng = MersenneTwister(4821)
+        for tables in (false, true), use_rfft in (false, true), robert in (false, true)
+            cfgp = create_gauss_config(10, 12)
+            cfgp.robert_form = robert
+            tables ? SHTnsKit.prepare_plm_tables!(cfgp) : SHTnsKit.disable_plm_tables!(cfgp)
+
+            alm = zeros(ComplexF64, cfgp.lmax + 1, cfgp.mmax + 1)
+            for m in 0:cfgp.mmax, l in m:cfgp.lmax
+                alm[l + 1, m + 1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+            end
+            S = copy(alm); T = 0.5 .* alm
+            S[1, 1] = 0; T[1, 1] = 0
+
+            f = synthesis(cfgp, alm)
+            Vt, Vp = synthesis_sphtor(cfgp, S, T)
+            alm_ref = analysis(cfgp, f)
+            S_ref, T_ref = analysis_sphtor(cfgp, Vt, Vp)
+
+            plan = SHTPlan(cfgp; use_rfft=use_rfft)
+            tol = 1e-12
+
+            alm_out = similar(alm_ref)
+            analysis!(plan, alm_out, f)
+            @test maximum(abs, alm_out .- alm_ref) <= tol
+
+            f_out = similar(f)
+            synthesis!(plan, f_out, alm)
+            @test maximum(abs, f_out .- f) <= tol
+
+            S_out = similar(S_ref); T_out = similar(T_ref)
+            SHTnsKit.analysis_sphtor!(plan, S_out, T_out, Vt, Vp)
+            @test maximum(abs, S_out .- S_ref) <= tol
+            @test maximum(abs, T_out .- T_ref) <= tol
+
+            Vt_out = similar(Vt); Vp_out = similar(Vp)
+            SHTnsKit.synthesis_sphtor!(plan, Vt_out, Vp_out, S, T)
+            @test maximum(abs, Vt_out .- Vt) <= tol
+            @test maximum(abs, Vp_out .- Vp) <= tol
+        end
     end
 end

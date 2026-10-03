@@ -283,4 +283,17 @@ using SHTnsKit
             @test energy_vector(cfg, Slm, Tlm) >= 0
         end
     end
+
+    @testset "spectral energy rejects a mis-sized spectrum" begin
+        # The accumulation loops are `@inbounds`; a too-small matrix used to
+        # return a silently wrong number instead of raising.
+        cfg = create_gauss_config(6, 8)
+        small = zeros(ComplexF64, 2, 2)
+        ok = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+        @test_throws DimensionMismatch energy_scalar(cfg, small)
+        @test_throws DimensionMismatch energy_vector(cfg, small, ok)
+        @test_throws DimensionMismatch energy_vector(cfg, ok, small)
+        @test energy_scalar(cfg, ok) == 0.0
+    end
+
 end

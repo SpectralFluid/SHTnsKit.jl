@@ -58,6 +58,8 @@ function SHTnsKit.dist_SH_to_lat(cfg::SHTnsKit.SHTConfig, Alm_pencil::PencilArra
             values[j] += mode * cis(RT(2pi * m * (j - 1) / count))
         end
     end
+    sphi_scale = SHTnsKit._evaluator_phi_scale(cfg, CT)
+    sphi_scale == 1 || (values .*= sphi_scale)
     MPI.Allreduce!(values, +, comm)
     return values
 end
@@ -80,6 +82,8 @@ end
 
 `Q_p`/`S_p`/`T_p` use the coefficient convention configured by `cfg` (see
 [`dist_SH_to_lat`](@ref)).
+When `cfg.robert_form` is enabled, the tangential components include the
+`sin(θ)` factor used by full-grid vector synthesis; the radial component is unchanged.
 """
 function SHTnsKit.dist_SHqst_to_point(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S_p::PencilArray, T_p::PencilArray, cost::Real, phi::Real)
     return SHTnsKit.SHqst_to_point(cfg, Q_p, S_p, T_p, cost, phi)
@@ -91,6 +95,8 @@ end
 
 `Q_p`/`S_p`/`T_p` use the coefficient convention configured by `cfg` (see
 [`dist_SH_to_lat`](@ref)).
+When `cfg.robert_form` is enabled, the tangential components include the
+`sin(θ)` factor used by full-grid vector synthesis; the radial component is unchanged.
 """
 function SHTnsKit.dist_SHqst_to_lat(cfg::SHTnsKit.SHTConfig, Q_p::PencilArray, S_p::PencilArray, T_p::PencilArray, cost::Real;
                                     nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax)
@@ -314,6 +320,12 @@ function _pencil_local_qst(cfg, Q::PencilArray, S::PencilArray,
         Vt .*= sinth
         Vp .*= sinth
     end
+    # Same φ convention factor the serial evaluators apply (1 under :dft;
+    # 1/2π under :quad), so a PencilArray input agrees with the dense one.
+    sphi_scale = RT(SHTnsKit._evaluator_phi_scale(cfg))
+    if sphi_scale != 1
+        Vr .*= sphi_scale; Vt .*= sphi_scale; Vp .*= sphi_scale
+    end
     combined = vcat(Vr, Vt, Vp)
     _record_local_payload!(length(combined))
     MPI.Allreduce!(combined, +, comm)
@@ -420,6 +432,8 @@ function _pencil_local_complex(cfg, coefficients::PencilArray,
             output[j] += radial * cis(RT(m) * angle)
         end
     end
+    sphi_scale = SHTnsKit._evaluator_phi_scale(cfg, CT)
+    sphi_scale == 1 || (output .*= sphi_scale)
     _record_local_payload!(length(output))
     MPI.Allreduce!(output, +, comm)
     return point_output ? output[1] : output
@@ -1139,7 +1153,7 @@ function _analysis_mode_pencil(cfg::SHTnsKit.SHTConfig, im::Int,
     RT = typeof(real(zero(CT)))
     P = Vector{Float64}(undef, ltr + 1)
     rank = MPI.Comm_rank(comm)
-    phi_scale = axisymmetric ? cfg.cphi * cfg.nlon : cfg.cphi
+    phi_scale = axisymmetric ? SHTnsKit._analysis_phi_scale(cfg) * cfg.nlon : SHTnsKit._analysis_phi_scale(cfg)
     for root in 0:(MPI.Comm_size(comm) - 1)
         send = zeros(CT, counts[root + 1])
         @inbounds for (i, θindex) in pairs(θglobals)

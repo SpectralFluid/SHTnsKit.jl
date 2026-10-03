@@ -1,7 +1,7 @@
 # Package Architecture
 
 SHTnsKit.jl is a pure-Julia spherical harmonic transform library structured as
-a core module with ten conditional extensions. This page maps every source file
+a core module with ten conditional extensions. This page maps the main source files
 to its role so contributors and power users can navigate the codebase quickly.
 
 ## Directory layout
@@ -53,7 +53,7 @@ Every file is included from `SHTnsKit.jl` in dependency order.
 | `complex_packed.jl` | Complex-packed coefficient storage and indexing |
 | `loop.jl` | Unified CPU/GPU loop abstraction (`@sht_loop`, `@sht_inside`) |
 | `device_utils.jl` | Device queries (`get_device`, `to_device`, `on_device`) |
-| `prettyprinting.jl` | Compact `show` methods for `SHTConfig` and `SHTPlan` |
+| `prettyprinting.jl` | Compact `show` methods for `SHTConfig`, `SHTPlan`, and `SHTRotation` |
 
 ### Operators and diagnostics
 
@@ -69,7 +69,7 @@ Every file is included from `SHTnsKit.jl` in dependency order.
 
 | File | Role |
 |:---|:---|
-| `local.jl` | Thread-local workspace helpers |
+| `local.jl` | Point and latitude-circle evaluation of real and complex fields |
 | `parallel_dense.jl` | Parallel dense matrix operations for CPU multi-threading |
 
 ## Extension system (`ext/`)
@@ -105,7 +105,7 @@ The parallel extension is split across several files for maintainability:
 | `ParallelRotationsPencil.jl` | Distributed rotation operations on PencilArrays |
 | `ParallelOpsPencil.jl` | Distributed Laplacian, divergence, vorticity |
 | `ParallelDiagnostics.jl` | Distributed energy and spectrum computation |
-| `ParallelLocal.jl` | Rank-local helpers |
+| `ParallelLocal.jl` | Distributed point and latitude-circle evaluation |
 | `ParallelDispatch.jl` | Dispatch logic for distributed paths |
 
 GPU extensions share common device code through `GPUCommon.jl` and a vendor

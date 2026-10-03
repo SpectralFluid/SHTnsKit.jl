@@ -66,7 +66,7 @@ function ParallelExt._dist_transpose_gpu_analysis!(
             AMDGPU.ROCBackend(),
         )
         kernel!(parent(output), parent(plan.F_buf), tables.Plm, tables.weights,
-                tables.scales, RT(plan.cfg.cphi), _first_m(plan), plan.lmax,
+                tables.scales, RT(SHTnsKit._analysis_phi_scale(plan.cfg)), _first_m(plan), plan.lmax,
                 plan.mmax, plan.cfg.mres, plan.lmax;
                 ndrange=size(parent(output)))
         AMDGPU.synchronize()
@@ -111,7 +111,7 @@ function ParallelExt._dist_transpose_gpu_vector_analysis!(
         )
         kernel!(parent(Sout), parent(Tout), parent(plan.F_buf),
                 parent(plan.F_buf2), tables.dtheta, tables.over_sin,
-                tables.weights, tables.scales, tables.x, RT(plan.cfg.cphi),
+                tables.weights, tables.scales, tables.x, RT(SHTnsKit._analysis_phi_scale(plan.cfg)),
                 _first_m(plan), plan.lmax, plan.mmax, plan.cfg.mres,
                 plan.cfg.robert_form;
                 ndrange=size(parent(Sout)))

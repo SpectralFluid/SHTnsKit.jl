@@ -87,9 +87,76 @@ const _FFT_BACKEND_DFT = 2
 # planning allocation cost without changing the public `SHTPlan` contract.
 # Strides are part of the key because views with the same shape may need
 # different FFTW plans.
+#
+# This is THE φ-FFT plan cache for the whole package: the serial transforms, the
+# batch helpers and the distributed extension's per-rank FFTs all route through
+# `fft_phi!`/`rfft_phi!`/`ifft_phi!`/`irfft_phi!` and therefore through here. The
+# public `enable_fft_plan_cache!` / `disable_fft_plan_cache!` / `set_fft_plan_cache!`
+# / `fft_plan_cache_enabled` knobs control THIS cache.
 const _LOCAL_FFT_PLAN_CACHE =
     Dict{Tuple{Symbol,DataType,NTuple{2,Int},NTuple{2,Int},Int}, Any}()
 const _LOCAL_FFT_PLAN_CACHE_LOCK = ReentrantLock()
+
+# `SHTNSKIT_CACHE_PENCILFFTS` is the legacy spelling kept for scripts that already
+# set it; `SHTNSKIT_FFT_PLAN_CACHE` is the current name.
+const _FFT_PLAN_CACHE_ENABLED =
+    Ref(get(ENV, "SHTNSKIT_FFT_PLAN_CACHE",
+            get(ENV, "SHTNSKIT_CACHE_PENCILFFTS", "1")) != "0")
+
+# Soft cap on distinct cached plans. Transform sizes are few and stable in
+# practice, but a long-lived process that sweeps many grid shapes would otherwise
+# grow this dictionary without bound. Flush wholesale when the cap is reached.
+const _FFT_PLAN_CACHE_MAX =
+    Ref(parse(Int, get(ENV, "SHTNSKIT_FFT_PLAN_CACHE_MAX", "64")))
+
+"""
+    fft_plan_cache_enabled() -> Bool
+
+Whether φ-FFT plans are cached and reused across calls.
+"""
+fft_plan_cache_enabled() = _FFT_PLAN_CACHE_ENABLED[]
+
+"""
+    set_fft_plan_cache!(flag::Bool; clear::Bool=true) -> Bool
+
+Enable or disable φ-FFT plan caching. When disabling with `clear=true` (the
+default) the existing entries are dropped as well. Returns `flag`.
+"""
+function set_fft_plan_cache!(flag::Bool; clear::Bool=true)
+    _FFT_PLAN_CACHE_ENABLED[] = flag
+    if !flag && clear
+        lock(_LOCAL_FFT_PLAN_CACHE_LOCK) do
+            empty!(_LOCAL_FFT_PLAN_CACHE)
+        end
+    end
+    return flag
+end
+
+"""
+    enable_fft_plan_cache!() -> Bool
+
+Convenience wrapper for `set_fft_plan_cache!(true)`.
+"""
+enable_fft_plan_cache!() = set_fft_plan_cache!(true)
+
+"""
+    disable_fft_plan_cache!(; clear::Bool=true) -> Bool
+
+Convenience wrapper for `set_fft_plan_cache!(false; clear)`.
+"""
+disable_fft_plan_cache!(; clear::Bool=true) = set_fft_plan_cache!(false; clear=clear)
+
+"""
+    SHTnsKit.fft_plan_cache_max!(n::Int) -> Int
+
+Set the maximum number of cached φ-FFT plans; `n <= 0` removes the cap.
+Returns the previous value.
+"""
+function fft_plan_cache_max!(n::Int)
+    prev = _FFT_PLAN_CACHE_MAX[]
+    _FFT_PLAN_CACHE_MAX[] = n
+    return prev
+end
 
 function fft_phi_backend()
     v = _FFT_BACKEND[]
@@ -102,32 +169,43 @@ end
     return (kind, eltype(A), (size(A, 1), size(A, 2)), (stride(A, 1), stride(A, 2)), nlon)
 end
 
+"""Build one FFTW plan for `A`; see `_cached_local_fft_plan` for the flag rationale."""
+function _build_local_fft_plan(kind::Symbol, A::AbstractMatrix, nlon::Int)
+    # UNALIGNED is required, not an optimization choice. The cache key
+    # covers eltype/size/strides but NOT the base pointer's alignment, so
+    # a plan built for one array gets reused for another that FFTW may
+    # consider differently aligned. Without UNALIGNED that reuse throws
+    # `ArgumentError`, which the callers catch and answer by falling back
+    # to the pure-Julia O(nlat·nlon²) DFT — an order-of-magnitude
+    # slowdown with no error surfaced. Forfeiting the aligned SIMD
+    # codelets is much cheaper than forfeiting the FFT. The batch helpers
+    # in batch_transforms.jl pass the same flag for the same reason.
+    flags = FFTW.ESTIMATE | FFTW.UNALIGNED
+    return if kind === :fft
+        plan_fft!(A, 2; flags)
+    elseif kind === :ifft
+        plan_ifft!(A, 2; flags)
+    elseif kind === :rfft
+        plan_rfft(A, 2; flags)
+    elseif kind === :irfft
+        plan_irfft(A, nlon, 2; flags)
+    else
+        throw(ArgumentError("unknown FFT plan kind: $kind"))
+    end
+end
+
 function _cached_local_fft_plan(kind::Symbol, A::AbstractMatrix, nlon::Int=0)
+    _FFT_PLAN_CACHE_ENABLED[] || return _build_local_fft_plan(kind, A, nlon)
     key = _local_fft_plan_key(kind, A, nlon)
     lock(_LOCAL_FFT_PLAN_CACHE_LOCK)
     try
         plan = get(_LOCAL_FFT_PLAN_CACHE, key, nothing)
         if plan === nothing
-            # UNALIGNED is required, not an optimization choice. The cache key
-            # covers eltype/size/strides but NOT the base pointer's alignment, so
-            # a plan built for one array gets reused for another that FFTW may
-            # consider differently aligned. Without UNALIGNED that reuse throws
-            # `ArgumentError`, which the callers catch and answer by falling back
-            # to the pure-Julia O(nlat·nlon²) DFT — an order-of-magnitude
-            # slowdown with no error surfaced. Forfeiting the aligned SIMD
-            # codelets is much cheaper than forfeiting the FFT. The batch helpers
-            # in batch_transforms.jl pass the same flag for the same reason.
-            flags = FFTW.ESTIMATE | FFTW.UNALIGNED
-            plan = if kind === :fft
-                plan_fft!(A, 2; flags)
-            elseif kind === :ifft
-                plan_ifft!(A, 2; flags)
-            elseif kind === :rfft
-                plan_rfft(A, 2; flags)
-            elseif kind === :irfft
-                plan_irfft(A, nlon, 2; flags)
-            else
-                throw(ArgumentError("unknown FFT plan kind: $kind"))
+            plan = _build_local_fft_plan(kind, A, nlon)
+            # Enforce the soft cap: flush before inserting so the fresh entry survives.
+            cap = _FFT_PLAN_CACHE_MAX[]
+            if cap > 0 && length(_LOCAL_FFT_PLAN_CACHE) >= cap
+                empty!(_LOCAL_FFT_PLAN_CACHE)
             end
             _LOCAL_FFT_PLAN_CACHE[key] = plan
         end
