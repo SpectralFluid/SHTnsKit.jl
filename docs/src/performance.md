@@ -79,3 +79,75 @@ construct plans outside the timed region.
 
 Measure end-to-end throughput after every change. A faster transform that adds
 extra conversions, transfers, or gathers may make the application slower.
+
+## Low-allocation serial recipe
+
+Preallocate FFT scratch and output buffers to avoid per-call allocations:
+
+```@example performance-lowalloc
+using SHTnsKit
+
+cfg = create_gauss_config(32, 34; nlon=129)
+fft_scratch = scratch_fft(cfg)
+alm = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+f = randn(cfg.nlat, cfg.nlon)
+
+analysis!(cfg, alm, f; fft_scratch=fft_scratch)
+f_out = scratch_spatial(cfg)
+synthesis!(cfg, f_out, alm; fft_scratch=fft_scratch)
+nothing
+```
+
+## Low-allocation distributed recipe
+
+Reuse distributed plans with in-plan scratch:
+
+```julia
+aplan = DistAnalysisPlan(cfg, proto; use_rfft=true)
+vplan = DistSphtorPlan(cfg, proto; use_rfft=true, with_spatial_scratch=true)
+splan = DistPlan(cfg, proto; use_rfft=true)
+
+dist_analysis!(aplan, Alm, fθφ)
+dist_synthesis_sphtor!(vplan, Vt, Vp, S, T; real_output=true)
+dist_synthesis!(splan, fθφ, Alm; real_output=true)
+```
+
+`use_rfft` trims the spectral grid for real fields. `with_spatial_scratch`
+keeps a single complex `(θ, φ)` buffer inside vector/QST plans so real outputs
+avoid per-call iFFT allocations.
+
+## Precomputed Legendre tables
+
+On fixed grids, precompute associated Legendre values for faster transforms:
+
+```julia
+enable_plm_tables!(cfg)
+```
+
+Tables trade memory for speed and produce identical results to on-the-fly
+recurrence. Use `disable_plm_tables!(cfg)` to free the memory.
+
+## Longitude FFT scaling
+
+The default `phi_scale` is `:dft`. The environment variable
+`SHTNSKIT_PHI_SCALE=dft|quad` is a low-level override. Use one setting
+consistently across every transform in an application.
+
+## LoopVectorization
+
+When `LoopVectorization` is loaded, `analysis_turbo` and `synthesis_turbo`
+accelerate inner Legendre loops with SIMD:
+
+```julia
+using LoopVectorization, SHTnsKit
+
+cfg = create_gauss_config(64, 66)
+field = rand(cfg.nlat, cfg.nlon)
+alm = analysis_turbo(cfg, field)
+```
+
+## Threading
+
+Start Julia with the desired thread count and tune FFTW separately with
+`FFTW.set_num_threads`. Avoid oversubscribing cores with Julia tasks, FFTW
+threads, and MPI ranks simultaneously.

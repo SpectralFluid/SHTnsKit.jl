@@ -77,6 +77,3 @@ a transform. In particular:
 - Pole-inclusive grids require at least two latitude points.
 - Y rotations reject `mres > 1`, because a Y rotation mixes azimuthal orders
   that an `mres`-strided layout cannot represent.
-
-See the repository [changelog](https://github.com/subhk/SHTnsKit.jl/blob/main/CHANGELOG.md)
-for the complete release history.

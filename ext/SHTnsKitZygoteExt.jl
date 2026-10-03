@@ -286,6 +286,9 @@ Zygote.@adjoint function SHTnsKit.SH_Zrotate(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
 end
 
 Zygote.@adjoint function SHTnsKit.SH_Yrotate(cfg::SHTnsKit.SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real, Rlm::AbstractVector{<:Complex})
+    # Preserve the primal coefficients for the angle derivative even when
+    # input/output overlap or the caller reuses either buffer afterward.
+    Qlm_canonical = copy(SHTnsKit._internal_coefficients(Qlm, cfg))
     y = SHTnsKit.SH_Yrotate(cfg, Qlm, alpha, Rlm)
     function back(ȳ)
         inverse = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
@@ -295,7 +298,6 @@ Zygote.@adjoint function SHTnsKit.SH_Yrotate(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
         # angle gradient via derivative of Wigner-d at beta=alpha
         dα = zero(float(alpha))
         lmax, mmax = cfg.lmax, cfg.mmax
-        Qlm_canonical = SHTnsKit._internal_coefficients(Qlm, cfg)
         ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
         for l in 0:lmax
             mm = min(l, mmax)

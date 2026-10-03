@@ -28,13 +28,18 @@ and numerical changes.
 | CUDA | `CUDA`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
 | AMDGPU | `AMDGPU`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
 | MPI | `MPI`, `PencilArrays`, `PencilFFTs` |
+| MPI + CUDA | `MPI`, `PencilArrays`, `PencilFFTs`, `CUDA`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
+| MPI + AMDGPU | `MPI`, `PencilArrays`, `PencilFFTs`, `AMDGPU`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
+| MPI + AD | `ChainRulesCore`, `MPI`, `PencilArrays`, `PencilFFTs` |
 | LoopVectorization | `LoopVectorization` |
 | ForwardDiff | `ForwardDiff` |
 | Zygote | `Zygote` |
 | Advanced AD | `ChainRulesCore` |
 
 Hardware-specific types such as the CUDA extension's `CuFFTPlan` live in their
-extension module and are documented in [GPU Acceleration](../gpu.md).
+extension module and are documented in [GPU Acceleration](../gpu.md). See
+[Package Architecture](../architecture.md) for the full extension map and
+shared helper files.
 
 ## Public API
 

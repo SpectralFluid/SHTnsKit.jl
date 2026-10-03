@@ -126,7 +126,6 @@ using Base.Threads  # For multi-threading support
 phi_inv_scale(nlon::Integer) = (get(ENV, "SHTNSKIT_PHI_SCALE", "dft") == "quad" ? nlon/(2π) : Float64(nlon))
 
 # Include all module source files
-include("shtns37_contract.jl")               # Executable SHTns 3.7 parity inventory
 include("devices.jl")                        # Typed CPU()/GPU() device markers
 include("loop.jl")                           # Unified CPU/GPU loop abstraction
 include("fftutils.jl")                      # FFT utility functions and helpers
@@ -170,10 +169,7 @@ include("vorticity_diagnostics.jl")           # Vorticity and enstrophy calculat
 include("batch_transforms.jl")                # Batch (multi-field) transforms
 include("parallel_dense.jl")                  # Parallel dense matrix operations
 include("device_utils.jl")                    # GPU device utilities and management
-
-# ===== SHTNS 3.7 CAPABILITY CONTRACT =====
-export SHTns37Capability, SHTNS37_BACKENDS, SHTNS37_CAPABILITIES
-export shtns37_capabilities
+include("prettyprinting.jl")                  # Pretty-printing of public types
 
 # ===== CORE CONFIGURATION AND SETUP =====
 export SHTConfig, create_gauss_config, create_regular_config, create_config, destroy_config  # Configuration management

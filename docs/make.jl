@@ -13,6 +13,7 @@ format = Documenter.HTML(
     canonical = "https://subhk.github.io/SHTnsKit.jl/stable",
     assets = [
         "assets/custom.css",
+        "assets/extra.js",
     ],
     analytics = "",
     collapselevel = 2,
@@ -40,6 +41,7 @@ pages = Any[
     ],
     "Reference" => Any[
         "Normalization and Phase" => "norms.md",
+        "Package Architecture" => "architecture.md",
         "API Reference" => "api/index.md",
         "Migrating to v2.0" => "migration.md"
     ]

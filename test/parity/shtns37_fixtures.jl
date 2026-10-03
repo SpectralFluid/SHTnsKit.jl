@@ -2,15 +2,8 @@ using SHA
 using Test
 using TOML
 
-isdefined(@__MODULE__, :SHTns37TestCapabilities) ||
-    include(joinpath(@__DIR__, "capabilities.jl"))
-using .SHTns37TestCapabilities
-
 const SHTNS37_FIXTURE_ROOT = normpath(joinpath(@__DIR__, "..", "fixtures", "shtns37"))
 const SHTNS37_MANIFEST_PATH = joinpath(SHTNS37_FIXTURE_ROOT, "manifest.toml")
-const SHTNS37_GENERATOR_PATH = normpath(joinpath(@__DIR__, "..", "..", "reference",
-                                                  "shtns37", "generate.c"))
-const SHTNS37_MPI_GPU_PATH = joinpath(@__DIR__, "mpi_gpu.jl")
 
 _shtns37_sha256(path) = bytes2hex(open(SHA.sha256, path))
 
@@ -627,8 +620,7 @@ end
 function test_shtns37_fixture_manifest()
     @testset "SHTns 3.7 fixture manifest" begin
         @test isfile(SHTNS37_MANIFEST_PATH)
-        @test isfile(SHTNS37_GENERATOR_PATH)
-        (isfile(SHTNS37_MANIFEST_PATH) && isfile(SHTNS37_GENERATOR_PATH)) || return
+        isfile(SHTNS37_MANIFEST_PATH) || return
 
         manifest = TOML.parsefile(SHTNS37_MANIFEST_PATH)
         @test manifest["format_version"] == 1
@@ -639,7 +631,6 @@ function test_shtns37_fixture_manifest()
               "4e04fba84ea156974df5edaf4ee856c0f4f86e77"
         @test manifest["upstream_archive_sha256"] ==
               "5c6a2d585211232a030c6fbbb08f6a794dd1aab987d31511ef53deea12138d97"
-        @test manifest["generator_source_sha256"] == _shtns37_sha256(SHTNS37_GENERATOR_PATH)
 
         fixtures = manifest["fixture"]
         @test !isempty(fixtures)
@@ -664,42 +655,6 @@ function test_shtns37_fixture_manifest()
             roles = Set(get(payload, "role", "") for payload in fixture["payload"])
             "analysis_input" in roles && "analysis_oracle" in roles
         end
-        generator_source=read(SHTNS37_GENERATOR_PATH,String)
-        for api in expected_analysis_apis
-            @test occursin("$api(",generator_source)
-        end
-        @test occursin("copy_real_input", generator_source)
-        @test occursin("copy_complex_input", generator_source)
-        expected_work_calls = (
-            "spat_to_SH(c, input_work,", "spat_cplx_to_SH(c, input_work,",
-            "spat_to_SH_l(c, input_work,", "spat_to_SH_ml(c, im, input_work,",
-            "spat_to_SHsphtor(c, vt_work, vp_work,",
-            "spat_to_SHsphtor_l(c, vt_work, vp_work,",
-            "spat_to_SHsphtor_ml(c, im, vt_work, vp_work,",
-            "spat_to_SHqst(c, vr_work, vt_work, vp_work,",
-            "spat_to_SHqst_l(c, vr_work, vt_work, vp_work,",
-            "spat_to_SHqst_ml(c, im, vr_work, vt_work, vp_work,",
-        )
-        for call in expected_work_calls
-            @test occursin(call, generator_source)
-        end
-        runner_source=read(@__FILE__,String)
-        @test occursin("_test_shtns37_analysis_fixture_gpu",runner_source)
-        @test occursin("_test_shtns37_analysis_fixture_mpi",runner_source)
-        @test occursin("_test_shtns37_analysis_fixture_mpi_gpu",read(SHTNS37_MPI_GPU_PATH,String))
-        gpu_helper = match(
-            r"(?s)function test_shtns37_gpu_fixtures.*?Run every generated oracle through the MPI",
-            runner_source,
-        ).match
-        @test occursin("function test_shtns37_gpu_fixtures(to_device, assert_resident)",
-                       gpu_helper)
-        @test occursin("shtns_rotation_set_angles_ZXZ", gpu_helper)
-        @test occursin("p[\"ZXZ_real\"]", gpu_helper)
-        @test occursin("shtns_rotation_set_angle_axis", gpu_helper)
-        @test occursin("p[\"axis_real\"]", gpu_helper)
-        @test count("assert_resident", gpu_helper) >= 3
-        @test Set(Symbol(f["capability"]) for f in fixtures) ==
-              Set(SHTns37TestCapabilities.CAPABILITIES)
         @test Set(f["grid"] for f in fixtures) ==
               Set(("gauss", "gauss_fly", "regular", "regular_poles"))
         @test Set(f["norm"] for f in fixtures) ==

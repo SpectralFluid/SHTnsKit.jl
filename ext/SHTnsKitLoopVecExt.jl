@@ -4,6 +4,33 @@ using LoopVectorization
 using SHTnsKit
 using Base.Threads: @threads
 
+# Guarded @threads helpers: launch an internal threaded region only when it is
+# safe to do so (mirrors SHTnsKit._use_internal_mloop_threads), so the turbo
+# variants compose with an outer @threads loop exactly like the core transforms.
+macro _threads_static(loop)
+    loop isa Expr && loop.head === :for ||
+        throw(ArgumentError("@_threads_static requires a for loop"))
+    return esc(quote
+        if SHTnsKit._use_internal_mloop_threads()
+            Threads.@threads :static $loop
+        else
+            $loop
+        end
+    end)
+end
+
+macro _threads_dynamic(loop)
+    loop isa Expr && loop.head === :for ||
+        throw(ArgumentError("@_threads_dynamic requires a for loop"))
+    return esc(quote
+        if SHTnsKit._use_internal_mloop_threads()
+            Threads.@threads :dynamic $loop
+        else
+            $loop
+        end
+    end)
+end
+
 # Turbo-optimized variants live under the SHTnsKit namespace so users can call
 # SHTnsKit.analysis_turbo, synthesis_turbo, etc., when LoopVectorization is loaded.
 
@@ -32,13 +59,13 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
     xv = cfg.x; wv = cfg.w
     # Adaptive threading: use nested parallelism for better load balancing
     n_threads = Threads.nthreads()
-    if mmax + 1 < n_threads ÷ 2 && nlat > 32
+    if fld(mmax, cfg.mres) + 1 < n_threads ÷ 2 && nlat > 32
         # Few m modes: parallelize over latitude points with thread-local accumulators
         n_tid = Threads.maxthreadid()
         CT = eltype(alm)  # eltype-derived accumulators (this branch uses plain loops, not @tturbo)
         thread_alm = [Vector{CT}(undef, lmax + 1) for _ in 1:n_tid]
         thread_P_bufs = [Vector{Float64}(undef, lmax + 1) for _ in 1:n_tid]  # per-thread Legendre scratch (hoisted out of the latitude loop)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             for t in 1:n_tid
                 fill!(thread_alm[t], zero(CT))
@@ -46,7 +73,7 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
             if cfg.use_plm_tables && length(cfg.NP_tables) == mmax + 1
                 # NP_tables[col][l+1, i] = P̄_l^m already; no extra Nlm multiply
                 tbl = cfg.NP_tables[m + 1]
-                @threads :static for i in 1:nlat   # :static pins iterations → threadid() stable (no buffer race under task migration)
+                @_threads_static for i in 1:nlat
                     tid = Threads.threadid()
                     local_acc = thread_alm[tid]
                     Fi = Fφ[i, col]
@@ -56,7 +83,7 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
                     end
                 end
             else
-                @threads :static for i in 1:nlat   # :static pins iterations → threadid() stable (no buffer race under task migration)
+                @_threads_static for i in 1:nlat
                     tid = Threads.threadid()
                     local_acc = thread_alm[tid]
                     thread_P = thread_P_bufs[tid]
@@ -79,7 +106,7 @@ function SHTnsKit.analysis_turbo(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
         end
     else
         # Standard m-parallel approach with dynamic scheduling
-        @threads :dynamic for m in 0:mmax
+        @_threads_dynamic for m in 0:cfg.mres:mmax
             col = m + 1
             if cfg.use_plm_tables && length(cfg.NP_tables) == mmax + 1
                 # NP_tables[col][l+1, i] = P̄_l^m already; no extra Nlm multiply
@@ -124,7 +151,7 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
 
     alm_int = SHTnsKit._internal_coefficients(alm, cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = eltype(alm_int)
+    CT = complex(float(eltype(alm_int)))
     Fφ = Matrix{CT}(undef, nlat, nlon)
     fill!(Fφ, 0.0 + 0.0im)
 
@@ -135,17 +162,17 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
 
     # Adaptive threading: use nested parallelism for better load balancing
     n_threads = Threads.nthreads()
-    if mmax + 1 < n_threads ÷ 2 && nlat > 32
+    if fld(mmax, cfg.mres) + 1 < n_threads ÷ 2 && nlat > 32
         # Few m modes: parallelize over latitude points instead
         n_tid = Threads.maxthreadid()
         thread_P_bufs = [Vector{Float64}(undef, lmax + 1) for _ in 1:n_tid]  # per-thread Legendre scratch (hoisted out of the latitude loop)
         G = Vector{CT}(undef, nlat)  # shared latitude scratch (few-m branch: outer m-loop is serial)
-        for m in 0:mmax
+        for m in 0:cfg.mres:mmax
             col = m + 1
             if cfg.use_plm_tables && length(cfg.NP_tables) == mmax + 1
                 # NP_tables[col][l+1, i] = P̄_l^m already; no extra Nlm multiply
                 tbl = cfg.NP_tables[m + 1]
-                @threads for i in 1:nlat
+                @_threads_dynamic for i in 1:nlat
                     g_re = 0.0
                     g_im = 0.0
                     @tturbo warn_check_args=false for l in m:lmax
@@ -157,7 +184,7 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
                     G[i] = complex(g_re, g_im)
                 end
             else
-                @threads :static for i in 1:nlat   # :static pins iterations → threadid() stable
+                @_threads_static for i in 1:nlat
                     thread_P = thread_P_bufs[Threads.threadid()]
                     SHTnsKit.Plm_norm_row!(thread_P, xv[i], lmax, m)
                     g_re = 0.0
@@ -186,7 +213,7 @@ function SHTnsKit.synthesis_turbo(cfg::SHTnsKit.SHTConfig, alm::AbstractMatrix; 
         # Per-m latitude scratch as columns of one pre-allocated matrix (each m owns
         # a distinct column → race-free, no per-iteration allocation).
         Gcols = Matrix{CT}(undef, nlat, mmax + 1)
-        @threads :dynamic for m in 0:mmax
+        @_threads_dynamic for m in 0:cfg.mres:mmax
             col = m + 1
             thread_G = view(Gcols, :, col)
             if cfg.use_plm_tables && length(cfg.NP_tables) == mmax + 1
@@ -244,8 +271,12 @@ function SHTnsKit.turbo_apply_laplacian!(cfg::SHTnsKit.SHTConfig, alm::AbstractM
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
-    @threads for m in 0:mmax
+    @_threads_dynamic for m in 0:mmax
         col = m + 1
+        if m % cfg.mres != 0
+            fill!(view(alm, :, col), zero(eltype(alm)))
+            continue
+        end
         @tturbo warn_check_args=false for l in m:lmax
             alm[l + 1, col] *= -(l * (l + 1))
         end

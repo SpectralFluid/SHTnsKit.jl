@@ -185,7 +185,9 @@ function _synthesis_sphtor(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMat
     # Both coefficient fields participate symmetrically in the transform.
     # Choosing storage from only `Slm` silently narrowed `Tlm` when callers
     # supplied different (but promotable) precisions.
-    CT = promote_type(eltype(Slm_int), eltype(Tlm_int))
+    # Azimuthal derivatives introduce imaginary Fourier coefficients even
+    # when both supplied spectra contain only real values.
+    CT = complex(float(promote_type(eltype(Slm_int), eltype(Tlm_int))))
 
     if use_rfft
         # Vector rfft synthesis mirrors scalar synthesis: write only
@@ -239,11 +241,16 @@ end
     analysis_sphtor(cfg, Vt, Vp) -> (Slm, Tlm)
 
 Transform horizontal vector field components to spheroidal/toroidal coefficients.
+
+Robert-form analysis with stored `m=1` modes requires a grid without
+nonzero-weight pole nodes. Use Gauss–Legendre, pole-free regular, or
+Driscoll–Healy grids; pole-inclusive Clenshaw–Curtis grids throw `ArgumentError`.
 """
 function analysis_sphtor(cfg::SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatrix; use_rfft::Bool=false)
     nlat, nlon = cfg.nlat, cfg.nlon
     size(Vt,1) == nlat && size(Vt,2) == nlon || throw(DimensionMismatch("Vt dims"))
     size(Vp,1) == nlat && size(Vp,2) == nlon || throw(DimensionMismatch("Vp dims"))
+    _validate_robert_analysis(cfg)
 
     # Use the in-place, cached-plan FFTs (one buffer each) instead of the old
     # out-of-place `fft_phi(_as_complex(V))` / `rfft_phi(V)` which copied the
@@ -299,6 +306,7 @@ end
 
 function analysis_sphtor(::GPU, cfg::SHTConfig, Vt::AbstractMatrix,
                           Vp::AbstractMatrix; prototype=nothing, kwargs...)
+    _validate_robert_analysis(cfg)
     selection = prototype
     selection === nothing && on_device(Vt) isa GPU && (selection = Vt)
     selection === nothing && on_device(Vp) isa GPU && (selection = Vp)
@@ -389,6 +397,7 @@ AD extension; lives in src so both exts can reuse without circular deps.
 function _adjoint_analysis_sphtor(cfg::SHTConfig, Slm̄::AbstractMatrix, Tlm̄::AbstractMatrix;
                                    θ_globals::AbstractVector{<:Integer}=1:cfg.nlat,
                                    φ_window::Union{Nothing,UnitRange{Int}}=nothing)
+    _validate_robert_analysis(cfg)
     nlon = cfg.nlon
     lmax, mmax = cfg.lmax, cfg.mmax
     nlat_local = length(θ_globals)
@@ -874,7 +883,7 @@ function _synthesis_sphtor_l(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractM
     Tlm_int = _internal_coefficients(Tlm, cfg)
 
     nlat, nlon = cfg.nlat, cfg.nlon
-    CT = promote_type(eltype(Slm_int), eltype(Tlm_int))
+    CT = complex(float(promote_type(eltype(Slm_int), eltype(Tlm_int))))
     Ftheta = zeros(CT, nlat, nlon)
     Fphi = zeros(CT, nlat, nlon)
     _synthesis_sphtor_mloop!(Ftheta, Fphi, cfg, Slm_int, Tlm_int;
@@ -913,6 +922,7 @@ function analysis_sphtor_l(cfg::SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatri
     nlat, nlon = cfg.nlat, cfg.nlon
     size(Vt,1) == nlat && size(Vt,2) == nlon || throw(DimensionMismatch("Vt dims"))
     size(Vp,1) == nlat && size(Vp,2) == nlon || throw(DimensionMismatch("Vp dims"))
+    _validate_robert_analysis(cfg; ltr)
     # In-place cached-plan FFT (one buffer each); avoids the copy + re-plan of
     # the old `fft_phi(_as_complex(V))`. See `analysis_sphtor` for rationale.
     CT = complex(float(promote_type(eltype(Vt), eltype(Vp))))  # AD/Float32-safe; promote both inputs
@@ -1066,6 +1076,7 @@ end
 
 function analysis_sphtor_ml(cfg::SHTConfig, stored_im::Integer, Vt_m::AbstractVector{<:Complex}, Vp_m::AbstractVector{<:Complex}, ltr::Integer)
     mval, ltr = _validate_vector_fixed_order(cfg, stored_im, ltr)
+    _validate_robert_analysis(cfg; m=mval, ltr)
     nlat = cfg.nlat
     length(Vt_m) == nlat || throw(DimensionMismatch("Vt_m length must be nlat"))
     length(Vp_m) == nlat || throw(DimensionMismatch("Vp_m length must be nlat"))

@@ -59,9 +59,7 @@ using SHTnsKit
     @testset "Breaking release uses a major version" begin
         package_root = dirname(dirname(pathof(SHTnsKit)))
         project = TOML.parsefile(joinpath(package_root, "Project.toml"))
-        changelog = read(joinpath(package_root, "CHANGELOG.md"), String)
         @test VersionNumber(project["version"]).major == 2
-        @test occursin("## Unreleased (v2.0.0)", changelog)
     end
 
     @testset "CI correctness regressions use supported APIs" begin

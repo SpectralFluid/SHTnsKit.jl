@@ -137,7 +137,7 @@ end
         @test_throws DimensionMismatch synthesis_sphtor!(plan, Vt, zeros(cfg.nlat, 1), S, T)
     end
 
-    @testset "Noncanonical in-place synthesis stays allocation-free" begin
+    @testset "Noncanonical in-place synthesis reuses field storage" begin
         lmax = 32
         cfg = create_gauss_config(lmax, lmax + 2; nlon=2lmax + 1,
                                   norm=:schmidt, real_norm=true, cs_phase=false)
@@ -164,7 +164,11 @@ end
         @test @allocated(synthesis!(plan, f, alm)) <= allocation_limit
         @test @allocated(synthesis!(plan_r, f, alm)) <= allocation_limit
         @test @allocated(synthesis_sphtor!(plan, Vt, Vp, Slm, Tlm)) <= allocation_limit
-        @test @allocated(synthesis!(cfg, f, alm; fft_scratch)) <= allocation_limit
+        # The cfg API launches tasks for its m loop on a multithreaded caller;
+        # SHTPlan above remains strictly allocation-free. Allow only bounded
+        # task bookkeeping here, far below a new field-sized Fourier buffer.
+        thread_budget = SHTnsKit._use_internal_mloop_threads() ? 1024 * Threads.nthreads() : 0
+        @test @allocated(synthesis!(cfg, f, alm; fft_scratch)) <= allocation_limit + thread_budget
     end
 
     @testset "Planned scalar matches the non-planned path exactly" begin

@@ -1,5 +1,5 @@
 [audit]
-entry_count = 685
+entry_count = 688
 scanner = "deterministic non-overlapping spelling scanner; longer transfer spellings win"
 scope = "src/device_utils.jl and every ext/*.jl file"
 
@@ -4229,12 +4229,28 @@ snippet_sha256 = "11154a1e24a1c10bab3991372fe0861ea6f27729071474ecfaf5c7b46aaa64
 token = "copy"
 [[entry]]
 classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|copy|4dc90f5dca1a40d6130de0854eb0a046a8e01f1950d9728f3af9d6749674a1a2|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "4dc90f5dca1a40d6130de0854eb0a046a8e01f1950d9728f3af9d6749674a1a2"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
 key = "ext/SHTnsKitAdvancedADExt.jl|typed_array|6a3f945a436cfadc7d0d88754bc5e5305471ff778353833a998abc86020f20a3|1"
 path = "ext/SHTnsKitAdvancedADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
 snippet_sha256 = "6a3f945a436cfadc7d0d88754bc5e5305471ff778353833a998abc86020f20a3"
 token = "typed_array"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|vector|3c43e7a3077fb592d86252f5bc7afbd210bbc4fc19bd1e376575a713e06ecbea|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "3c43e7a3077fb592d86252f5bc7afbd210bbc4fc19bd1e376575a713e06ecbea"
+token = "vector"
 [[entry]]
 classification = "cpu_only"
 key = "ext/SHTnsKitAdvancedADExt.jl|vector|e66d82b9dfd31278a76f6967b037ba92d5284eac4624f6bc69e9bc101f79d46c|1"
@@ -5394,6 +5410,14 @@ path = "ext/SHTnsKitZygoteExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
 snippet_sha256 = "11154a1e24a1c10bab3991372fe0861ea6f27729071474ecfaf5c7b46aaa6421"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitZygoteExt.jl|copy|4dc90f5dca1a40d6130de0854eb0a046a8e01f1950d9728f3af9d6749674a1a2|1"
+path = "ext/SHTnsKitZygoteExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "4dc90f5dca1a40d6130de0854eb0a046a8e01f1950d9728f3af9d6749674a1a2"
 token = "copy"
 [[entry]]
 classification = "cpu_only"

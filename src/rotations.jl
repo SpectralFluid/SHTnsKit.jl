@@ -248,7 +248,7 @@ function shtns_rotation_set_angle_axis(r::SHTRotation, theta::Real, Vx::Real, Vy
         return nothing
     end
     kx, ky, kz = v ./ n
-    c = cos(θ); s = sin(θ); t = 1 - c
+    c = cos(θ); s = sin(θ); t = 2sin(θ / 2)^2
     
     # Rotation matrix R = c I + s [k]_x + t k k^T
     R11 = c + t*kx*kx
@@ -263,9 +263,15 @@ function shtns_rotation_set_angle_axis(r::SHTRotation, theta::Real, Vx::Real, Vy
     
     # Extract ZYZ Euler angles
     # For R = Rz(α)Ry(β)Rz(γ): R13 = cα*sβ, R23 = sα*sβ, R31 = -sβ*cγ, R32 = sβ*sγ
-    β = acos(clamp(R33, -one(R33), one(R33)))
-    singular_tolerance = sqrt(eps(typeof(θ)))
-    if abs(sin(β)) > singular_tolerance
+    # acos(R33) loses small tilts when cos(theta) rounds to one. The
+    # off-diagonal entries retain their first-order signal, including for
+    # Float32 angles, so use them to recover beta and resolve the outer
+    # angles whenever the tilt is nonzero. At beta=pi, preserve the canonical
+    # gamma=0 representation despite the sine's roundoff-sized residual.
+    sinβ = hypot(R13, R23)
+    β = atan(sinβ, R33)
+    at_pi = R33 < 0 && sinβ <= 2eps(typeof(θ))
+    if sinβ > 0 && !at_pi
         α = atan(R23, R13)    # atan2(sα*sβ, cα*sβ) = α
         γ = atan(R32, -R31)   # atan2(sβ*sγ, sβ*cγ) = γ
     elseif R33 > 0

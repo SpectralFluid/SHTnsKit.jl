@@ -1,16 +1,38 @@
 # SHTnsKit.jl
 
-SHTnsKit.jl transforms scalar and vector fields between values on a spherical
-grid and spherical-harmonic coefficients. It is written in Julia and supports
-the same transform conventions on CPUs, NVIDIA and AMD GPUs, and MPI-distributed
-arrays.
+```@raw html
+<div class="hero-banner">
+  <h1>SHTnsKit.jl</h1>
+  <p>Fast spherical harmonic transforms for Julia &mdash; scalars, vectors, and
+  spectral operators on CPUs, GPUs, and MPI clusters.</p>
+  <span class="hero-version">v2.0.3</span>
+</div>
+```
 
-## What it provides
-
-- Scalar, tangential-vector, and three-component QST transforms.
-- Gauss–Legendre and equiangular grids, with explicit quadrature conventions.
-- Reusable plans, batch transforms, rotations, operators, and energy spectra.
-- Optional CUDA, AMDGPU, MPI, automatic-differentiation, and SIMD extensions.
+```@raw html
+<div class="feature-grid">
+  <div class="feature-card">
+    <h3><span class="icon">&#x1F310;</span> Full Transform Suite</h3>
+    <p>Scalar, tangential-vector, and three-component QST transforms with
+    Gauss&ndash;Legendre and equiangular grids.</p>
+  </div>
+  <div class="feature-card">
+    <h3><span class="icon">&#x26A1;</span> Multi-Backend</h3>
+    <p>Same API on CPU, NVIDIA CUDA, and AMD ROCm GPUs. Drop-in
+    acceleration without rewriting your code.</p>
+  </div>
+  <div class="feature-card">
+    <h3><span class="icon">&#x1F4E1;</span> MPI Distribution</h3>
+    <p>Distribute latitude bands across MPI ranks with PencilArrays for
+    fields that exceed single-node memory.</p>
+  </div>
+  <div class="feature-card">
+    <h3><span class="icon">&#x1F9EE;</span> Differentiable</h3>
+    <p>ForwardDiff, Zygote, and ChainRules extensions make transforms
+    compatible with Julia&rsquo;s AD ecosystem.</p>
+  </div>
+</div>
+```
 
 ## Install
 
@@ -46,9 +68,9 @@ Spatial fields use `(latitude, longitude)` order. Dense coefficients use
 
 ## Choose your path
 
-| I want to… | Read… |
+| I want to... | Read... |
 |:---|:---|
-| understand the basic arrays and transform direction | [Quick Start](quickstart.md) |
+| understand arrays and transform directions | [Quick Start](quickstart.md) |
 | choose the right spherical sampling | [Grid Types](grids.md) |
 | adapt a working scientific recipe | [Examples Gallery](examples/index.md) |
 | keep transforms on an NVIDIA or AMD GPU | [GPU Acceleration](gpu.md) |
@@ -56,6 +78,7 @@ Spatial fields use `(latitude, longitude)` order. Dense coefficients use
 | make repeated transforms faster | [Performance Guide](performance.md) |
 | use packed storage, operators, rotations, or AD | [Advanced Usage](advanced.md) |
 | exchange coefficients with another library | [Normalization and Phase](norms.md) |
+| understand source files and extension system | [Package Architecture](architecture.md) |
 
 The [API Reference](api/index.md) lists the complete public surface. Most users
 can begin with the default Gauss–Legendre grid and orthonormal convention.

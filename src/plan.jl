@@ -210,6 +210,7 @@ function analysis_sphtor!(plan::SHTPlan, Slm_out::AbstractMatrix, Tlm_out::Abstr
     size(Vp,1)==nlat && size(Vp,2)==nlon || throw(DimensionMismatch("Vp dims"))
     size(Slm_out,1)==cfg.lmax+1 && size(Slm_out,2)==cfg.mmax+1 || throw(DimensionMismatch("Slm_out dims"))
     size(Tlm_out,1)==cfg.lmax+1 && size(Tlm_out,2)==cfg.mmax+1 || throw(DimensionMismatch("Tlm_out dims"))
+    _validate_robert_analysis(cfg)
     
     lmax, mmax = cfg.lmax, cfg.mmax
     scaleφ = cfg.cphi

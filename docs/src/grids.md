@@ -52,7 +52,7 @@ using SHTnsKit
 
 lmax = 32
 cfg = create_gauss_config(lmax, lmax + 1; nlon=2lmax + 1)
-(cfg.grid_type, cfg.nlat, cfg.nlon, sum(cfg.w))
+cfg
 ```
 
 Constraints:
@@ -74,7 +74,7 @@ The default regular grid uses midpoint colatitudes
 using SHTnsKit
 
 cfg = create_regular_config(32, 34; include_poles=false)
-(cfg.grid_type, first(cfg.θ) > 0, last(cfg.θ) < π)
+cfg
 ```
 
 It requires `nlat >= lmax + 2` and `nlon >= 2*mmax + 1`. Associated Legendre
@@ -87,12 +87,18 @@ initial memory footprint.
 using SHTnsKit
 
 cfg = create_regular_config(32, 33; include_poles=true)
-(first(cfg.θ), last(cfg.θ))
+cfg
 ```
 
 This grid includes both endpoints, requires `nlat >= lmax + 1`, and always
 requires at least two latitudes. Pole-safe scalar and vector recurrences handle
 the endpoint rows.
+
+Robert-form vector and QST analysis rejects this grid when the stored orders
+include `m=1` (`mres=1` and `mmax>=1`). Multiplication by `sin(theta)` removes
+the pole values needed by its nonzero endpoint quadrature weights. Synthesis
+remains supported. Use Gauss–Legendre, regular midpoint, or Driscoll–Healy grids
+for Robert-form roundtrips; fixed-order analysis of `m!=1` is also supported.
 
 ## Driscoll–Healy weights
 
@@ -108,7 +114,7 @@ cfg = create_regular_config(
     include_poles=true,
     use_dh_weights=true,
 )
-(cfg.grid_type, cfg.nlat)
+cfg
 ```
 
 `use_dh_weights=true` requires `include_poles=true` and an even `nlat`. Exact

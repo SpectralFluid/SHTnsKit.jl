@@ -775,6 +775,7 @@ function analysis_sphtor_batch(cfg::SHTConfig, Vt_batch::AbstractArray{<:Real,3}
     nlon == cfg.nlon || throw(DimensionMismatch("second dim must be nlon=$(cfg.nlon)"))
     size(Vp_batch) == size(Vt_batch) || throw(DimensionMismatch("Vt and Vp must have same shape"))
     nfields > 0 || throw(ArgumentError("analysis_sphtor_batch requires at least one field"))
+    _validate_robert_analysis(cfg)
 
     lmax, mmax = cfg.lmax, cfg.mmax
     # Follow the inputs, promoted across both components — hardcoding ComplexF64

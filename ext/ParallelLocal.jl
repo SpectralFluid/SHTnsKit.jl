@@ -258,6 +258,7 @@ function _pencil_local_qst(cfg, Q::PencilArray, S::PencilArray,
                            nphi::Integer=1, ltr::Integer=cfg.lmax,
                            mtr::Integer=cfg.mmax,
                            has_q::Bool=true, has_s::Bool=true, has_t::Bool=true,
+                           point_output::Bool=true,
                            operation::Symbol=:SHqst_to_point)
     active = has_t ? (Q, S, Tlm) : has_s ? (Q, S) : (Q,)
     comm = _validate_local_spectral_pencils!(cfg, active, operation)
@@ -316,7 +317,8 @@ function _pencil_local_qst(cfg, Q::PencilArray, S::PencilArray,
     combined = vcat(Vr, Vt, Vp)
     _record_local_payload!(length(combined))
     MPI.Allreduce!(combined, +, comm)
-    return count == 1 ? (combined[1], combined[2], combined[3]) :
+    # A latitude sweep stays vector-valued even when it samples one longitude.
+    return point_output ? (combined[1], combined[2], combined[3]) :
         (combined[1:count], combined[(count + 1):(2count)],
          combined[(2count + 1):(3count)])
 end
@@ -337,7 +339,8 @@ function SHTnsKit.SH_to_lat(cfg::SHTnsKit.SHTConfig,
                             mtr::Integer=cfg.mmax)
     return _pencil_local_qst(
         cfg, coefficients, coefficients, coefficients, cost, zero(cost);
-        nphi, ltr, mtr, has_s=false, has_t=false, operation=:SH_to_lat,
+        nphi, ltr, mtr, has_s=false, has_t=false, point_output=false,
+        operation=:SH_to_lat,
     )[1]
 end
 
@@ -357,7 +360,7 @@ function SHTnsKit.SHqst_to_lat(cfg::SHTnsKit.SHTConfig,
                                mtr::Integer=cfg.mmax)
     return _pencil_local_qst(
         cfg, Q, S, Tlm, cost, zero(cost); nphi, ltr, mtr,
-        operation=:SHqst_to_lat,
+        point_output=false, operation=:SHqst_to_lat,
     )
 end
 
@@ -387,6 +390,7 @@ end
 function _pencil_local_complex(cfg, coefficients::PencilArray,
                                cost::Real, phi::Real;
                                nphi::Integer=1, ltr::Integer=cfg.lmax,
+                               point_output::Bool=true,
                                operation::Symbol=:synthesis_point_cplx)
     comm = _validate_local_complex_pencil!(cfg, coefficients, operation)
     count, lcap, _ = _collective_local_options(
@@ -418,7 +422,7 @@ function _pencil_local_complex(cfg, coefficients::PencilArray,
     end
     _record_local_payload!(length(output))
     MPI.Allreduce!(output, +, comm)
-    return count == 1 ? output[1] : output
+    return point_output ? output[1] : output
 end
 
 SHTnsKit.synthesis_point_cplx(cfg::SHTnsKit.SHTConfig,
@@ -432,7 +436,7 @@ function SHTnsKit.SH_to_lat_cplx(cfg::SHTnsKit.SHTConfig,
                                  ltr::Integer=cfg.lmax)
     return _pencil_local_complex(
         cfg, coefficients, cost, zero(cost); nphi, ltr,
-        operation=:SH_to_lat_cplx,
+        point_output=false, operation=:SH_to_lat_cplx,
     )
 end
 

@@ -131,6 +131,8 @@ end
 
 function _test_vector_case(adapter::VectorParityAdapter, cfg, ::Type{T}) where {T<:AbstractFloat}
     tol = _vector_tol(T)
+    unsupported_analysis = cfg.grid_type === :regular_poles && cfg.robert_form &&
+                           cfg.mres == 1 && cfg.mmax >= 1
     S_can, T_can = _vector_modes(cfg, T)
     S = _external_vector_coefficients(cfg, S_can)
     Tlm = _external_vector_coefficients(cfg, T_can)
@@ -147,23 +149,34 @@ function _test_vector_case(adapter::VectorParityAdapter, cfg, ::Type{T}) where {
     @test Vth ≈ Vt_ref atol=tol.atol rtol=tol.rtol
     @test Vph ≈ Vp_ref atol=tol.atol rtol=tol.rtol
 
-    Sa, Ta = vector_analysis(adapter, cfg, prototype, vector_place(adapter, cfg, Vp_ref, :spatial))
-    Sah = vector_collect(adapter, Sa, cfg); Tah = vector_collect(adapter, Ta, cfg)
-    @test eltype(Sah) === Complex{T}
-    @test eltype(Tah) === Complex{T}
-    @test Sah ≈ S atol=tol.atol rtol=tol.rtol
-    @test Tah ≈ Tlm atol=tol.atol rtol=tol.rtol
+    if unsupported_analysis
+        @test_throws ArgumentError vector_analysis(
+            adapter, cfg, prototype, vector_place(adapter, cfg, Vp_ref, :spatial))
+    else
+        Sa, Ta = vector_analysis(adapter, cfg, prototype, vector_place(adapter, cfg, Vp_ref, :spatial))
+        Sah = vector_collect(adapter, Sa, cfg); Tah = vector_collect(adapter, Ta, cfg)
+        @test eltype(Sah) === Complex{T}
+        @test eltype(Tah) === Complex{T}
+        @test Sah ≈ S atol=tol.atol rtol=tol.rtol
+        @test Tah ≈ Tlm atol=tol.atol rtol=tol.rtol
+    end
 
     Vtc_ref, Vpc_ref = _direct_low_vector(cfg, S_can, T_can; real_output=false)
     Vtc, Vpc = vector_synthesis_cplx(adapter, cfg, Sd, Td, prototype)
     @test vector_collect(adapter, Vtc, cfg) ≈ Vtc_ref atol=tol.atol rtol=tol.rtol
     @test vector_collect(adapter, Vpc, cfg) ≈ Vpc_ref atol=tol.atol rtol=tol.rtol
-    Sac, Tac = vector_analysis_cplx(
-        adapter, cfg, vector_place(adapter, cfg, Vtc_ref, :spatial),
-        vector_place(adapter, cfg, Vpc_ref, :spatial),
-    )
-    @test vector_collect(adapter, Sac, cfg) ≈ S atol=tol.atol rtol=tol.rtol
-    @test vector_collect(adapter, Tac, cfg) ≈ Tlm atol=tol.atol rtol=tol.rtol
+    if unsupported_analysis
+        @test_throws ArgumentError vector_analysis_cplx(
+            adapter, cfg, vector_place(adapter, cfg, Vtc_ref, :spatial),
+            vector_place(adapter, cfg, Vpc_ref, :spatial))
+    else
+        Sac, Tac = vector_analysis_cplx(
+            adapter, cfg, vector_place(adapter, cfg, Vtc_ref, :spatial),
+            vector_place(adapter, cfg, Vpc_ref, :spatial),
+        )
+        @test vector_collect(adapter, Sac, cfg) ≈ S atol=tol.atol rtol=tol.rtol
+        @test vector_collect(adapter, Tac, cfg) ≈ Tlm atol=tol.atol rtol=tol.rtol
+    end
 
     zeroS = vector_place(adapter, cfg, zero.(S), :spectral)
     zeroT = vector_place(adapter, cfg, zero.(Tlm), :spectral)

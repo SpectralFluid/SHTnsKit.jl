@@ -251,6 +251,32 @@ using SHTnsKit
         @test r.conv == :ZYZ
     end
 
+    @testset "Angle-axis preserves small tilts" begin
+        cfg = create_gauss_config(1, 3)
+        Q = zeros(ComplexF64, cfg.nlm)
+        Q[LM_index(1, 1, 1, 0) + 1] = 1
+        for theta in (1e-9, -1e-9, Float32(1e-4), Float32(-1e-4)),
+            axis in ((0, 1, 0), (1, 0, 0), (1, 2, 3))
+            r = SHTRotation(1, 1)
+            shtns_rotation_set_angle_axis(r, theta, axis...)
+            actual = similar(Q)
+            shtns_rotation_apply_real(r, Q, actual)
+
+            # A rotated Y_1^0 is proportional to the rotated z direction.
+            # Rodrigues' formula gives an independent first-degree oracle.
+            kx, ky, kz = collect(axis) ./ norm(collect(axis))
+            angle = Float64(theta)
+            c, s = cos(angle), sin(angle)
+            t = 2sin(angle / 2)^2
+            rx = t*kx*kz + s*ky
+            ry = t*ky*kz - s*kx
+            rz = c + t*kz*kz
+            @test actual[2] ≈ rz atol=2e-14 rtol=2e-14
+            @test actual[3] ≈ complex(-rx, ry)/sqrt(2) atol=2e-14 rtol=2e-7
+            @test abs(actual[3]) > 0
+        end
+    end
+
     @testset "Dimension checks on rotation apply" begin
         lmax, mmax = 3, 3
         r = SHTRotation(lmax, mmax)

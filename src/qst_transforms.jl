@@ -273,13 +273,13 @@ Degree-limited version of analysis_qst, computing coefficients only up to degree
 """
 function analysis_qst_l(cfg::SHTConfig, Vr::AbstractMatrix, Vt::AbstractMatrix, Vp::AbstractMatrix, ltr::Integer)
     ltr = _validate_degree_limit(cfg, ltr)
-    # Get full transforms first
-    Qlm, Slm, Tlm = analysis_qst(cfg, Vr, Vt, Vp)
-
-    # Create copies and zero out high-degree modes
-    Q2, S2, T2 = copy_spectral_triple(Qlm, Slm, Tlm)
-    zero_high_degree_modes!((Q2, S2, T2), cfg, ltr)
-
+    validate_vector_spatial_dimensions(Vr, Vt, Vp, cfg)
+    _validate_robert_analysis(cfg; ltr)
+    Q2 = analysis(cfg, Vr)
+    zero_high_degree_modes!(Q2, cfg, ltr)
+    # Keep the degree limit at the vector boundary: ltr=0 has no tangential
+    # modes and must not request the unsupported m=1 Robert pole analysis.
+    S2, T2 = analysis_sphtor_l(cfg, Vt, Vp, ltr)
     return Q2, S2, T2
 end
 
