@@ -75,6 +75,11 @@ array as the prototype when a transfer needs to select one vendor.
 - Load every package listed for the selected backend in [Installation](installation.md).
 - Avoid host/device copies inside a time-stepping loop; transfer once, compute,
   then copy back only the final result.
+- Device tables are cached per configuration and precision. The scalar table
+  holds `nlat × (lmax+1) × (mmax+1)` values, 8.6 GB in Float64 at
+  `lmax = 1023`. The cache drops a configuration's tables after the
+  configuration is garbage-collected, and `gpu_clear_cache!(GPU())` drops all
+  of them.
 
 For multi-rank arrays, first establish the CPU workflow in [Distributed
 Computing](distributed.md), then use device-backed `PencilArray` storage with a

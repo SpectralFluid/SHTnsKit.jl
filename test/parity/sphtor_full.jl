@@ -469,7 +469,7 @@ function run_shared_vector_kernel_reference(common, backend)
     )
     T = Float32
     CT = ComplexF32
-    x, weights, scales, Nlm = common.vector_host_tables(cfg, T)
+    x, weights, scales, Nlm, sint = common.vector_host_tables(cfg, T)
     P = zeros(T, cfg.nlat, cfg.lmax + 1, cfg.mmax + 1)
     dtheta = similar(P)
     over_sin = similar(P)
@@ -503,7 +503,7 @@ function run_shared_vector_kernel_reference(common, backend)
     T_mode_out = fill(CT(-83, 23), lcap0 + 1)
     event = common.vector_mode_analysis_kernel!(backend)(
         S_mode_out, T_mode_out, Vt_mode0, Vp_mode0, dtheta, over_sin,
-        weights, scales, x, T(cfg.cphi), 0, lcap0, cfg.robert_form;
+        weights, scales, sint, T(cfg.cphi), 0, lcap0, cfg.robert_form;
         ndrange=lcap0 + 1,
     )
     event === nothing || wait(event)
@@ -521,7 +521,7 @@ function run_shared_vector_kernel_reference(common, backend)
     Vt_shared = zeros(CT, cfg.nlat); Vp_shared = similar(Vt_shared)
     event = common.vector_mode_synthesis_kernel!(backend)(
         Vt_shared, Vp_shared, noisy_S0, noisy_T0, dtheta, over_sin,
-        scales, x, T(SHTnsKit.phi_inv_scale(cfg)), 0, lcap0,
+        scales, sint, T(SHTnsKit.phi_inv_scale(cfg)), 0, lcap0,
         cfg.robert_form; ndrange=cfg.nlat,
     )
     event === nothing || wait(event)
@@ -538,7 +538,7 @@ function run_shared_vector_kernel_reference(common, backend)
     fourier_t = zeros(CT, cfg.nlat, cfg.nlon)
     fourier_p = zeros(CT, cfg.nlat, cfg.nlon)
     event = common.vector_synthesis_kernel!(backend)(
-        fourier_t, fourier_p, S, Tlm, dtheta, over_sin, scales, x,
+        fourier_t, fourier_p, S, Tlm, dtheta, over_sin, scales, sint,
         T(SHTnsKit.phi_inv_scale(cfg)), cfg.nlon, cfg.lmax, cfg.mmax,
         cfg.mres, true, cfg.robert_form;
         ndrange=(cfg.nlat, cfg.mmax + 1),
@@ -557,7 +557,7 @@ function run_shared_vector_kernel_reference(common, backend)
     S_out = zeros(CT, size(S)); T_out = similar(S_out)
     event = common.vector_analysis_kernel!(backend)(
         S_out, T_out, fourier_t, fourier_p, dtheta, over_sin,
-        weights, scales, x, T(cfg.cphi), cfg.lmax, cfg.mmax,
+        weights, scales, sint, T(cfg.cphi), cfg.lmax, cfg.mmax,
         cfg.mres, cfg.robert_form;
         ndrange=size(S_out),
     )
@@ -583,7 +583,7 @@ function run_shared_vector_kernel_reference(common, backend)
     distributed_T = similar(distributed_S)
     event = common.distributed_vector_analysis_kernel!(backend)(
         distributed_S, distributed_T, distributed_Ft, distributed_Fp,
-        dtheta, over_sin, weights, scales, x, T(cfg.cphi), first_m,
+        dtheta, over_sin, weights, scales, sint, T(cfg.cphi), first_m,
         cfg.lmax, cfg.mmax, cfg.mres, cfg.robert_form;
         ndrange=size(distributed_S),
     )
@@ -601,7 +601,7 @@ function run_shared_vector_kernel_reference(common, backend)
     )
     event = common.distributed_vector_synthesis_kernel!(backend)(
         distributed_Vt, distributed_Vp, distributed_Sin, distributed_Tin,
-        dtheta, over_sin, scales, x, T(SHTnsKit.phi_inv_scale(cfg)), first_m,
+        dtheta, over_sin, scales, sint, T(SHTnsKit.phi_inv_scale(cfg)), first_m,
         cfg.lmax, cfg.mmax, cfg.mres, cfg.robert_form;
         ndrange=size(distributed_Vt),
     )

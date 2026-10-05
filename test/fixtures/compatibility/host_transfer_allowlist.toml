@@ -1,5 +1,5 @@
 [audit]
-entry_count = 676
+entry_count = 677
 scanner = "deterministic non-overlapping spelling scanner; longer transfer spellings win"
 scope = "src/device_utils.jl and every ext/*.jl file"
 
@@ -33,6 +33,14 @@ key = "ext/GPUCommon.jl|collect|e6cee41a3bb3b75fd1585e61ac01248e63a00d9d911c68c9
 path = "ext/GPUCommon.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 3
+snippet_sha256 = "e6cee41a3bb3b75fd1585e61ac01248e63a00d9d911c68c9a065cfcef36a57be"
+token = "collect"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/GPUCommon.jl|collect|e6cee41a3bb3b75fd1585e61ac01248e63a00d9d911c68c9a065cfcef36a57be|4"
+path = "ext/GPUCommon.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 4
 snippet_sha256 = "e6cee41a3bb3b75fd1585e61ac01248e63a00d9d911c68c9a065cfcef36a57be"
 token = "collect"
 [[entry]]
@@ -5205,19 +5213,19 @@ snippet_sha256 = "aff9d8b3ba318539f09e49021fe6572df5308b19bd054ac8e0b9f551dc0f25
 token = "parent"
 [[entry]]
 classification = "bounded_pinned_mpi_staging"
+key = "ext/SHTnsKitParallelCUDAExt.jl|vector|6f05a484ef43774be7bff89a73f86fd149ed1507d5f9d8a960fc3d0ff8ced705|1"
+path = "ext/SHTnsKitParallelCUDAExt.jl"
+reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
+same_snippet_ordinal = 1
+snippet_sha256 = "6f05a484ef43774be7bff89a73f86fd149ed1507d5f9d8a960fc3d0ff8ced705"
+token = "vector"
+[[entry]]
+classification = "bounded_pinned_mpi_staging"
 key = "ext/SHTnsKitParallelCUDAExt.jl|vector|8026ced75be30a4ee79eaebf4700cb65b918ed607e1bfffc62b034da6b1691de|1"
 path = "ext/SHTnsKitParallelCUDAExt.jl"
 reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
 same_snippet_ordinal = 1
 snippet_sha256 = "8026ced75be30a4ee79eaebf4700cb65b918ed607e1bfffc62b034da6b1691de"
-token = "vector"
-[[entry]]
-classification = "bounded_pinned_mpi_staging"
-key = "ext/SHTnsKitParallelCUDAExt.jl|vector|a24f0dcc14d951e081d408beb6d1acd0f4b8f86eba91bd1f035e69f9b399a2f1|1"
-path = "ext/SHTnsKitParallelCUDAExt.jl"
-reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
-same_snippet_ordinal = 1
-snippet_sha256 = "a24f0dcc14d951e081d408beb6d1acd0f4b8f86eba91bd1f035e69f9b399a2f1"
 token = "vector"
 [[entry]]
 classification = "cpu_only"

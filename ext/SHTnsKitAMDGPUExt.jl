@@ -19,7 +19,7 @@ using .GPUCommon: laplacian_kernel!, operator_matrix_kernel!,
                   scalar_batch_analysis_kernel!, scalar_batch_synthesis_kernel!,
                   complex_packed_analysis_kernel!, complex_packed_synthesis_kernel!,
                   scalar_config_signature, vector_config_signature,
-                  scalar_host_tables,
+                  scalar_host_tables, coefficient_scales,
                   ScalarTableCache, scalar_cache_lookup,
                   scalar_cache_publish!,
                   scalar_cache_clear!, scalar_cache_size
@@ -116,14 +116,14 @@ function _require_amdgpu(operation::Symbol)
 end
 
 struct AMDGPUScalarTables{TX,TW,TP,TS}
-    x::TX
+    sint::TX
     weights::TW
     Plm::TP
     scales::TS
 end
 
 struct AMDGPUVectorTables{TX,TW,TS,TD,TO}
-    x::TX
+    sint::TX
     weights::TW
     scales::TS
     dtheta::TD
@@ -155,7 +155,14 @@ end
 function _amdgpu_rotation_blocks(r::SHTRotation,
                                  ::Type{T}) where {T<:AbstractFloat}
     device = AMDGPU.device_id()
-    key = (device, T, r.lmax, r.mmax, r.α, r.β, r.γ, r.conv,
+    # Same restriction as the CPU engine: a layout with mmax < lmax cannot hold
+    # the orders an order-mixing rotation produces.
+    SHTnsKit._require_full_m_range(r, r.β)
+    # Key on the angles the blocks are built from. The stored fields are not
+    # enough: setter-built rotations swap α and γ (`reverse_outer`) and ZXZ adds
+    # phase offsets, so equal fields could map to different blocks.
+    α, β, γ = SHTnsKit._rotation_zyz_angles(r, T)
+    key = (device, T, r.lmax, r.mmax, α, β, γ,
            r.norm, r.cs_phase, r.real_norm)
     cached = rotation_cache_lookup(_rotation_cache, key)
     cached === nothing || return cached::AMDGPURotationBlocks
@@ -302,18 +309,28 @@ struct AMDGPULocalTables{TP,TD,TO,TS}
     scales::TS
 end
 
+# Point evaluation needs only the convention scales. Share them with resident
+# scalar tables, but never build the nlat×(lmax+1)×(mmax+1) table for one point.
+function _amdgpu_coefficient_scales(cfg::SHTConfig, ::Type{T}) where {T<:AbstractFloat}
+    tables = scalar_cache_lookup(
+        _AMDGPU_SCALAR_CACHE, AMDGPU.device_id(), objectid(cfg), T,
+        scalar_config_signature(cfg); owner=cfg,
+    )
+    return tables === nothing ? ROCArray(coefficient_scales(cfg, T)) : tables.scales
+end
+
 function _amdgpu_local_tables(cfg::SHTConfig, ::Type{T}, cost::Real) where {T<:AbstractFloat}
     SHTnsKit._validate_local_cost(cost, :local_evaluation)
-    x = T(cost)
+    x = Float64(cost)
     device = AMDGPU.device_id()
     identity = objectid(cfg)
     signature = hash((vector_config_signature(cfg), x))
     cached = scalar_cache_lookup(
-        _AMDGPU_LOCAL_CACHE, device, identity, T, signature,
+        _AMDGPU_LOCAL_CACHE, device, identity, T, signature; owner=cfg,
     )
     cached === nothing || return cached
-    x_device = ROCArray(T[x])
-    Nlm = ROCArray(T.(cfg.Nlm))
+    x_device = ROCArray(Float64[x])
+    Nlm = ROCArray(Float64.(cfg.Nlm))
     Plm = AMDGPU.zeros(T, 1, cfg.lmax + 1, cfg.mmax + 1)
     dtheta = similar(Plm)
     over_sin = similar(Plm)
@@ -321,10 +338,10 @@ function _amdgpu_local_tables(cfg::SHTConfig, ::Type{T}, cost::Real) where {T<:A
         Plm, dtheta, over_sin, x_device, Nlm, cfg.lmax, cfg.mmax;
         ndrange=(1, cfg.mmax + 1),
     )
-    scales = _amdgpu_scalar_tables(cfg, T).scales
+    scales = _amdgpu_coefficient_scales(cfg, T)
     built = AMDGPULocalTables(Plm, dtheta, over_sin, scales)
     return scalar_cache_publish!(AMDGPU.synchronize,
-        _AMDGPU_LOCAL_CACHE, device, identity, T, signature, built,
+        _AMDGPU_LOCAL_CACHE, device, identity, T, signature, built; owner=cfg,
     )
 end
 
@@ -372,17 +389,18 @@ function _amdgpu_local_scalar(cfg, coefficients, cost, phi;
     end
     tables = _amdgpu_local_tables(cfg, T, cost)
     step = nphi == 1 ? zero(T) : T(2pi / nphi)
+    phi_scale = SHTnsKit._evaluator_phi_scale(cfg, T)
     if complex_layout
         output = similar(coefficients, Complex{T}, (nphi,))
         local_complex_kernel!(ROCBackend())(
             output, coefficients, tables.Plm, tables.scales,
-            T(phi), step, cfg.lmax, cfg.mmax, ltr; ndrange=nphi,
+            T(phi), step, cfg.lmax, cfg.mmax, ltr, phi_scale; ndrange=nphi,
         )
     else
         output = similar(coefficients, T, (nphi,))
         local_scalar_kernel!(ROCBackend())(
             output, coefficients, tables.Plm, tables.scales,
-            T(phi), step, cfg.lmax, cfg.mmax, cfg.mres, ltr, mtr;
+            T(phi), step, cfg.lmax, cfg.mmax, cfg.mres, ltr, mtr, phi_scale;
             ndrange=nphi,
         )
     end
@@ -406,12 +424,13 @@ function _amdgpu_local_qst(cfg, Q, S, Tlm, cost, phi;
     tables = _amdgpu_local_tables(cfg, T, cost)
     Vr = similar(Q, T, (nphi,)); Vt = similar(Q, T, (nphi,)); Vp = similar(Q, T, (nphi,))
     step = nphi == 1 ? zero(T) : T(2pi / nphi)
-    sinth = sqrt(max(zero(T), one(T) - T(cost)^2))
+    sinth = T(sqrt(max(0.0, 1 - Float64(cost)^2)))
     local_qst_kernel!(ROCBackend())(
         Vr, Vt, Vp, Q, S, Tlm, tables.Plm, tables.dtheta,
         tables.over_sin, tables.scales, T(phi), step,
         cfg.lmax, cfg.mmax, cfg.mres, ltr, mtr,
-        has_q, has_s, has_t, cfg.robert_form, sinth; ndrange=nphi,
+        has_q, has_s, has_t, cfg.robert_form, sinth,
+        SHTnsKit._evaluator_phi_scale(cfg, T); ndrange=nphi,
     )
     return nphi == 1 ? (reshape(Vr, ()), reshape(Vt, ()), reshape(Vp, ())) :
                         (Vr, Vt, Vp)
@@ -455,23 +474,23 @@ function _amdgpu_scalar_tables(cfg::SHTConfig, ::Type{T}) where {T<:AbstractFloa
     identity = objectid(cfg)
     signature = scalar_config_signature(cfg)
     cached = scalar_cache_lookup(
-        _AMDGPU_SCALAR_CACHE, device, identity, T, signature,
+        _AMDGPU_SCALAR_CACHE, device, identity, T, signature; owner=cfg,
     )
     cached === nothing || return cached
 
-    x_host, weights_host, scales_host = scalar_host_tables(cfg, T)
-    x = ROCArray(x_host)
+    nodes_host, weights_host, scales_host, sint_host = scalar_host_tables(cfg, T)
+    sint = ROCArray(sint_host)
     weights = ROCArray(weights_host)
     scales = ROCArray(scales_host)
     Plm = AMDGPU.zeros(T, cfg.nlat, cfg.lmax + 1, cfg.mmax + 1)
     backend = ROCBackend()
     kernel! = legendre_table_kernel!(backend)
-    kernel!(Plm, x, cfg.lmax, cfg.mmax;
+    kernel!(Plm, ROCArray(nodes_host), cfg.lmax, cfg.mmax;
             ndrange=(cfg.nlat, cfg.mmax + 1))
-    built = AMDGPUScalarTables(x, weights, Plm, scales)
+    built = AMDGPUScalarTables(sint, weights, Plm, scales)
 
     return scalar_cache_publish!(AMDGPU.synchronize,
-        _AMDGPU_SCALAR_CACHE, device, identity, T, signature, built,
+        _AMDGPU_SCALAR_CACHE, device, identity, T, signature, built; owner=cfg,
     )
 end
 
@@ -480,23 +499,24 @@ function _amdgpu_vector_tables(cfg::SHTConfig, ::Type{T}) where {T<:AbstractFloa
     identity = objectid(cfg)
     signature = vector_config_signature(cfg)
     cached = scalar_cache_lookup(
-        _AMDGPU_VECTOR_CACHE, device, identity, T, signature,
+        _AMDGPU_VECTOR_CACHE, device, identity, T, signature; owner=cfg,
     )
     cached === nothing || return cached
 
     scalar = _amdgpu_scalar_tables(cfg, T)
-    Nlm = ROCArray(T.(cfg.Nlm))
+    nodes = ROCArray(Float64.(cfg.x))
+    Nlm = ROCArray(Float64.(cfg.Nlm))
     Plm = similar(scalar.Plm)
     dtheta = similar(Plm)
     over_sin = similar(Plm)
     kernel! = vector_derivative_table_kernel!(ROCBackend())
-    kernel!(Plm, dtheta, over_sin, scalar.x, Nlm, cfg.lmax, cfg.mmax;
+    kernel!(Plm, dtheta, over_sin, nodes, Nlm, cfg.lmax, cfg.mmax;
             ndrange=(cfg.nlat, cfg.mmax + 1))
     built = AMDGPUVectorTables(
-        scalar.x, scalar.weights, scalar.scales, dtheta, over_sin,
+        scalar.sint, scalar.weights, scalar.scales, dtheta, over_sin,
     )
     return scalar_cache_publish!(AMDGPU.synchronize,
-        _AMDGPU_VECTOR_CACHE, device, identity, T, signature, built,
+        _AMDGPU_VECTOR_CACHE, device, identity, T, signature, built; owner=cfg,
     )
 end
 
@@ -850,7 +870,7 @@ function _amdgpu_vector_analysis_direct!(owner, cfg::SHTConfig,
         vector_analysis_kernel!(ROCBackend())(
             Sout, Tout, workspace.Ftheta, workspace.Fphi,
             tables.dtheta, tables.over_sin, tables.weights, tables.scales,
-            tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), lcap, min(cfg.mmax, lcap), cfg.mres,
+            tables.sint, RT(SHTnsKit._analysis_phi_scale(cfg)), lcap, min(cfg.mmax, lcap), cfg.mres,
             cfg.robert_form; ndrange=(lcap + 1, min(cfg.mmax, lcap) + 1),
         )
         AMDGPU.synchronize()
@@ -915,7 +935,7 @@ function _amdgpu_vector_synthesis_direct!(owner, cfg::SHTConfig,
         fill!(workspace.Fphi, zero(CT))
         vector_synthesis_kernel!(ROCBackend())(
             workspace.Ftheta, workspace.Fphi, Slm, Tlm,
-            tables.dtheta, tables.over_sin, tables.scales, tables.x,
+            tables.dtheta, tables.over_sin, tables.scales, tables.sint,
             RT(SHTnsKit.phi_inv_scale(cfg)), cfg.nlon, lcap, min(cfg.mmax, lcap),
             cfg.mres, real_output, cfg.robert_form;
             ndrange=(cfg.nlat, min(cfg.mmax, lcap) + 1),
@@ -1046,7 +1066,7 @@ function _amdgpu_vector_mode_analysis(cfg::SHTConfig, stored_im::Integer,
     S = AMDGPU.zeros(CT, lcap - physical_m + 1); Tlm = similar(S)
     vector_mode_analysis_kernel!(ROCBackend())(
         S, Tlm, Vt, Vp, tables.dtheta, tables.over_sin, tables.weights,
-        tables.scales, tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), physical_m, lcap,
+        tables.scales, tables.sint, RT(SHTnsKit._analysis_phi_scale(cfg)), physical_m, lcap,
         cfg.robert_form; ndrange=length(S),
     )
     AMDGPU.synchronize()
@@ -1067,7 +1087,7 @@ function _amdgpu_vector_mode_synthesis(cfg::SHTConfig, stored_im::Integer,
     Vt = AMDGPU.zeros(CT, cfg.nlat); Vp = similar(Vt)
     vector_mode_synthesis_kernel!(ROCBackend())(
         Vt, Vp, S, Tlm, tables.dtheta, tables.over_sin, tables.scales,
-        tables.x, RT(SHTnsKit.phi_inv_scale(cfg)), physical_m, lcap,
+        tables.sint, RT(SHTnsKit.phi_inv_scale(cfg)), physical_m, lcap,
         cfg.robert_form; ndrange=cfg.nlat,
     )
     AMDGPU.synchronize()
@@ -1184,7 +1204,7 @@ function _amdgpu_vector_batch_analysis(cfg::SHTConfig,
     S = AMDGPU.zeros(CT, cfg.lmax + 1, cfg.mmax + 1, nfields); Tlm = similar(S)
     vector_batch_analysis_kernel!(ROCBackend())(
         S, Tlm, Ft, Fp, tables.dtheta, tables.over_sin, tables.weights,
-        tables.scales, tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), cfg.lmax, cfg.mmax,
+        tables.scales, tables.sint, RT(SHTnsKit._analysis_phi_scale(cfg)), cfg.lmax, cfg.mmax,
         cfg.mres, cfg.robert_form; ndrange=size(S),
     )
     AMDGPU.synchronize()
@@ -1207,7 +1227,7 @@ function _amdgpu_vector_batch_synthesis(cfg::SHTConfig,
     Fp = AMDGPU.zeros(CT, cfg.nlat, cfg.nlon, nfields)
     vector_batch_synthesis_kernel!(ROCBackend())(
         Ft, Fp, S, Tlm, tables.dtheta, tables.over_sin, tables.scales,
-        tables.x, RT(SHTnsKit.phi_inv_scale(cfg)), cfg.nlon, cfg.lmax,
+        tables.sint, RT(SHTnsKit.phi_inv_scale(cfg)), cfg.nlon, cfg.lmax,
         cfg.mmax, cfg.mres, real_output, cfg.robert_form;
         ndrange=(cfg.nlat, cfg.mmax + 1, nfields),
     )
@@ -1550,7 +1570,9 @@ function synthesis_axisym(::SHTnsKit.GPU, cfg::SHTConfig,
     length(coefficients) == cfg.lmax + 1 || throw(DimensionMismatch(
         "coefficients must have length lmax+1=$(cfg.lmax + 1)",
     ))
-    return real.(_amdgpu_mode_synthesis(cfg, 0, coefficients, cfg.lmax, 1))
+    return real.(_amdgpu_mode_synthesis(
+        cfg, 0, coefficients, cfg.lmax, SHTnsKit._evaluator_phi_scale(cfg),
+    ))
 end
 synthesis_axisym(cfg::SHTConfig,
                  coefficients::AMDGPU.AnyROCArray{T,1}) where {T<:Complex} =
@@ -1576,7 +1598,8 @@ function synthesis_axisym_l(::SHTnsKit.GPU, cfg::SHTConfig,
         "coefficients must contain degrees 0:ltr",
     ))
     return real.(_amdgpu_mode_synthesis(
-        cfg, 0, @view(coefficients[1:(lcap + 1)]), lcap, 1,
+        cfg, 0, @view(coefficients[1:(lcap + 1)]), lcap,
+        SHTnsKit._evaluator_phi_scale(cfg),
     ))
 end
 synthesis_axisym_l(cfg::SHTConfig, coefficients::AMDGPU.AnyROCArray{T,1},

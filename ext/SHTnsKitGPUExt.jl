@@ -19,8 +19,8 @@ using .GPUCommon: laplacian_kernel!, operator_matrix_kernel!,
                   mode_analysis_kernel!, mode_synthesis_kernel!,
                   scalar_batch_analysis_kernel!, scalar_batch_synthesis_kernel!,
                   complex_packed_analysis_kernel!, complex_packed_synthesis_kernel!,
-                  scalar_host_tables, ScalarTableCache, scalar_cache_lookup,
-                  scalar_cache_publish!,
+                  scalar_host_tables, coefficient_scales, ScalarTableCache,
+                  scalar_cache_lookup, scalar_cache_publish!,
                   scalar_cache_clear!, scalar_cache_size
 using .GPUCommon: ScalarWorkspaceCache, scalar_workspace_use!,
                   scalar_workspace_clear!, scalar_workspace_size
@@ -124,14 +124,14 @@ function _gpu_adapter_adapt(::CUDAAdapter, value)
 end
 
 struct CUDAScalarTables{TX,TW,TP,TS}
-    x::TX
+    sint::TX
     weights::TW
     Plm::TP
     scales::TS
 end
 
 struct CUDAVectorTables{TX,TW,TS,TD,TO}
-    x::TX
+    sint::TX
     weights::TW
     scales::TS
     dtheta::TD
@@ -156,7 +156,14 @@ end
 function _cuda_rotation_blocks(r::SHTRotation,
                                ::Type{T}) where {T<:AbstractFloat}
     device = CUDA.deviceid(CUDA.device())
-    key = (device, T, r.lmax, r.mmax, r.α, r.β, r.γ, r.conv,
+    # Same restriction as the CPU engine: a layout with mmax < lmax cannot hold
+    # the orders an order-mixing rotation produces.
+    SHTnsKit._require_full_m_range(r, r.β)
+    # Key on the angles the blocks are built from. The stored fields are not
+    # enough: setter-built rotations swap α and γ (`reverse_outer`) and ZXZ adds
+    # phase offsets, so equal fields could map to different blocks.
+    α, β, γ = SHTnsKit._rotation_zyz_angles(r, T)
+    key = (device, T, r.lmax, r.mmax, α, β, γ,
            r.norm, r.cs_phase, r.real_norm)
     cached = rotation_cache_lookup(_rotation_cache, key)
     cached === nothing || return cached::CUDARotationBlocks
@@ -303,18 +310,28 @@ struct CUDALocalTables{TP,TD,TO,TS}
     scales::TS
 end
 
+# Point evaluation needs only the convention scales. Share them with resident
+# scalar tables, but never build the nlat×(lmax+1)×(mmax+1) table for one point.
+function _cuda_coefficient_scales(cfg::SHTConfig, ::Type{T}) where {T<:AbstractFloat}
+    tables = scalar_cache_lookup(
+        _CUDA_SCALAR_CACHE, CUDA.deviceid(CUDA.device()), objectid(cfg), T,
+        scalar_config_signature(cfg); owner=cfg,
+    )
+    return tables === nothing ? CuArray(coefficient_scales(cfg, T)) : tables.scales
+end
+
 function _cuda_local_tables(cfg::SHTConfig, ::Type{T}, cost::Real) where {T<:AbstractFloat}
     SHTnsKit._validate_local_cost(cost, :local_evaluation)
-    x = T(cost)
+    x = Float64(cost)
     device = CUDA.deviceid(CUDA.device())
     identity = objectid(cfg)
     signature = hash((vector_config_signature(cfg), x))
     cached = scalar_cache_lookup(
-        _CUDA_LOCAL_CACHE, device, identity, T, signature,
+        _CUDA_LOCAL_CACHE, device, identity, T, signature; owner=cfg,
     )
     cached === nothing || return cached
-    x_device = CuArray(T[x])
-    Nlm = CuArray(T.(cfg.Nlm))
+    x_device = CuArray(Float64[x])
+    Nlm = CuArray(Float64.(cfg.Nlm))
     Plm = CUDA.zeros(T, 1, cfg.lmax + 1, cfg.mmax + 1)
     dtheta = similar(Plm)
     over_sin = similar(Plm)
@@ -322,10 +339,10 @@ function _cuda_local_tables(cfg::SHTConfig, ::Type{T}, cost::Real) where {T<:Abs
         Plm, dtheta, over_sin, x_device, Nlm, cfg.lmax, cfg.mmax;
         ndrange=(1, cfg.mmax + 1),
     )
-    scales = _cuda_scalar_tables(cfg, T).scales
+    scales = _cuda_coefficient_scales(cfg, T)
     built = CUDALocalTables(Plm, dtheta, over_sin, scales)
     return scalar_cache_publish!(CUDA.synchronize,
-        _CUDA_LOCAL_CACHE, device, identity, T, signature, built,
+        _CUDA_LOCAL_CACHE, device, identity, T, signature, built; owner=cfg,
     )
 end
 
@@ -373,17 +390,18 @@ function _cuda_local_scalar(cfg, coefficients, cost, phi;
     end
     tables = _cuda_local_tables(cfg, T, cost)
     step = nphi == 1 ? zero(T) : T(2pi / nphi)
+    phi_scale = SHTnsKit._evaluator_phi_scale(cfg, T)
     if complex_layout
         output = similar(coefficients, Complex{T}, (nphi,))
         local_complex_kernel!(CUDABackend())(
             output, coefficients, tables.Plm, tables.scales,
-            T(phi), step, cfg.lmax, cfg.mmax, ltr; ndrange=nphi,
+            T(phi), step, cfg.lmax, cfg.mmax, ltr, phi_scale; ndrange=nphi,
         )
     else
         output = similar(coefficients, T, (nphi,))
         local_scalar_kernel!(CUDABackend())(
             output, coefficients, tables.Plm, tables.scales,
-            T(phi), step, cfg.lmax, cfg.mmax, cfg.mres, ltr, mtr;
+            T(phi), step, cfg.lmax, cfg.mmax, cfg.mres, ltr, mtr, phi_scale;
             ndrange=nphi,
         )
     end
@@ -407,12 +425,13 @@ function _cuda_local_qst(cfg, Q, S, Tlm, cost, phi;
     tables = _cuda_local_tables(cfg, T, cost)
     Vr = similar(Q, T, (nphi,)); Vt = similar(Q, T, (nphi,)); Vp = similar(Q, T, (nphi,))
     step = nphi == 1 ? zero(T) : T(2pi / nphi)
-    sinth = sqrt(max(zero(T), one(T) - T(cost)^2))
+    sinth = T(sqrt(max(0.0, 1 - Float64(cost)^2)))
     local_qst_kernel!(CUDABackend())(
         Vr, Vt, Vp, Q, S, Tlm, tables.Plm, tables.dtheta,
         tables.over_sin, tables.scales, T(phi), step,
         cfg.lmax, cfg.mmax, cfg.mres, ltr, mtr,
-        has_q, has_s, has_t, cfg.robert_form, sinth; ndrange=nphi,
+        has_q, has_s, has_t, cfg.robert_form, sinth,
+        SHTnsKit._evaluator_phi_scale(cfg, T); ndrange=nphi,
     )
     return nphi == 1 ? (reshape(Vr, ()), reshape(Vt, ()), reshape(Vp, ())) :
                         (Vr, Vt, Vp)
@@ -457,23 +476,23 @@ function _cuda_scalar_tables(cfg::SHTConfig, ::Type{T}) where {T<:AbstractFloat}
     identity = objectid(cfg)
     signature = scalar_config_signature(cfg)
     cached = scalar_cache_lookup(
-        _CUDA_SCALAR_CACHE, device, identity, T, signature,
+        _CUDA_SCALAR_CACHE, device, identity, T, signature; owner=cfg,
     )
     cached === nothing || return cached
 
-    x_host, weights_host, scales_host = scalar_host_tables(cfg, T)
-    x = CuArray(x_host)
+    nodes_host, weights_host, scales_host, sint_host = scalar_host_tables(cfg, T)
+    sint = CuArray(sint_host)
     weights = CuArray(weights_host)
     scales = CuArray(scales_host)
     Plm = CUDA.zeros(T, cfg.nlat, cfg.lmax + 1, cfg.mmax + 1)
     backend = CUDABackend()
     kernel! = legendre_table_kernel!(backend)
-    kernel!(Plm, x, cfg.lmax, cfg.mmax;
+    kernel!(Plm, CuArray(nodes_host), cfg.lmax, cfg.mmax;
             ndrange=(cfg.nlat, cfg.mmax + 1))
-    built = CUDAScalarTables(x, weights, Plm, scales)
+    built = CUDAScalarTables(sint, weights, Plm, scales)
 
     return scalar_cache_publish!(CUDA.synchronize,
-        _CUDA_SCALAR_CACHE, device, identity, T, signature, built,
+        _CUDA_SCALAR_CACHE, device, identity, T, signature, built; owner=cfg,
     )
 end
 
@@ -482,23 +501,24 @@ function _cuda_vector_tables(cfg::SHTConfig, ::Type{T}) where {T<:AbstractFloat}
     identity = objectid(cfg)
     signature = vector_config_signature(cfg)
     cached = scalar_cache_lookup(
-        _CUDA_VECTOR_CACHE, device, identity, T, signature,
+        _CUDA_VECTOR_CACHE, device, identity, T, signature; owner=cfg,
     )
     cached === nothing || return cached
 
     scalar = _cuda_scalar_tables(cfg, T)
-    Nlm = CuArray(T.(cfg.Nlm))
+    nodes = CuArray(Float64.(cfg.x))
+    Nlm = CuArray(Float64.(cfg.Nlm))
     Plm = similar(scalar.Plm)
     dtheta = similar(Plm)
     over_sin = similar(Plm)
     kernel! = vector_derivative_table_kernel!(CUDABackend())
-    kernel!(Plm, dtheta, over_sin, scalar.x, Nlm, cfg.lmax, cfg.mmax;
+    kernel!(Plm, dtheta, over_sin, nodes, Nlm, cfg.lmax, cfg.mmax;
             ndrange=(cfg.nlat, cfg.mmax + 1))
     built = CUDAVectorTables(
-        scalar.x, scalar.weights, scalar.scales, dtheta, over_sin,
+        scalar.sint, scalar.weights, scalar.scales, dtheta, over_sin,
     )
     return scalar_cache_publish!(CUDA.synchronize,
-        _CUDA_VECTOR_CACHE, device, identity, T, signature, built,
+        _CUDA_VECTOR_CACHE, device, identity, T, signature, built; owner=cfg,
     )
 end
 
@@ -847,7 +867,7 @@ function _cuda_vector_analysis_direct!(owner, cfg::SHTConfig,
         vector_analysis_kernel!(CUDABackend())(
             Sout, Tout, workspace.Ftheta, workspace.Fphi,
             tables.dtheta, tables.over_sin, tables.weights, tables.scales,
-            tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), lcap, min(cfg.mmax, lcap), cfg.mres,
+            tables.sint, RT(SHTnsKit._analysis_phi_scale(cfg)), lcap, min(cfg.mmax, lcap), cfg.mres,
             cfg.robert_form; ndrange=(lcap + 1, min(cfg.mmax, lcap) + 1),
         )
         CUDA.synchronize()
@@ -912,7 +932,7 @@ function _cuda_vector_synthesis_direct!(owner, cfg::SHTConfig,
         fill!(workspace.Fphi, zero(CT))
         vector_synthesis_kernel!(CUDABackend())(
             workspace.Ftheta, workspace.Fphi, Slm, Tlm,
-            tables.dtheta, tables.over_sin, tables.scales, tables.x,
+            tables.dtheta, tables.over_sin, tables.scales, tables.sint,
             RT(SHTnsKit.phi_inv_scale(cfg)), cfg.nlon, lcap, min(cfg.mmax, lcap),
             cfg.mres, real_output, cfg.robert_form;
             ndrange=(cfg.nlat, min(cfg.mmax, lcap) + 1),
@@ -1054,7 +1074,7 @@ function _cuda_vector_mode_analysis(cfg::SHTConfig, stored_im::Integer,
     Tout = similar(Sout)
     vector_mode_analysis_kernel!(CUDABackend())(
         Sout, Tout, Vt, Vp, tables.dtheta, tables.over_sin,
-        tables.weights, tables.scales, tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), physical_m,
+        tables.weights, tables.scales, tables.sint, RT(SHTnsKit._analysis_phi_scale(cfg)), physical_m,
         lcap, cfg.robert_form; ndrange=length(Sout),
     )
     CUDA.synchronize()
@@ -1076,7 +1096,7 @@ function _cuda_vector_mode_synthesis(cfg::SHTConfig, stored_im::Integer,
     Vt = CUDA.zeros(CT, cfg.nlat); Vp = similar(Vt)
     vector_mode_synthesis_kernel!(CUDABackend())(
         Vt, Vp, Sl, Tl, tables.dtheta, tables.over_sin, tables.scales,
-        tables.x, RT(SHTnsKit.phi_inv_scale(cfg)), physical_m, lcap,
+        tables.sint, RT(SHTnsKit.phi_inv_scale(cfg)), physical_m, lcap,
         cfg.robert_form; ndrange=cfg.nlat,
     )
     CUDA.synchronize()
@@ -1199,7 +1219,7 @@ function _cuda_vector_batch_analysis(cfg::SHTConfig,
     Tout = similar(Sout)
     vector_batch_analysis_kernel!(CUDABackend())(
         Sout, Tout, Ft, Fp, tables.dtheta, tables.over_sin,
-        tables.weights, tables.scales, tables.x, RT(SHTnsKit._analysis_phi_scale(cfg)), cfg.lmax,
+        tables.weights, tables.scales, tables.sint, RT(SHTnsKit._analysis_phi_scale(cfg)), cfg.lmax,
         cfg.mmax, cfg.mres, cfg.robert_form; ndrange=size(Sout),
     )
     CUDA.synchronize()
@@ -1223,7 +1243,7 @@ function _cuda_vector_batch_synthesis(cfg::SHTConfig,
     Fp = CUDA.zeros(CT, cfg.nlat, cfg.nlon, nfields)
     vector_batch_synthesis_kernel!(CUDABackend())(
         Ft, Fp, S, Tlm, tables.dtheta, tables.over_sin, tables.scales,
-        tables.x, RT(SHTnsKit.phi_inv_scale(cfg)), cfg.nlon, cfg.lmax,
+        tables.sint, RT(SHTnsKit.phi_inv_scale(cfg)), cfg.nlon, cfg.lmax,
         cfg.mmax, cfg.mres, real_output, cfg.robert_form;
         ndrange=(cfg.nlat, cfg.mmax + 1, nfields),
     )
@@ -1545,7 +1565,9 @@ function synthesis_axisym(::SHTnsKit.GPU, cfg::SHTConfig,
     length(coefficients) == cfg.lmax + 1 || throw(DimensionMismatch(
         "coefficients must have length lmax+1=$(cfg.lmax + 1)",
     ))
-    return real.(_cuda_mode_synthesis(cfg, 0, coefficients, cfg.lmax, 1))
+    return real.(_cuda_mode_synthesis(
+        cfg, 0, coefficients, cfg.lmax, SHTnsKit._evaluator_phi_scale(cfg),
+    ))
 end
 synthesis_axisym(cfg::SHTConfig, coefficients::CUDA.AnyCuArray{T,1}) where {T<:Complex} =
     synthesis_axisym(SHTnsKit.GPU(), cfg, coefficients)
@@ -1568,7 +1590,8 @@ function synthesis_axisym_l(::SHTnsKit.GPU, cfg::SHTConfig,
         "coefficients must contain degrees 0:ltr",
     ))
     return real.(_cuda_mode_synthesis(
-        cfg, 0, @view(coefficients[1:(lcap + 1)]), lcap, 1,
+        cfg, 0, @view(coefficients[1:(lcap + 1)]), lcap,
+        SHTnsKit._evaluator_phi_scale(cfg),
     ))
 end
 synthesis_axisym_l(cfg::SHTConfig, coefficients::CUDA.AnyCuArray{T,1},
@@ -2345,7 +2368,7 @@ Estimate memory usage for GPU operations.
 function estimate_memory_usage(cfg::SHTConfig, operation::Symbol)
     spatial_size = cfg.nlat * cfg.nlon * 16  # ComplexF64 = 16 bytes
     coeff_size = (cfg.lmax + 1) * (cfg.mmax + 1) * 16
-    legendre_size = cfg.nlat * (cfg.lmax + 1) * (cfg.mmax + 1) * 8
+    legendre_size = _legendre_table_bytes(cfg)
 
     if operation == :analysis
         return spatial_size + coeff_size + legendre_size + spatial_size
@@ -2358,6 +2381,23 @@ function estimate_memory_usage(cfg::SHTConfig, operation::Symbol)
     else
         return spatial_size + coeff_size
     end
+end
+
+function _legendre_table_bytes(cfg::SHTConfig)
+    return cfg.nlat * (cfg.lmax + 1) * (cfg.mmax + 1) * 8
+end
+
+# Memory a safe-wrapper call still has to allocate. Tables already resident for
+# this configuration and the input's precision were counted again, so once they
+# filled half the free memory every later call fell back to the CPU.
+function _cuda_safe_required_memory(cfg::SHTConfig, operation::Symbol, data)
+    required = estimate_memory_usage(cfg, operation)
+    RT = typeof(float(real(zero(eltype(data)))))
+    tables = scalar_cache_lookup(
+        _CUDA_SCALAR_CACHE, CUDA.deviceid(CUDA.device()), objectid(cfg), RT,
+        scalar_config_signature(cfg); owner=cfg,
+    )
+    return tables === nothing ? required : required - _legendre_table_bytes(cfg)
 end
 
 function _cpu_analysis_fallback(cfg::SHTConfig, spatial_data)
@@ -2395,7 +2435,7 @@ function gpu_analysis_safe(cfg::SHTConfig, spatial_data; device=get_device())
         return _cpu_analysis_fallback(cfg, spatial_data)
     end
 
-    required_memory = estimate_memory_usage(cfg, :analysis)
+    required_memory = _cuda_safe_required_memory(cfg, :analysis, spatial_data)
     if !check_gpu_memory(required_memory)
         @info "Falling back to CPU due to memory constraints"
         return _cpu_analysis_fallback(cfg, spatial_data)
@@ -2417,7 +2457,7 @@ function gpu_synthesis_safe(cfg::SHTConfig, coeffs; device=get_device(), real_ou
         return _cpu_synthesis_fallback(cfg, coeffs; real_output=real_output)
     end
 
-    required_memory = estimate_memory_usage(cfg, :synthesis)
+    required_memory = _cuda_safe_required_memory(cfg, :synthesis, coeffs)
     if !check_gpu_memory(required_memory)
         @info "Falling back to CPU due to memory constraints"
         return _cpu_synthesis_fallback(cfg, coeffs; real_output=real_output)
