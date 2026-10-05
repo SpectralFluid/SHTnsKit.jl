@@ -93,6 +93,7 @@ using PencilFFTs: Transforms, PencilFFTPlan, allocate_input, allocate_output
 using FFTW                               # For 1D FFTs on local arrays
 import LinearAlgebra
 import SHTnsKit                          # Core spherical harmonic functionality
+import SHTnsKit: local_size              # Extended for distributed spectral arrays
 
 # `MPI.Comm_free` is present in MPI.jl 0.20.x; newer releases expose
 # `MPI.free(::Comm)` instead. Use a shim so subcommunicators are released

@@ -407,6 +407,20 @@ end
         @test_throws ArgumentError ParExt._validate_cfg_replicated(cfg_grid, comm)
     end
 
+    @testset "exported plan constructors and local_size reach the extension" begin
+        @test SHTnsKit.DistAnalysisPlan(cfg, field) isa ParExt.DistAnalysisPlan
+        @test SHTnsKit.DistPlan(cfg, field) isa ParExt.DistPlan
+        @test SHTnsKit.DistSphtorPlan(cfg, field) isa ParExt.DistSphtorPlan
+        @test SHTnsKit.DistQstPlan(cfg, field) isa ParExt.DistQstPlan
+
+        distributed = ParExt.create_distributed_spectral_array(
+            ParExt.create_distributed_spectral_plan(lmax, lmax, comm),
+        )
+        @test ParExt.local_size === SHTnsKit.local_size
+        @test SHTnsKit.local_size(distributed) == length(distributed.local_coeffs)
+        @test SHTnsKit.local_size(parent(field)) == size(parent(field))
+    end
+
     @testset "planned cfg-form pencils match their construction prototype" begin
         short_field = zero_spatial(
             create_gauss_config(lmax, nlat - 1; nlon),

@@ -2,10 +2,6 @@
 # PencilArray local/point evaluations and packed helpers
 ##########
 
-using MPI
-using PencilArrays
-using SHTnsKit
-
 """
     dist_SH_to_lat(cfg, Alm_pencil::PencilArray, cost::Real;
                    nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax,
