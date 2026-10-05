@@ -1589,6 +1589,10 @@ function SHTnsKit.dist_synthesis(
         Aminus::Union{Nothing,AbstractMatrix}=nothing,
         comm=communicator(prototype_θφ))
     known_comm = communicator(prototype_θφ)
+    # Serial `synthesis` accepts real coefficients (zero imaginary parts); the
+    # dense distributed form rejected them as an unsupported precision.
+    Alm = _complex_coefficients(Alm)
+    Aminus = Aminus === nothing ? nothing : _complex_coefficients(Aminus)
     _validate_dense_scalar_synthesis_storage!(
         known_comm, Alm, prototype_θφ, Aminus,
     )
@@ -1598,6 +1602,9 @@ function SHTnsKit.dist_synthesis(
         comm=known_comm, storage_prevalidated=true,
     )
 end
+
+_complex_coefficients(A::AbstractMatrix{T}) where {T<:Union{Float32,Float64}} = complex.(A)
+_complex_coefficients(A::AbstractMatrix) = A
 
 # Composite operators already have a trusted input communicator. Keep it for
 # every synthesis collective, even when ranks select different congruent output
@@ -2311,6 +2318,15 @@ function _validate_mode_pencils!(comm, values::Tuple, expected_length::Int,
     flags = UInt32(0)
     for value in values
         size_global(value) == (expected_length, 1) || (flags |= 0x0001)
+        # The kernels walk `globalindices(value, 1)` and read column 1 of
+        # parent storage, so every rank must hold its whole slice of that
+        # column in logical order: split dimension 1 only, unpermuted.
+        ranges = PencilArrays.range_local(pencil(value))
+        size(parent(value)) == (length(ranges[1]), length(ranges[2])) ||
+            (flags |= 0x0002)
+        PencilArrays.decomposition(pencil(value)) == (1,) || (flags |= 0x0002)
+        PencilArrays.permutation(value) isa PencilArrays.NoPermutation ||
+            (flags |= 0x0002)
         eltype(value) <: Complex || (flags |= 0x0004)
         eltype(value) === eltype(first_value) || (flags |= 0x0004)
     end
@@ -2323,7 +2339,7 @@ end
 
 function _mode_pencil(::Type{T}, logical_length::Int, comm) where {T}
     result = PencilArray{T}(
-        undef, Pencil((logical_length, 1), (1,), comm),
+        undef, _cached_pencil((logical_length, 1), (1,), comm),
     )
     fill!(parent(result), zero(T))
     return result
@@ -3927,8 +3943,11 @@ function dist_analysis_distributed(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     θ_globals = collect(globalindices(fθφ, 1))
     nθ_local = length(θ_globals)
 
+    # Keep the field's precision, as serial `analysis` does: Float32 input
+    # used to come back as ComplexF64 coefficients.
+    CT = complex(float(real(eltype(local_data))))
     # FFT along φ
-    Fθm = Matrix{ComplexF64}(undef, nlat_local, nlon)
+    Fθm = Matrix{CT}(undef, nlat_local, nlon)
     # φ-locality must be agreed by ALL ranks (see `dist_analysis_standard`): a
     # per-rank test lets the sole owner of a short φ dimension take the local
     # branch while empty ranks enter the collective alone.
@@ -3942,7 +3961,7 @@ function dist_analysis_distributed(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     end
 
     # Compute local contributions to ALL coefficients (same as standard analysis)
-    local_contrib = zeros(ComplexF64, lmax + 1, mmax + 1)
+    local_contrib = zeros(CT, lmax + 1, mmax + 1)
     scaleφ = SHTnsKit._analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
 
     # Pre-cache weights
@@ -4017,7 +4036,7 @@ function dist_analysis_distributed(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
 
 
     # Create output distributed array and extract local portion
-    result = create_distributed_spectral_array(plan, ComplexF64)
+    result = create_distributed_spectral_array(plan, CT)
     for (i, (l, m)) in enumerate(plan.local_lm_indices)
         scale = SHTnsKit.coefficient_scale_to_canonical(cfg, l, m)
         result.local_coeffs[i] = local_contrib[l+1, m+1] / scale
@@ -4893,8 +4912,9 @@ function _dist_analysis_2d_safe(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     θ_globals = collect(globalindices(fθφ, 1))
     nθ_local = length(θ_globals)
 
+    CT = complex(float(real(eltype(local_data))))  # keep the field's precision
     # FFT along φ
-    Fθm = Matrix{ComplexF64}(undef, nlat_local, nlon)
+    Fθm = Matrix{CT}(undef, nlat_local, nlon)
     # φ-locality must be agreed by ALL ranks (see `dist_analysis_standard`): a
     # per-rank test lets the sole owner of a short φ dimension take the local
     # branch while empty ranks enter the collective alone.
@@ -4922,7 +4942,7 @@ function _dist_analysis_2d_safe(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
 
     # Compute local contributions to ALL (l,m) coefficients
     # This ensures correctness when spatial and spectral distributions are independent
-    local_contrib = zeros(ComplexF64, lmax + 1, mmax + 1)
+    local_contrib = zeros(CT, lmax + 1, mmax + 1)
 
     # Legendre integration for ALL m values
     for mval in 0:cfg.mres:mmax
@@ -4974,7 +4994,7 @@ function _dist_analysis_2d_safe(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     end
 
     # Create output array and extract owned coefficients
-    result = create_distributed_spectral_array_2d(plan, ComplexF64)
+    result = create_distributed_spectral_array_2d(plan, CT)
 
     for (i, (l, m)) in enumerate(plan.local_lm_indices)
         scale = SHTnsKit.coefficient_scale_to_canonical(cfg, l, m)
@@ -5378,9 +5398,12 @@ function _dist_analysis_2d_aligned(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     mres = plan.mres
     l_comm = plan.l_comm
 
-    # Use scratch buffers if available, otherwise allocate
-    has_scratch = plan.with_scratch && plan.scratch !== nothing
+    # Use scratch buffers if available, otherwise allocate. The plan's scratch
+    # is ComplexF64; other precisions allocate so the result keeps the
+    # field's precision.
     local_data = parent(fθφ)
+    CT = complex(float(real(eltype(local_data))))
+    has_scratch = plan.with_scratch && plan.scratch !== nothing && CT === ComplexF64
     nlat_local, nlon_local = size(local_data)
 
     # Get cached or compute θ indices
@@ -5403,9 +5426,9 @@ function _dist_analysis_2d_aligned(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
             weights_cache[ii] = cfg.w[iglob]
             x_cache[ii] = cfg.x[iglob]
         end
-        Fθm = Matrix{ComplexF64}(undef, nlat_local, nlon)
+        Fθm = Matrix{CT}(undef, nlat_local, nlon)
         n_m_valid = count(m -> m % mres == 0, m_range)
-        local_contrib = Matrix{ComplexF64}(undef, lmax + 1, max(n_m_valid, 1))
+        local_contrib = Matrix{CT}(undef, lmax + 1, max(n_m_valid, 1))
         P = Vector{Float64}(undef, lmax + 1)
     end
 
@@ -5429,12 +5452,12 @@ function _dist_analysis_2d_aligned(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
 
     # Early exit for empty m_range
     if n_m_valid == 0 || isempty(m_range)
-        result = create_distributed_spectral_array_2d(plan, ComplexF64)
+        result = create_distributed_spectral_array_2d(plan, CT)
         return result
     end
 
     # Zero the contribution buffer (reusing pre-allocated memory)
-    fill!(local_contrib, zero(ComplexF64))
+    fill!(local_contrib, zero(CT))
 
     # Legendre integration only for m values in this m-group
     # This is the key efficiency gain: O(lmax²/p_m) computation instead of O(lmax²)
@@ -5523,7 +5546,7 @@ function _dist_analysis_2d_aligned(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     end
 
     # Create output array and extract owned coefficients
-    result = create_distributed_spectral_array_2d(plan, ComplexF64)
+    result = create_distributed_spectral_array_2d(plan, CT)
 
     # Extract owned coefficients using direct index computation (avoids Dict overhead)
     # m_col = (m - first_valid_m) / mres + 1 when mres divides m_range evenly

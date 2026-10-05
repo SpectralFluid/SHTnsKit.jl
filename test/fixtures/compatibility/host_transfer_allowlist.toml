@@ -1,5 +1,5 @@
 [audit]
-entry_count = 675
+entry_count = 676
 scanner = "deterministic non-overlapping spelling scanner; longer transfer spellings win"
 scope = "src/device_utils.jl and every ext/*.jl file"
 
@@ -2749,14 +2749,6 @@ snippet_sha256 = "1611a3072a05928c550f2a2685e1fa66cc388d366b403a45db1c328882d4af
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|199599a5a0a5fc2dd9d970aefa4164ea63e1d20cd876ebd6e8c4df059e6b14c7|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "199599a5a0a5fc2dd9d970aefa4164ea63e1d20cd876ebd6e8c4df059e6b14c7"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
 key = "ext/ParallelTransforms.jl|matrix|2058a77cc063344bea46220d8dcdf201657420e7601e6e69e15471152cb749d9|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
@@ -2817,6 +2809,30 @@ key = "ext/ParallelTransforms.jl|matrix|5245f8b7195bddab1a1b244787bf442cb3825401
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 2
+snippet_sha256 = "5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7|3"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 3
+snippet_sha256 = "5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7|4"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 4
+snippet_sha256 = "5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7|5"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 5
 snippet_sha256 = "5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7"
 token = "matrix"
 [[entry]]
@@ -2893,6 +2909,14 @@ snippet_sha256 = "8da7cf80f66d5937a6770a331a906f576488761edfacbbf6bd8c3fcc6cd8fa
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|90e41b6bd53abe222d3b8bbdb419b546caa6b7e48b2286e6d67f2163d8e1570e|1"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 1
+snippet_sha256 = "90e41b6bd53abe222d3b8bbdb419b546caa6b7e48b2286e6d67f2163d8e1570e"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
 key = "ext/ParallelTransforms.jl|matrix|9a1eee8c30bd8410194d52ea38151074cdd1b8cfd3b9156f91112880e0d43f24|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
@@ -2914,30 +2938,6 @@ path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
 snippet_sha256 = "bf70639fb3ec7733c9661fb5960b52bc776891ee3eb5c9be9eccd66ce222cd49"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d|2"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 2
-snippet_sha256 = "d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d|3"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 3
-snippet_sha256 = "d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d"
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
@@ -3258,6 +3258,14 @@ path = "ext/ParallelTransforms.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
 snippet_sha256 = "93da1d18b0b0dd32e7d1ef981933881d18dd557a1587dad11a0e5a1dcff9d9dc"
+token = "parent"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/ParallelTransforms.jl|parent|9b28038ea2a7dcab51283a93d2ff51ba8b379c7943baca1e3f59a88da4471d42|1"
+path = "ext/ParallelTransforms.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "9b28038ea2a7dcab51283a93d2ff51ba8b379c7943baca1e3f59a88da4471d42"
 token = "parent"
 [[entry]]
 classification = "metadata_or_storage_preserving"

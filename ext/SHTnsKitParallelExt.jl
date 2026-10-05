@@ -134,6 +134,36 @@ import SHTnsKit                          # Core spherical harmonic functionality
     return nothing
 end
 
+# ===== CACHED PROCESS TOPOLOGIES =====
+# `Pencil(dims, decomp, comm)` builds a new `MPITopology`: a Cartesian
+# communicator plus one subcommunicator per decomposed dimension, released only
+# by GC finalizers. Transforms that built a pencil on every call therefore ran
+# MPICH out of communicators (2048 per process) after about a thousand calls.
+# A pencil is cheap and its topology is not, so per-call pencils share one
+# topology per (communicator, number of decomposed dimensions). The weak key
+# drops a communicator's topologies once the communicator itself is garbage.
+#
+# Creating a topology is collective, so callers must reach this in the same
+# order on every rank, exactly as they had to reach `Pencil(dims, decomp, comm)`.
+const _TOPOLOGY_CACHE = WeakKeyDict{MPI.Comm,Dict{Int,PencilArrays.MPITopology}}()
+const _TOPOLOGY_CACHE_LOCK = ReentrantLock()
+
+function _cached_topology(comm::MPI.Comm, ::Val{M}) where {M}
+    return lock(_TOPOLOGY_CACHE_LOCK) do
+        per_comm = get!(Dict{Int,PencilArrays.MPITopology}, _TOPOLOGY_CACHE, comm)
+        topology = get(per_comm, M, nothing)
+        if topology === nothing
+            topology = PencilArrays.MPITopology(comm, Val(M))
+            per_comm[M] = topology
+        end
+        topology::PencilArrays.MPITopology{M}
+    end
+end
+
+"""Same layout as `Pencil(dims, decomp, comm)`, on the communicator's cached topology."""
+_cached_pencil(dims::Dims, decomp::Dims{M}, comm::MPI.Comm) where {M} =
+    Pencil(_cached_topology(comm, Val(M)), dims, decomp)
+
 # ===== MODULE STATE =====
 # The φ-FFT plan cache (and its `enable_fft_plan_cache!` / `disable_fft_plan_cache!`
 # / `set_fft_plan_cache!` / `fft_plan_cache_enabled` controls) lives in
