@@ -179,14 +179,25 @@ for both CPU and GPU paths, and dispatches based on the array backend at runtime
 # Loop over 2D Cartesian range
 @sht_loop dest[i, j] = src[i, j] * scale over (i, j) ∈ CartesianIndices((n, m))
 
-# Loop with accumulation pattern
-@sht_loop alm[l+1, m+1] += weights[i] * Plm[i, l+1, m+1] * Fm[i, m+1] over i ∈ 1:nlat
+# Stencil over the interior points
+@sht_loop out[I] = src[I + δ(1, I)] - src[I - δ(1, I)] over I ∈ inside(src)
 ```
 
 # Notes
 - Detects CPU vs GPU from the first array in the expression
 - GPU path requires GPU extension (CUDA.jl + KernelAbstractions)
-- CPU path uses @simd @fastmath @inbounds for vectorization
+- CPU path uses @simd @fastmath @inbounds for vectorization. Before the loop,
+  the array accesses every iteration makes are bounds-checked, so a
+  `BoundsError` is raised instead of reading or writing out of range: indices
+  affine in the loop index at the corners of the iteration range, others at
+  every iteration. Accesses that may not run on every iteration (inside `if`,
+  `?:`, `&&`, `||`, an inner loop or closure, or after a possible early exit)
+  and indices that call anything but integer arithmetic are not checked; keep
+  those in range yourself.
+- Every iteration must write its own elements. On a GPU the iterations run
+  concurrently, so an accumulation into a shared element
+  (`a[k] += b[i]` over `i`) races and loses updates; reduce with array
+  operations instead.
 - Set `SHTnsKit.set_loop_backend("SIMD")` to force CPU path
 
 Field accesses in the body (e.g. `cfg.scale`) are supported: the *expression* is
@@ -220,9 +231,29 @@ macro sht_loop(args...)
         Expr(:block, [:( $(I.args[k]) = $loop_item[$k] ) for k in eachindex(I.args)]...)
     end
 
+    # The loop runs with @inbounds, where an out-of-range access silently
+    # corrupts memory, so check the accesses every iteration makes beforehand:
+    # an index affine in the loop index is bounded by its values at the corners
+    # of the range (`_bounds_check_points`), any other is checked everywhere.
+    refs = _collect_refs!(Expr[], body, names, vcat(names, idx))
+    corner_refs = filter(ref -> all(i -> _is_affine_index(i, idx), ref.args[2:end]), refs)
+    point_refs = filter(ref -> !(ref in corner_refs), refs)
+    checks = Expr[]
+    isempty(corner_refs) || push!(checks, :(
+        for $loop_item ∈ $_bounds_check_points(R)
+            $bind_index
+            $(map(_bounds_check, corner_refs)...)
+        end))
+    isempty(point_refs) || push!(checks, :(
+        for $loop_item ∈ R
+            $bind_index
+            $(map(_bounds_check, point_refs)...)
+        end))
+
     return quote
         # CPU path: SIMD loop
         function $kern_cpu($(symWtypes...), R) where {$(symT...)}
+            $(checks...)
             # `@simd` requires a single-symbol iteration variable. Bind the
             # user-facing symbol or tuple inside the loop so documented forms
             # such as `(i, j) ∈ CartesianIndices(...)` compile as well.
@@ -348,6 +379,124 @@ function _subst_ops(ex::Symbol, ops::Vector{Any}, names::Vector{Symbol})
 end
 
 _subst_ops(ex, ops::Vector{Any}, names::Vector{Symbol}) = ex
+
+"""
+    _collect_refs!(refs, ex, arrays, allowed) -> refs
+
+Collect the accesses `a[idx...]` to kernel operands that every iteration of a
+loop body makes, inner references first so that an index read through another
+array (`a[b[I]]`) is itself checked before it is used. Accesses that may not
+run are left out, since a guarded access may legitimately be out of range
+where its guard fails: branches of `if`, `?:`, `&&` and `||`, inner loops,
+closures, comprehensions, `try` and macro calls, and everything after a
+statement that can end the iteration early. So are accesses whose indices
+cannot be evaluated before the loop (see `_index_is_checkable`).
+"""
+function _collect_refs!(refs::Vector{Expr}, ex::Expr, arrays::Vector{Symbol},
+                        allowed::Vector{Symbol})
+    head = ex.head
+    if head in (:if, :elseif, :&&, :||)
+        # Only the condition runs on every iteration.
+        return _collect_refs!(refs, ex.args[1], arrays, allowed)
+    elseif head in _SKIPPED_LOOP_HEADS ||
+           (head === :(=) && Meta.isexpr(ex.args[1], (:call, :where)))  # f(x) = ...
+        return refs
+    elseif head === :block
+        for statement in ex.args
+            _collect_refs!(refs, statement, arrays, allowed)
+            _may_end_iteration(statement) && break
+        end
+        return refs
+    end
+    for a in ex.args
+        _collect_refs!(refs, a, arrays, allowed)
+    end
+    if head === :ref && ex.args[1] isa Symbol && ex.args[1] in arrays &&
+       all(i -> _index_is_checkable(i, allowed), ex.args[2:end])
+        ex in refs || push!(refs, ex)
+    end
+    return refs
+end
+_collect_refs!(refs::Vector{Expr}, ex, arrays::Vector{Symbol}, allowed::Vector{Symbol}) = refs
+
+# Constructs whose contents may run any number of times, including never.
+const _SKIPPED_LOOP_HEADS = (:for, :while, :try, :function, :->, :do, :generator,
+                             :comprehension, :typed_comprehension, :macrocall, :quote)
+
+# Statements after one of these may not run on every iteration.
+function _may_end_iteration(ex::Expr)
+    ex.head in (:continue, :break, :return, :macrocall) && return true
+    ex.head === :call && ex.args[1] in (:throw, :error, :rethrow) && return true
+    return any(_may_end_iteration, ex.args)
+end
+_may_end_iteration(ex) = false
+
+"""
+    _index_is_checkable(ex, allowed) -> Bool
+
+Whether an index can be evaluated before the loop without changing what the
+program does: loop indices, operands, literals, `:`, reads of operands and
+the integer arithmetic and index helpers in `_INDEX_CALLS`. Any other call
+might have side effects (`rand`) or be expensive, so its access is not checked.
+"""
+_index_is_checkable(ex::Symbol, allowed) = ex in allowed || ex === :(:)
+function _index_is_checkable(ex::Expr, allowed)
+    args = if ex.head === :call && ex.args[1] in _INDEX_CALLS
+        ex.args[2:end]
+    elseif ex.head === :ref && ex.args[1] in allowed
+        ex.args[2:end]
+    elseif ex.head in (:tuple, :vect)
+        ex.args
+    else
+        return false
+    end
+    return all(a -> _index_is_checkable(a, allowed), args)
+end
+_index_is_checkable(ex, allowed) = true  # literals
+
+const _INDEX_CALLS = (:+, :-, :*, :÷, :div, :rem, :mod, :%, :fld, :cld, :abs,
+                      :min, :max, :(:), :δ, :CI, :CartesianIndex,
+                      :firstindex, :lastindex, :length, :size)
+
+"""
+    _is_affine_index(ex, idx) -> Bool
+
+Whether an index is affine in the loop indices `idx`, so that its extremes
+over the iteration range are at the corners. `δ(k, I)` is a constant unit
+offset. Ranges are not affine in this sense: one that is empty at a corner
+checks nothing there.
+"""
+function _is_affine_index(ex, idx)
+    _mentions(ex, idx) || return true  # loop-invariant
+    ex isa Symbol && return true
+    Meta.isexpr(ex, :call) || return false
+    f, args = ex.args[1], ex.args[2:end]
+    f === :δ && return true
+    f === :* && count(a -> _mentions(a, idx), args) > 1 && return false
+    return f in (:+, :-, :*, :CI, :CartesianIndex) && all(a -> _is_affine_index(a, idx), args)
+end
+
+_mentions(ex::Symbol, idx) = ex in idx
+_mentions(ex::Expr, idx) = any(a -> _mentions(a, idx), ex.args)
+_mentions(ex, idx) = false
+
+# Checks an access to an array operand; other operands (a `Ref`, `Tuple` or
+# `Dict`) define no `checkbounds` and are left alone.
+_bounds_check(ref::Expr) = :($(ref.args[1]) isa AbstractArray &&
+                             Base.checkbounds($(ref.args[1]), $(ref.args[2:end]...)))
+
+"""
+    _bounds_check_points(R)
+
+The iterations at which `@sht_loop` checks accesses with affine indices before
+running the loop with `@inbounds`: the corners of a Cartesian box or the ends
+of a range, which bound every such index (stencils such as `a[I + δ(1, I)]`
+included), and every element of any other iterable.
+"""
+_bounds_check_points(R::CartesianIndices) = isempty(R) ? CartesianIndex{ndims(R)}[] :
+    vec([CartesianIndex(c) for c in Iterators.product(map(r -> (first(r), last(r)), R.indices)...)])
+_bounds_check_points(R::AbstractRange) = isempty(R) ? R : (first(R), last(R))
+_bounds_check_points(R) = R
 
 """
     joinsymtype(sym, symT)

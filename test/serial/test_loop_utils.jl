@@ -128,6 +128,77 @@ Base.setindex!(a::TestCuArray, value, I...) = setindex!(a.data, value, I...)
         @test tuple_dest == tuple_src
     end
 
+    @testset "@sht_loop checks bounds before its @inbounds loop" begin
+        # The shipped loop demo wrote an 8×8 array over the 10×10 interior:
+        # silent heap corruption under @inbounds.
+        data = reshape(collect(1.0:100.0), 10, 10)
+        small = zeros(8, 8)
+        @test_throws BoundsError SHTnsKit.@sht_loop small[I] = data[I + δ(1, I)] - data[I] over I ∈ inside(data)
+        @test all(iszero, small)  # rejected before any write
+        out = zeros(10, 10)
+        SHTnsKit.@sht_loop out[I] = data[I + δ(1, I)] - data[I - δ(1, I)] over I ∈ inside(data)
+        @test out[2:9, 2:9] == fill(2.0, 8, 8)
+        @test_throws BoundsError SHTnsKit.@sht_loop out[I] = data[I + δ(2, I)] over I ∈ CartesianIndices(out)
+        short = zeros(3)
+        @test_throws BoundsError SHTnsKit.@sht_loop short[i] = 1.0 over i ∈ 1:4
+        indices = [1, 2, 7]
+        @test_throws BoundsError SHTnsKit.@sht_loop short[k] = 1.0 over k ∈ indices
+        # Corner values do not bound indirect or non-affine indices, which are
+        # therefore checked at every iteration.
+        src3 = [1.0, 2.0, 3.0]
+        dest3 = zeros(3)
+        perm = [1, 4, 3]
+        @test_throws BoundsError SHTnsKit.@sht_loop dest3[i] = src3[perm[i]] over i ∈ 1:3
+        @test all(iszero, dest3)
+        dest7 = zeros(7)
+        @test_throws BoundsError SHTnsKit.@sht_loop dest7[i + 4] = src3[abs(i)] over i ∈ -3:3
+        @test all(iszero, dest7)
+        perm = [3, 1, 2]
+        SHTnsKit.@sht_loop dest3[i] = src3[perm[i]] over i ∈ 1:3
+        @test dest3 == [3.0, 1.0, 2.0]
+    end
+
+    @testset "@sht_loop checks only accesses every iteration makes" begin
+        # A guarded access may be out of range where its guard fails, and an
+        # operand that is not an array has no checkbounds; both ran before the
+        # checks were added and must keep running.
+        src = collect(1.0:5.0)
+        shifted = [0.0, 1.0, 2.0, 3.0, 4.0]
+        out = zeros(5)
+        SHTnsKit.@sht_loop out[i] = i > 1 ? src[i - 1] : 0.0 over i ∈ 1:5
+        @test out == shifted
+        out = zeros(5)
+        SHTnsKit.@sht_loop if i > 1; out[i] = src[i - 1]; end over i ∈ 1:5
+        @test out == shifted
+        out = zeros(5)
+        SHTnsKit.@sht_loop begin
+            i < 5 || return
+            out[i] = src[i + 1]
+        end over i ∈ 1:5
+        @test out == [2.0, 3.0, 4.0, 5.0, 0.0]
+        grid = reshape(collect(1.0:12.0), 3, 4)
+        nlon = 4
+        wrapped = zeros(3, 4)
+        SHTnsKit.@sht_loop wrapped[i, j] = j == 1 ? grid[i, nlon] : grid[i, j - 1] over (i, j) ∈ CartesianIndices(wrapped)
+        @test wrapped == circshift(grid, (0, 1))
+
+        scale = Ref(2.0)
+        weights = (1.0, 2.0, 3.0)
+        offsets = Dict(1 => 10.0)
+        out = zeros(3)
+        SHTnsKit.@sht_loop out[i] = scale[] * weights[i] + offsets[1] over i ∈ 1:3
+        @test out == [12.0, 14.0, 16.0]
+
+        # An index that calls anything but integer arithmetic is not evaluated
+        # ahead of the loop: it may have side effects.
+        calls = Ref(0)
+        counted(i) = (calls[] += 1; i)
+        out = zeros(5)
+        SHTnsKit.@sht_loop out[i] = src[counted(i)] over i ∈ 1:5
+        @test calls[] == 5
+        @test out == src
+    end
+
     @testset "@sht_loop field-access hygiene" begin
         # A field access in the body must read THAT field, never an unrelated
         # caller local of the same name. Rewriting `cfg.scale` to the bare symbol

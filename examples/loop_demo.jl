@@ -35,7 +35,7 @@ println("field[16, 32] = $(field[16, 32])")
 # Example 4: Using δ for stencil operations
 println("\nExample 4: Stencil operation with δ")
 data = rand(10, 10)
-laplacian = zeros(8, 8)
+laplacian = zeros(size(data))  # interior indices run to 9; an 8×8 array overflowed
 
 # Compute discrete Laplacian on interior points
 @sht_loop laplacian[I] = (
