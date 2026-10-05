@@ -162,9 +162,10 @@ jobs:
       - name: Reinstall direct parallel test dependencies (Linux only)
         if: runner.os == 'Linux'
         run: |
+          # test_mpi_ad_public_api.jl also differentiates with ForwardDiff and Zygote.
           julia --project=. -e '
             using Pkg
-            Pkg.add(["MPI", "PencilArrays", "PencilFFTs", "ChainRulesCore"])
+            Pkg.add(["MPI", "PencilArrays", "PencilFFTs", "ChainRulesCore", "ForwardDiff", "Zygote"])
           '
 
       - name: Run comprehensive serial tests
