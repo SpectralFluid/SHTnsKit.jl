@@ -215,6 +215,24 @@ function _cached_local_fft_plan(kind::Symbol, A::AbstractMatrix, nlon::Int=0)
     end
 end
 
+"""
+Apply an out-of-place real (`rfft`/`irfft`) plan from `_cached_local_fft_plan`.
+
+FFTW.jl plans these for a freshly allocated, column-contiguous output, and the
+cache key covers only the input layout. A strided destination — a padded
+`spatial_view`, or a strided `fft_scratch` — therefore made `mul!` throw
+"FFTW plan applied to wrong-strides output". Such destinations receive the
+transform through a contiguous buffer instead.
+"""
+@inline function _mul_real_fft!(dest::AbstractMatrix, plan, src::AbstractMatrix)
+    if dest isa StridedMatrix && stride(dest, 1) == 1 && stride(dest, 2) == size(dest, 1)
+        mul!(dest, plan, src)
+    else
+        copyto!(dest, plan * src)
+    end
+    return dest
+end
+
 # FFTW's in-place complex plans mutate their input, so real inputs are copied
 # explicitly into the complex destination before applying the cached plan.
 @inline function _copy_complex_input!(dest::AbstractMatrix{<:Complex}, A::AbstractMatrix)
@@ -421,7 +439,7 @@ function rfft_phi!(dest::StridedMatrix{Complex{T}}, A::StridedMatrix{T}) where {
     # Exact FFTW-supported eltypes do not need the generic try/fallback path;
     # keeping this method straight-line avoids patch-version allocation noise.
     plan = _cached_local_fft_plan(:rfft, A)
-    mul!(dest, plan, A)
+    _mul_real_fft!(dest, plan, A)
     _FFT_BACKEND[] = _FFT_BACKEND_FFTW
     return dest
 end
@@ -433,7 +451,7 @@ function rfft_phi!(dest::AbstractMatrix{<:Complex}, A::AbstractMatrix{<:Real})
         # The real-input plan writes only nonnegative Fourier bins. Scalar and
         # vector synthesis code never fills negative bins on this path.
         plan = _cached_local_fft_plan(:rfft, A)
-        mul!(dest, plan, A)
+        _mul_real_fft!(dest, plan, A)
         _FFT_BACKEND[] = _FFT_BACKEND_FFTW
         return dest
     catch e
@@ -463,7 +481,7 @@ function irfft_phi!(dest::StridedMatrix{T}, A::StridedMatrix{Complex{T}}, nlon::
     # Exact FFTW-supported eltypes do not need the generic try/fallback path;
     # keeping this method straight-line avoids patch-version allocation noise.
     plan = _cached_local_fft_plan(:irfft, A, nlon)
-    mul!(dest, plan, A)
+    _mul_real_fft!(dest, plan, A)
     _FFT_BACKEND[] = _FFT_BACKEND_FFTW
     return dest
 end
@@ -475,7 +493,7 @@ function irfft_phi!(dest::AbstractMatrix{<:Real}, A::AbstractMatrix{<:Complex}, 
         # `plan_irfft` implicitly reconstructs Hermitian negative-frequency
         # bins, so callers pass only the half-spectrum buffer here.
         plan = _cached_local_fft_plan(:irfft, A, nlon)
-        mul!(dest, plan, A)
+        _mul_real_fft!(dest, plan, A)
         _FFT_BACKEND[] = _FFT_BACKEND_FFTW
         return dest
     catch e
