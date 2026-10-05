@@ -890,3 +890,56 @@ shtns_rotation_apply_real(r::SHTRotation,
                           Qlm::AbstractVector{<:Complex},
                           Rlm::AbstractVector{<:Complex}) =
     shtns_rotation_apply_real(CPU(), r, Qlm, Rlm)
+
+"""
+    _rotation_apply_real_adjoint(r::SHTRotation, ȳ::AbstractVector) -> Q̄
+
+Adjoint of `Q ↦ shtns_rotation_apply_real(r, Q, R)` under the real inner product
+`Re Σ conj(aₖ)·bₖ` that ChainRules and Zygote use for complex arrays.
+
+The packed real rotation is ℝ-linear, not ℂ-linear: its negative orders are the
+conjugates of the stored ones. On real-field vectors (real m = 0 entries) the
+adjoint coincides with `W·R⁻¹·W⁻¹`, `W = diag(1, 2, 2, …)`, but a cotangent with
+imaginary m = 0 entries — `sum(abs2, R .- T)` with a complex target `T` — lies
+outside that subspace, and the shortcut then returned wrong gradients. This
+places the cotangent on the stored orders of the full complex layout, applies
+the transposed Wigner action there, and folds the negative orders back through
+their conjugate relation. Shared by the ChainRules and Zygote extensions.
+"""
+function _rotation_apply_real_adjoint(r::SHTRotation, ȳ::AbstractVector)
+    lmax, mmax = r.lmax, r.mmax
+    length(ȳ) == nlm_calc(lmax, mmax, 1) || throw(DimensionMismatch(
+        "rotation cotangent must have the packed (mres=1) length $(nlm_calc(lmax, mmax, 1))"))
+    α, β, γ = _rotation_zyz_angles(r, Float64)
+    WT = promote_type(complex(float(real(eltype(ȳ)))), ComplexF64)
+    Q̄ = zeros(complex(float(real(eltype(ȳ)))), length(ȳ))
+    nmax = 2lmax + 1
+    cbar = Vector{WT}(undef, nmax)
+    dl = Matrix{Float64}(undef, nmax, nmax)
+    dwork = similar(dl)
+    for l in 0:lmax
+        mm = min(l, mmax)
+        n = 2l + 1
+        # Canonical cotangent of the stored orders with the output phase undone;
+        # the forward never writes negative orders, so they receive none.
+        fill!(view(cbar, 1:n), zero(WT))
+        for m in 0:mm
+            k = LM_index(lmax, 1, l, m) + 1
+            cbar[m + l + 1] = ȳ[k] / _rotation_coefficient_scale(r, l, m) * cis(m * α)
+        end
+        _wigner_d_advance!(dl, dwork, l, β)
+        for mp in 0:mm
+            # Transposed Wigner action and input phase at orders ±m'.
+            bp = zero(WT); bn = zero(WT)
+            for m in 0:mm
+                bp += dl[m + l + 1, mp + l + 1] * cbar[m + l + 1]
+                bn += dl[m + l + 1, -mp + l + 1] * cbar[m + l + 1]
+            end
+            q = bp * cis(mp * γ)
+            # The forward builds order -m' as (-1)^m' conj(A_m') in the Wigner basis.
+            mp > 0 && (q += (-1)^mp * conj(bn * cis(-mp * γ)))
+            Q̄[LM_index(lmax, 1, l, mp) + 1] = q * _rotation_coefficient_scale(r, l, mp)
+        end
+    end
+    return Q̄
+end

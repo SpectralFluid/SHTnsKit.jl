@@ -139,6 +139,23 @@ function _get_local_data(arr::AbstractArray)
 end
 
 """
+    _global_values(arr) -> AbstractArray
+
+The global values of `arr` on every rank: `arr` itself for an ordinary array.
+The parallel extension gathers a `PencilArray` (a collective call).
+"""
+_global_values(arr::AbstractArray) = arr
+
+"""
+    _local_block_like(arr, values) -> AbstractArray
+
+Inverse of `_global_values`: `values` itself for an ordinary array, and
+this rank's block of the replicated `values` in `arr`'s layout for a
+`PencilArray`.
+"""
+_local_block_like(arr::AbstractArray, values::AbstractArray) = values
+
+"""
     _enable_gpu_loops!(launcher)
 
 Called by GPU extension to enable GPU loop support.

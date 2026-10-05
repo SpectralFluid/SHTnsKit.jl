@@ -8,7 +8,7 @@ using SHTnsKit
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
 const _HAS_CHAINRULES = try
-    @eval using ChainRulesCore: rrule
+    @eval using ChainRulesCore: rrule, AbstractZero, ZeroTangent
     true
 catch
     false
@@ -515,7 +515,7 @@ if _HAS_CHAINRULES
         loss(q, s, t) = (V = synthesis_qst(cfg, q, s, t);
                          sum(Cr .* V[1]) + sum(Ct .* V[2]) + sum(Cp .* V[3]))
         _, back = rrule(synthesis_qst, cfg, Q, S, T)
-        _, _, Q̄, S̄, T̄, _ = back((Cr, Ct, Cp))
+        _, _, Q̄, S̄, T̄ = back((Cr, Ct, Cp))
         for (slot, ḡ, perturb) in ((:Q, Q̄, (h, q, s, t) -> (q .+ h, s, t)),
                                    (:S, S̄, (h, q, s, t) -> (q, s .+ h, t)),
                                    (:T, T̄, (h, q, s, t) -> (q, s, t .+ h)))
@@ -555,6 +555,39 @@ if _HAS_CHAINRULES
         _, b1 = rrule(synthesis, cfg, alm)
         _, b2 = rrule(synthesis, cfg, alm; use_rfft=true)
         @test b1(ȳ)[3] ≈ b2(ȳ)[3] rtol=1e-10
+    end
+
+    @testset "pullbacks: one tangent per argument, zero cotangents accepted" begin
+        # Keyword tangents and crashes on an unused output's ZeroTangent broke
+        # ChainRulesTestUtils and Diffractor, which check both.
+        f, g, h = (randn(rng, cfg.nlat, cfg.nlon) for _ in 1:3)
+        a, b, c = rnd(), rnd(), rnd()
+        packed = SHTnsKit.pack_lm(cfg, a)
+        complex_field = complex.(f, g)
+        complex_packed = randn(rng, ComplexF64, SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1))
+        rules = (
+            (analysis, (f,)), (synthesis, (a,)),
+            (analysis_batch, (cat(f, g; dims=3),)), (synthesis_batch, (cat(a, b; dims=3),)),
+            (analysis_packed, (vec(f),)), (synthesis_packed, (packed,)),
+            (analysis_sphtor, (f, g)), (synthesis_sphtor, (a, b)),
+            (analysis_qst, (f, g, h)), (synthesis_qst, (a, b, c)),
+            (energy_scalar, (a,)), (energy_vector, (a, b)), (enstrophy, (a,)),
+            (analysis_packed_cplx, (complex_field,)), (synthesis_packed_cplx, (complex_packed,)),
+        )
+        for (transform, arguments) in rules
+            y, back = rrule(transform, cfg, arguments...)
+            cotangent = y isa Tuple ? map(similar, y) : y isa Number ? 1.0 : similar(y)
+            cotangent isa Tuple ? foreach(x -> fill!(x, 1), cotangent) :
+                cotangent isa Number || fill!(cotangent, 1)
+            @test length(back(cotangent)) == length(arguments) + 2
+            zero_tangents = back(ZeroTangent())
+            @test length(zero_tangents) == length(arguments) + 2
+            @test all(t -> t isa AbstractZero || iszero(t), zero_tangents[3:end])
+        end
+        rotation = SHTRotation(cfg.lmax, cfg.mmax; β=0.4)
+        _, back = rrule(shtns_rotation_apply_cplx, rotation, complex_packed,
+                        similar(complex_packed))
+        @test all(t -> t isa AbstractZero, back(ZeroTangent())[2:end])
     end
 end
 else

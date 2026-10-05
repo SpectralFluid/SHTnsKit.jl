@@ -139,11 +139,14 @@ function SHTnsKit.zgrad_rotation_angles_real(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
     r = SHTnsKit.SHTRotation(lmax, mmax; α=float(α), β=float(β), γ=float(γ))
     SHTnsKit.shtns_rotation_apply_real(r, Qlm, R)
     gα = 0.0; gβ = 0.0; gγ = 0.0
+    dbuf = Matrix{typeof(float(β))}(undef, 2lmax + 1, 2lmax + 1)
+    dwork = similar(dbuf); ddbuf = similar(dbuf)
     for l in 0:lmax
         mm = min(l, mmax)
-        dl = SHTnsKit.wigner_d_matrix(l, float(β))
-        ddl = SHTnsKit.wigner_d_matrix_deriv(l, float(β))
         n = 2l + 1
+        SHTnsKit._wigner_d_advance!(dbuf, dwork, l, float(β))
+        dl = view(dbuf, 1:n, 1:n)
+        ddl = SHTnsKit._wigner_d_deriv!(ddbuf, dl, l)
         b = zeros(ComplexF64, n)   # zeros, NOT undef: only |mp| <= min(l,mmax) is filled below,
                                    # and `dl * b` reads the whole 2l+1 range — with `undef` the
                                    # l > mmax slots fed malloc garbage into the gradients.
@@ -197,11 +200,14 @@ function SHTnsKit.zgrad_rotation_angles_cplx(lmax::Integer, mmax::Integer, Zlm::
     Zlm = ε .* Zlm
     R = ε .* R
     gα = 0.0; gβ = 0.0; gγ = 0.0
+    dbuf = Matrix{typeof(float(β))}(undef, 2lmax + 1, 2lmax + 1)
+    dwork = similar(dbuf); ddbuf = similar(dbuf)
     for l in 0:lmax
         mm = min(l, mmax)
-        dl = SHTnsKit.wigner_d_matrix(l, float(β))
-        ddl = SHTnsKit.wigner_d_matrix_deriv(l, float(β))
         n = 2l + 1
+        SHTnsKit._wigner_d_advance!(dbuf, dwork, l, float(β))
+        dl = view(dbuf, 1:n, 1:n)
+        ddl = SHTnsKit._wigner_d_deriv!(ddbuf, dl, l)
         # Build b_m' = e^{-i m' γ} Z_{l,m'} for m' in [-l..l]
         b = zeros(ComplexF64, n)   # zeros, NOT undef: only |mp| <= min(l,mmax) is filled below,
                                    # and `dl * b` reads the whole 2l+1 range — with `undef` the
@@ -242,22 +248,16 @@ end
 # -----------------------------
 ## Zygote-specific adjoints for rotations/operators to ensure gradients are not `nothing`
 ## These mirror the ChainRules rrules but live here to guarantee Zygote picks them up.
-## The Q̄ formulas match SHTnsKitAdvancedADExt and are FD-verified in
-## test/serial/test_rotation_gradients.jl (m>0 packed modes carry double field
-## weight ⇒ standard-inner-product adjoint is Q̄ = W·R⁻¹·(W⁻¹ ȳ), W = diag(wm)).
-_zyg_rot_wm(cfg, ::Type{T}) where {T<:AbstractFloat} =
-    T[cfg.mi[k] == 0 ? one(T) : T(2) for k in 1:cfg.nlm]
-
-function _zyg_configured_rotation_adjoint!(cfg, inverse, ȳ, Q̄)
-    RT = typeof(real(zero(eltype(Q̄))))
-    wm = _zyg_rot_wm(cfg, RT)
+## Packed real rotations are ℝ-linear, so the coefficient adjoint is the exact
+## `SHTnsKit._rotation_apply_real_adjoint` shared with SHTnsKitAdvancedADExt (the
+## former `W·R⁻¹·W⁻¹` shortcut is only right for real m=0 cotangents). FD-verified
+## in test/serial/test_rotation_gradients.jl. `rotation` is the forward rotation.
+function _zyg_configured_rotation_adjoint!(cfg, rotation, ȳ, Q̄)
     ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
-    Q̄_canonical = SHTnsKit._uses_canonical_convention(cfg) ? Q̄ : similar(Q̄)
-    SHTnsKit.shtns_rotation_apply_real(
-        inverse, ȳ_canonical ./ wm, Q̄_canonical,
-    )
-    Q̄_canonical .*= wm
-    if Q̄_canonical !== Q̄
+    Q̄_canonical = SHTnsKit._rotation_apply_real_adjoint(rotation, ȳ_canonical)
+    if SHTnsKit._uses_canonical_convention(cfg)
+        copyto!(Q̄, Q̄_canonical)
+    else
         SHTnsKit.convert_alm_norm!(Q̄, Q̄_canonical, cfg; to_internal=true)
     end
     return Q̄
@@ -291,14 +291,16 @@ Zygote.@adjoint function SHTnsKit.SH_Yrotate(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
     Qlm_canonical = copy(SHTnsKit._internal_coefficients(Qlm, cfg))
     y = SHTnsKit.SH_Yrotate(cfg, Qlm, alpha, Rlm)
     function back(ȳ)
-        inverse = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
-        SHTnsKit.shtns_rotation_set_angles_ZYZ(inverse, 0.0, -alpha, 0.0)
+        forward = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
+        SHTnsKit.shtns_rotation_set_angles_ZYZ(forward, 0.0, float(alpha), 0.0)
         Q̄ = similar(Qlm)
-        _zyg_configured_rotation_adjoint!(cfg, inverse, ȳ, Q̄)
+        _zyg_configured_rotation_adjoint!(cfg, forward, ȳ, Q̄)
         # angle gradient via derivative of Wigner-d at beta=alpha
         dα = zero(float(alpha))
         lmax, mmax = cfg.lmax, cfg.mmax
         ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
+        dl = Matrix{typeof(float(alpha))}(undef, 2lmax + 1, 2lmax + 1)
+        dwork = similar(dl); dd = similar(dl)
         for l in 0:lmax
             mm = min(l, mmax)
             b = zeros(eltype(ȳ_canonical), 2l+1)
@@ -311,7 +313,8 @@ Zygote.@adjoint function SHTnsKit.SH_Yrotate(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
                     b[-mp + l + 1] = (-1)^mp * conj(Qlm_canonical[idxp])
                 end
             end
-            dd = SHTnsKit.wigner_d_matrix_deriv(l, float(alpha))
+            SHTnsKit._wigner_d_advance!(dl, dwork, l, float(alpha))
+            SHTnsKit._wigner_d_deriv!(dd, dl, l)
             for m in 0:mm
                 lm = SHTnsKit.LM_index(lmax, 1, l, m) + 1
                 s = zero(eltype(ȳ_canonical))
@@ -327,12 +330,17 @@ Zygote.@adjoint function SHTnsKit.SH_Yrotate(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
 end
 
 Zygote.@adjoint function SHTnsKit.SH_mul_mx(cfg::SHTnsKit.SHTConfig, mx::AbstractVector{<:Real}, Qlm::AbstractVector{<:Complex}, Rlm::AbstractVector{<:Complex})
+    # The pullback needs the primal operands, but callers routinely reuse the
+    # buffers before it runs (`SH_mul_mx(cfg, mx, R, Q)` overwrites Q). The
+    # primal itself still sees the caller's arrays, so its alias check applies.
+    mx0 = copy(mx)
+    Q0 = copy(Qlm)
     y = SHTnsKit.SH_mul_mx(cfg, mx, Qlm, Rlm)
     function back(ȳ)
         lmax = cfg.lmax; mres = cfg.mres
-        Q̄ = zeros(eltype(Qlm), length(Qlm))
-        mx̄ = zeros(eltype(mx), length(mx))
-        # Forward pass: R[lm0+1] = mx[2*lm_prev+2]*Q[lm_prev+1] + mx[2*lm_next+1]*Q[lm_next+1]
+        Q̄ = zeros(eltype(Q0), length(Q0))
+        mx̄ = zeros(eltype(mx0), length(mx0))
+        # Forward pass: R[lm0+1] = mx0[2*lm_prev+2]*Q[lm_prev+1] + mx0[2*lm_next+1]*Q[lm_next+1]
         # where lm_prev = LM_index(l-1,m), lm_next = LM_index(l+1,m)
         @inbounds for lm0 in 0:(cfg.nlm-1)
             l = cfg.li[lm0+1]; m = cfg.mi[lm0+1]
@@ -340,16 +348,16 @@ Zygote.@adjoint function SHTnsKit.SH_mul_mx(cfg::SHTnsKit.SHTConfig, mx::Abstrac
             # Contribution from lower neighbor Y_{l-1}^m
             if l > m && l > 0
                 lm_prev = SHTnsKit.LM_index(lmax, mres, l-1, m)
-                c_from_below = mx[2*lm_prev + 2]  # b_{l-1}^m coefficient
+                c_from_below = mx0[2*lm_prev + 2]  # b_{l-1}^m coefficient
                 Q̄[lm_prev + 1] += c_from_below * rbar  # mx is real, so conj not needed
-                mx̄[2*lm_prev + 2] += real(conj(rbar) * Qlm[lm_prev + 1])
+                mx̄[2*lm_prev + 2] += real(conj(rbar) * Q0[lm_prev + 1])
             end
             # Contribution from upper neighbor Y_{l+1}^m
             if l < lmax
                 lm_next = SHTnsKit.LM_index(lmax, mres, l+1, m)
-                c_from_above = mx[2*lm_next + 1]  # a_{l+1}^m coefficient
+                c_from_above = mx0[2*lm_next + 1]  # a_{l+1}^m coefficient
                 Q̄[lm_next + 1] += c_from_above * rbar  # mx is real, so conj not needed
-                mx̄[2*lm_next + 1] += real(conj(rbar) * Qlm[lm_next + 1])
+                mx̄[2*lm_next + 1] += real(conj(rbar) * Q0[lm_next + 1])
             end
         end
         return (nothing, mx̄, Q̄, nothing)

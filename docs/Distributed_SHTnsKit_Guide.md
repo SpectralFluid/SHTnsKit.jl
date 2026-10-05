@@ -223,12 +223,34 @@ Packed conversions (dense/LM ⇄ distributed)
 Zygote (distributed wrappers)
 - Scalar: `g = zgrad_scalar_energy(cfg, fθφ::PencilArray)`
 - Vector: `(gVt, gVp) = zgrad_vector_energy(cfg, Vtθφ::PencilArray, Vpθφ::PencilArray)`
+- Enstrophy: `g = zgrad_enstrophy_Tlm(cfg, Tlm::PencilArray)`
+
+These differentiate the distributed transforms directly and return gradients in
+the input's Pencil layout.
 
 ForwardDiff (distributed wrappers)
 - Scalar: `g = fdgrad_scalar_energy(cfg, fθφ::PencilArray)`
 - Vector: `(gVt, gVp) = fdgrad_vector_energy(cfg, Vtθφ::PencilArray, Vpθφ::PencilArray)`
 
-Both use the distributed transform paths internally and return gradients in the same Pencil layout.
+Dual numbers cannot pass through the distributed kernels, so these gather the
+field on every rank, differentiate it as a whole grid, and return each rank's
+block of the gradient in the input's Pencil layout. Every rank pays for a full
+serial gradient: use them for small grids and the Zygote wrappers otherwise.
+
+Custom losses
+- Zygote/ChainRules rules cover `analysis`, `synthesis`, `analysis_sphtor`,
+  `synthesis_sphtor`, `analysis_qst` and `synthesis_qst` (and their `dist_*`
+  forms) on PencilArrays, plus `energy_scalar`, `energy_vector` and `enstrophy`
+  of spectral PencilArrays.
+- The cotangent of a distributed output is each rank's derivative for its own
+  block: let each rank's loss use its block (for example
+  `sum(abs2, parent(y))`), and the gradient is that of the sum of the ranks'
+  losses. A replicated output (`return_pencil=false`) must get the same loss
+  on every rank.
+- Every rank must run the backward pass of every distributed transform, since
+  the pullbacks communicate.
+- The batch and packed distributed transforms and `SH_mul_mx` on PencilArrays
+  have no distributed rule; reverse-mode AD through them raises an error.
 
 ---
 

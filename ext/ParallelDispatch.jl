@@ -139,6 +139,35 @@ function SHTnsKit.spectral_pencil_to_matrix(cfg::SHTnsKit.SHTConfig, Alm_p::Penc
     return Alm
 end
 
+"""
+Gather a `PencilArray`'s global values on every rank (collective). Used by the
+ForwardDiff wrappers, which cannot carry dual numbers through the distributed
+kernels.
+"""
+function SHTnsKit._global_values(arr::PencilArray)
+    comm = communicator(arr)
+    _validate_parallel_storage!(comm, :_global_values, arr)
+    values = zeros(eltype(arr), size_global(arr))
+    owned = PencilArrays.global_view(arr)
+    for index in CartesianIndices(owned)
+        values[index] = owned[index]
+    end
+    return MPI.Allreduce!(values, +, comm)
+end
+
+"""This rank's block of the replicated global `values`, in `arr`'s pencil."""
+function SHTnsKit._local_block_like(arr::PencilArray, values::AbstractArray)
+    size(values) == size_global(arr) || throw(DimensionMismatch(
+        "global values of size $(size(values)) do not match the PencilArray's global size $(size_global(arr))",
+    ))
+    result = PencilArray{eltype(values)}(undef, pencil(arr))
+    owned = PencilArrays.global_view(result)
+    for index in CartesianIndices(owned)
+        owned[index] = values[index]
+    end
+    return result
+end
+
 ##########
 # Scalar transform dispatch
 ##########

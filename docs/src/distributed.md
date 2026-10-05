@@ -101,6 +101,18 @@ follow the same output-before-input convention as serial in-place transforms.
   workflow performs.
 - Keep distributed data distributed between operations; avoid gathering only
   to scatter again.
+- Reverse-mode rules cover `analysis`, `synthesis` and their `sphtor`/`qst`
+  forms on PencilArrays, and `zgrad_*` return gradients in the input's layout.
+  A distributed output's cotangent is each rank's derivative for its own
+  block, so the gradient is that of the sum of the ranks' losses.
+- With reverse-mode AD, every rank must differentiate a loss that uses each
+  distributed transform's output. The pullbacks communicate (for example to sum
+  every rank's contribution to the gradient of replicated coefficients), and
+  Zygote skips the pullback of an output that a rank's loss ignores, so a loss
+  such as `rank == 0 ? sum(abs2, y) : 0.0` leaves the other ranks waiting
+  forever. Let each rank's loss use its local block of distributed outputs
+  (weight it by zero if it must not contribute, e.g. `0 * sum(abs2, parent(y))`),
+  and compute any loss built from a replicated output identically on every rank.
 
 Runnable repository examples:
 
