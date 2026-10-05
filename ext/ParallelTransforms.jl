@@ -188,6 +188,8 @@ function _collective_validation_error(comm, local_flags::UInt32, operation::Symb
     flags & 0x8000 != 0 && push!(descriptions, "invalid or rank-varying rotation inputs")
     flags & 0x10000 != 0 && push!(descriptions, "rotation requires mres==1")
     flags & 0x20000 != 0 && push!(descriptions, "storage/vendor mismatch")
+    flags & 0x80000 != 0 && push!(descriptions,
+        "rotation mixes azimuthal orders beyond mmax < lmax; use mmax == lmax")
     throw(ArgumentError("$operation collective validation failed: $(join(descriptions, ", "))"))
 end
 

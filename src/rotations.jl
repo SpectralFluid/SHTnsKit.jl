@@ -358,44 +358,86 @@ function _wigner_d_matrix_stable!(d::AbstractMatrix{T},
 
     cb = cos(beta / T(2))
     sb = sin(beta / T(2))
-    # Rows/columns are ordered s=-1/2,+1/2, matching this file's convention.
-    dhalf = (cb, sb, -sb, cb)
     src = d
     dest = work
 
-    # `two_j_new` grows 0 -> 1/2 -> 1 -> ... -> l. Coupling coefficients are
-    # sqrt((J ± M)/(2J)); doubled integer indices avoid half-integer arithmetic.
+    # `two_j_new` grows 0 -> 1/2 -> 1 -> ... -> l.
     for two_j_new in 1:(2l)
-        two_j_old = two_j_new - 1
-        denom = T(2two_j_new)
-        @inbounds for i in 0:two_j_new
-            two_m = -two_j_new + 2i
-            for j in 0:two_j_new
-                two_mp = -two_j_new + 2j
-                acc = zero(T)
-                for si in 1:2
-                    two_s = 2si - 3
-                    two_m_old = two_m - two_s
-                    abs(two_m_old) ≤ two_j_old || continue
-                    old_i = (two_m_old + two_j_old) ÷ 2 + 1
-                    ci = sqrt(T(two_j_new + two_s * two_m) / denom)
-                    for sj in 1:2
-                        two_sp = 2sj - 3
-                        two_mp_old = two_mp - two_sp
-                        abs(two_mp_old) ≤ two_j_old || continue
-                        old_j = (two_mp_old + two_j_old) ÷ 2 + 1
-                        cj = sqrt(T(two_j_new + two_sp * two_mp) / denom)
-                        dh = dhalf[2(si - 1) + sj]
-                        acc += ci * cj * src[old_i, old_j] * dh
-                    end
-                end
-                dest[i + 1, j + 1] = acc
-            end
-        end
+        _wigner_half_step!(dest, src, two_j_new, cb, sb)
         src, dest = dest, src
     end
 
     # There are 2l (an even number of) half-steps, so the final result is in d.
+    return d
+end
+
+"""
+One spin-1/2 coupling step of the recurrence: `dest` receives `d^{J}(β)` from
+`d^{J-1/2}(β)` in `src`, where `two_j_new = 2J` and `(cb, sb) = (cos β/2, sin β/2)`.
+Only the leading `(2J+1)×(2J+1)` block of `dest` and `(2J)×(2J)` block of `src`
+are touched.
+"""
+@inline function _wigner_half_step!(dest::AbstractMatrix{T}, src::AbstractMatrix{T},
+                                    two_j_new::Int, cb::T, sb::T) where {T<:AbstractFloat}
+    # Rows/columns are ordered s=-1/2,+1/2, matching this file's convention.
+    dhalf = (cb, sb, -sb, cb)
+    # Coupling coefficients are sqrt((J ± M)/(2J)); doubled integer indices
+    # avoid half-integer arithmetic.
+    two_j_old = two_j_new - 1
+    denom = T(2two_j_new)
+    @inbounds for i in 0:two_j_new
+        two_m = -two_j_new + 2i
+        for j in 0:two_j_new
+            two_mp = -two_j_new + 2j
+            acc = zero(T)
+            for si in 1:2
+                two_s = 2si - 3
+                two_m_old = two_m - two_s
+                abs(two_m_old) ≤ two_j_old || continue
+                old_i = (two_m_old + two_j_old) ÷ 2 + 1
+                ci = sqrt(T(two_j_new + two_s * two_m) / denom)
+                for sj in 1:2
+                    two_sp = 2sj - 3
+                    two_mp_old = two_mp - two_sp
+                    abs(two_mp_old) ≤ two_j_old || continue
+                    old_j = (two_mp_old + two_j_old) ÷ 2 + 1
+                    cj = sqrt(T(two_j_new + two_sp * two_mp) / denom)
+                    dh = dhalf[2(si - 1) + sj]
+                    acc += ci * cj * src[old_i, old_j] * dh
+                end
+            end
+            dest[i + 1, j + 1] = acc
+        end
+    end
+    return dest
+end
+
+"""
+    _wigner_d_advance!(d, work, l, beta) -> d
+
+Advance the leading block of `d` from `d^{l-1}(β)` to `dˡ(β)`; `l == 0` starts
+the sequence. `work` is scratch of the same size.
+
+Rebuilding every `dˡ` from `d⁰` replays `2l` half-steps of `O(l²)` each, so a
+loop over `l = 0:lmax` costs `O(lmax⁴)`. The half-step chain passes through each
+integer degree, so a loop that visits `l = 0, 1, 2, …` in order with the same
+buffers only needs the two newest steps: `O(l²)` per degree, `O(lmax³)` per
+sweep, the same order as applying the matrices. The result is bitwise identical
+to `wigner_d_matrix(l, β)` because it runs the very same arithmetic.
+"""
+function _wigner_d_advance!(d::AbstractMatrix{T}, work::AbstractMatrix{T},
+                            l::Int, beta::T) where {T<:AbstractFloat}
+    if l == 0
+        d[1, 1] = one(T)
+        return d
+    end
+    n = 2l + 1
+    size(d, 1) ≥ n && size(d, 2) ≥ n && size(work, 1) ≥ n && size(work, 2) ≥ n ||
+        throw(DimensionMismatch("d and work must contain a (2l+1)×(2l+1) block"))
+    cb = cos(beta / T(2))
+    sb = sin(beta / T(2))
+    _wigner_half_step!(work, d, 2l - 1, cb, sb)
+    _wigner_half_step!(d, work, 2l, cb, sb)
     return d
 end
 
@@ -427,8 +469,11 @@ function WignerCache(lmax::Int, β::Real)
     lmax ≥ 0 || throw(ArgumentError("lmax must be ≥ 0"))
     βf = float(β)
     mats = Vector{Matrix{Float64}}(undef, lmax + 1)
+    d = Matrix{Float64}(undef, 2lmax + 1, 2lmax + 1)
+    work = similar(d)
     for l in 0:lmax
-        mats[l + 1] = wigner_d_matrix(l, βf)
+        _wigner_d_advance!(d, work, l, Float64(βf))
+        mats[l + 1] = d[1:(2l + 1), 1:(2l + 1)]
     end
     return WignerCache(βf, mats)
 end
@@ -451,8 +496,18 @@ Derivative d/dβ of little Wigner-d matrix d^l_{m m'}(β).
 function wigner_d_matrix_deriv(l::Int, beta::T) where {T<:AbstractFloat}
     l ≥ 0 || throw(ArgumentError("l must be ≥ 0"))
     n = 2l + 1
-    d = wigner_d_matrix(l, beta)
-    dβ = Matrix{T}(undef, n, n)
+    return _wigner_d_deriv!(Matrix{T}(undef, n, n), wigner_d_matrix(l, beta), l)
+end
+
+"""
+    _wigner_d_deriv!(dβ, d, l) -> dβ
+
+Write `∂dˡ/∂β` into the leading `(2l+1)×(2l+1)` block of `dβ`, given `dˡ(β)` in
+the leading block of `d`, so a loop that advances `d` with `_wigner_d_advance!`
+gets the derivative without rebuilding `dˡ`.
+"""
+function _wigner_d_deriv!(dβ::AbstractMatrix{T}, d::AbstractMatrix{T},
+                          l::Int) where {T<:AbstractFloat}
     half = inv(T(2))
     # d(β)=exp(βG), where G is the real skew-symmetric y-rotation
     # generator. Therefore ḋ=Gd, which is stable and O(l²) once d is known.
@@ -584,9 +639,11 @@ function _rotation_host_blocks(r::SHTRotation, ::Type{T}) where {T<:AbstractFloa
     total = sum((2l + 1)^2 for l in 0:r.lmax)
     values = Vector{T}(undef, total)
     cursor = 1
+    d = Matrix{T}(undef, 2r.lmax + 1, 2r.lmax + 1)
+    work = similar(d)
     @inbounds for l in 0:r.lmax
         offsets[l + 1] = Int32(cursor)
-        d = wigner_d_matrix(l, β)
+        _wigner_d_advance!(d, work, l, β)
         for m in -l:l, mp in -l:l
             values[cursor] = d[m + l + 1, mp + l + 1]
             cursor += 1
@@ -603,6 +660,16 @@ function _rotation_host_blocks(r::SHTRotation, ::Type{T}) where {T<:AbstractFloa
     end
     return (; offsets, values, input_scales, output_scales, alpha=α, gamma=γ)
 end
+
+"""
+    _rotation_exceeds_orders(lmax, mmax, β) -> Bool
+
+Whether a rotation through `β` produces orders `|m′| > mmax` that an `mmax < lmax`
+layout cannot store. `β ≡ 0 (mod π)` keeps every `|m|`. Shared by the CPU, GPU and
+distributed rotation paths so they accept and reject the same rotations.
+"""
+@inline _rotation_exceeds_orders(lmax::Integer, mmax::Integer, β::Real) =
+    mmax < lmax && abs(sin(float(β))) > 1e-12
 
 """
     _require_full_m_range(r::SHTRotation, β::Real)
@@ -625,8 +692,7 @@ Mirrors the `mres > 1` restriction stated by `dist_SH_Yrotate` and the packed
 distributed rotations, for the same reason.
 """
 function _require_full_m_range(r::SHTRotation, β::Real)
-    r.mmax >= r.lmax && return nothing
-    abs(sin(float(β))) <= 1e-12 && return nothing   # β ≡ 0 (mod π): no m mixing
+    _rotation_exceeds_orders(r.lmax, r.mmax, β) || return nothing
     throw(ArgumentError(
         "rotation with β=$(β) mixes azimuthal orders, but this configuration " *
         "stores only m ≤ mmax=$(r.mmax) with lmax=$(r.lmax); the |m| > mmax " *
@@ -658,7 +724,9 @@ function _rotation_apply_cplx_canonical!(r::SHTRotation,
     r.lmax ≥ 0 || return Rlm
     RT = typeof(real(zero(eltype(Rlm))))
     α, β, γ = _rotation_zyz_angles(r, RT)
-    _require_full_m_range(r, β)
+    # The stored Float64 β: rounding π to Float32 leaves sin(β) ≈ 9e-8, which
+    # would reject the exact half-turn this check is meant to allow.
+    _require_full_m_range(r, r.β)
 
     # Pre-allocate working arrays at maximum size to avoid per-l allocations
     nmax = 2 * r.lmax + 1
@@ -693,8 +761,8 @@ function _rotation_apply_cplx_canonical!(r::SHTRotation,
             εp = (mp < 0 && isodd(mp)) ? -one(RT) : one(RT)
             b[mp + l + 1] = (εp * Zlm[idx]) * cis(-mp * γ)
         end
-        # Multiply with d^l(β) — computed in-place into pre-allocated buffer
-        wigner_d_matrix!(dl, l, β, dwork)
+        # Multiply with d^l(β), advanced in place from the previous degree
+        _wigner_d_advance!(dl, dwork, l, β)
         fill!(view(c, 1:n), zero(Complex{RT}))
         # c_m = sum_{m'} d_{m m'} b_{m'}
         for mi in -l:l

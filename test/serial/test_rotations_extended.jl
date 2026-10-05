@@ -30,6 +30,26 @@ using SHTnsKit
         @test_throws ArgumentError SHTnsKit.WignerCache(-1, β)
     end
 
+    @testset "in-order Wigner sweep reproduces direct builds exactly" begin
+        # Rotations advance one dˡ to the next (O(l²)) instead of rebuilding
+        # each from d⁰ (O(l³)); the sweep must be the same arithmetic.
+        lmax = 24
+        for T in (Float32, Float64), β in (0.0, 0.7, -2.3, π)
+            d = Matrix{T}(undef, 2lmax + 1, 2lmax + 1)
+            work = similar(d)
+            dβ = similar(d)
+            exact = true
+            for l in 0:lmax
+                n = 2l + 1
+                SHTnsKit._wigner_d_advance!(d, work, l, T(β))
+                exact &= d[1:n, 1:n] == SHTnsKit.wigner_d_matrix(l, T(β))
+                SHTnsKit._wigner_d_deriv!(dβ, d, l)
+                exact &= dβ[1:n, 1:n] == SHTnsKit.wigner_d_matrix_deriv(l, T(β))
+            end
+            @test exact
+        end
+    end
+
     @testset "Wigner-d remains stable at high degree" begin
         d = SHTnsKit.wigner_d_matrix(64, 0.7)
         @test opnorm(transpose(d) * d - I, Inf) < 1e-10
