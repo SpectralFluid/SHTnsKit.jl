@@ -200,6 +200,11 @@ end
 
 Compute gradient of vorticity loss with respect to toroidal coefficients.
 Uses adjoint method for efficient computation.
+
+The gradient follows the convention of the other `grad_*` helpers and of
+Zygote: for a perturbation `h`, `dL = real(sum(conj(g) .* h))`. Because the
+vorticity is a real field, each stored `m > 0` coefficient stands for the
+`±m` pair, so those entries carry a factor 2 relative to `m = 0`.
 """
 function grad_loss_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_target::AbstractMatrix)
     # Forward pass: compute vorticity and residual
@@ -227,9 +232,12 @@ function grad_loss_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_target:
     
     # Stride by mres like every other diagnostic: orders that are not multiples
     # of mres have no packed storage, so a gradient entry there is meaningless.
+    # `_wm` turns the adjoint into the Euclidean gradient the sibling helpers
+    # and Zygote return: real synthesis reads an m > 0 coefficient twice.
     for m in 0:cfg.mres:mmax, l in max(1,m):lmax
         L2 = l * (l + 1)  # Note: negative sign from ζ = -l(l+1)T
-        gT[l+1, m+1] = -L2 * synthesis_scale * _convention_metric(scale_matrix, l, m) * gζlm[l+1, m+1]
+        gT[l+1, m+1] = -L2 * synthesis_scale * _wm(m, true) *
+                       _convention_metric(scale_matrix, l, m) * gζlm[l+1, m+1]
     end
     return gT
 end
@@ -239,6 +247,7 @@ end
 
 Combined computation of loss and gradient for vorticity optimization.
 More efficient than separate computations due to shared forward pass.
+The gradient matches [`grad_loss_vorticity_Tlm`](@ref).
 """
 function loss_and_grad_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_target::AbstractMatrix)
     # Forward pass
@@ -256,8 +265,9 @@ function loss_and_grad_vorticity_Tlm(cfg::SHTConfig, Tlm::AbstractMatrix, ζ_tar
     
     for m in 0:cfg.mres:mmax, l in max(1,m):lmax
         L2 = l * (l + 1)
-        gT[l+1, m+1] = -L2 * synthesis_scale * _convention_metric(scale_matrix, l, m) * gζlm[l+1, m+1]
+        gT[l+1, m+1] = -L2 * synthesis_scale * _wm(m, true) *
+                       _convention_metric(scale_matrix, l, m) * gζlm[l+1, m+1]
     end
-    
+
     return loss, gT
 end

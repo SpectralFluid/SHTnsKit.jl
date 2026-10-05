@@ -5,9 +5,10 @@
 #   grad_grid_enstrophy_zeta, loss_vorticity_grid,
 #   grad_loss_vorticity_Tlm, loss_and_grad_vorticity_Tlm
 #
-# The toroidal gradient uses the hermitian-packed convention: the (l,m>0)
-# coefficients each stand in for the ±m pair, so the directional derivative
-# weights m>0 modes by 2 (the `_wm` weight). m=0 modes get weight 1.
+# The toroidal gradient follows the ChainRules/Zygote convention shared by the
+# other `grad_*` helpers: dL(T)[h] = real(sum(conj(g) .* h)). Each (l,m>0)
+# coefficient stands in for the ±m pair of the real vorticity field, so those
+# gradient entries carry the factor 2 (the `_wm` weight).
 
 using Test
 using Random
@@ -15,6 +16,7 @@ using LinearAlgebra
 using SHTnsKit
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
+_vorticity_has_zygote = try; @eval using Zygote; true; catch; false; end
 
 # Build a random toroidal spectrum consistent with a real field
 function _rand_Tlm(rng, lmax)
@@ -25,9 +27,6 @@ function _rand_Tlm(rng, lmax)
     T[:, 1] .= real.(T[:, 1])   # m=0 must be real
     return T
 end
-
-# Hermitian dot-test weight: 1 for m=0, 2 for m>0
-_wmat(lmax) = Float64[(m == 0 ? 1.0 : 2.0) for l in 0:lmax, m in 0:lmax]
 
 @testset "Vorticity inverse-problem diagnostics" begin
     @testset "inverse gradients include synthesis phi scaling" begin
@@ -40,7 +39,7 @@ _wmat(lmax) = Float64[(m == 0 ? 1.0 : 2.0) for l in 0:lmax, m in 0:lmax]
             withenv("SHTNSKIT_PHI_SCALE" => override) do
                 T0 = _rand_Tlm(rng, cfg.lmax)
                 target = randn(rng, cfg.nlat, cfg.nlon)
-                # Check m=0 separately from the Hermitian-weighted m>0 modes.
+                # Check m=0 separately from the m>0 modes that stand for ±m.
                 for m in (0, 1)
                     h = zeros(ComplexF64, size(T0))
                     h[3, m + 1] = m == 0 ? 1 : 0.7 + 0.4im
@@ -49,9 +48,8 @@ _wmat(lmax) = Float64[(m == 0 ? 1.0 : 2.0) for l in 0:lmax, m in 0:lmax]
                           loss_vorticity_grid(cfg, T0 .- epsilon .* h, target)) / (2epsilon)
                     g = grad_loss_vorticity_Tlm(cfg, T0, target)
                     loss, combined_g = loss_and_grad_vorticity_Tlm(cfg, T0, target)
-                    W = _wmat(cfg.lmax)
-                    @test real(sum(W .* conj(g) .* h)) ≈ fd rtol=2e-5 atol=2e-7
-                    @test real(sum(W .* conj(combined_g) .* h)) ≈ fd rtol=2e-5 atol=2e-7
+                    @test real(sum(conj(g) .* h)) ≈ fd rtol=2e-5 atol=2e-7
+                    @test real(sum(conj(combined_g) .* h)) ≈ fd rtol=2e-5 atol=2e-7
                     @test loss ≈ loss_vorticity_grid(cfg, T0, target)
                 end
             end
@@ -91,21 +89,44 @@ _wmat(lmax) = Float64[(m == 0 ? 1.0 : 2.0) for l in 0:lmax, m in 0:lmax]
         @test loss_vorticity_grid(cfg, T0, ζ_target) > 0
     end
 
-    @testset "grad_loss_vorticity_Tlm weighted finite-difference" begin
+    @testset "grad_loss_vorticity_Tlm finite-difference" begin
         T0 = 0.3 .* _rand_Tlm(rng, lmax)
         g = grad_loss_vorticity_Tlm(cfg, T0, ζ_target)
         @test size(g) == size(T0)
-        W = _wmat(lmax)
         h = _rand_Tlm(rng, lmax)   # hermitian-consistent perturbation
         ϵ = 1e-6
         fd = (loss_vorticity_grid(cfg, T0 .+ ϵ .* h, ζ_target) -
               loss_vorticity_grid(cfg, T0 .- ϵ .* h, ζ_target)) / (2ϵ)
-        ad = real(sum(W .* conj(g) .* h))
+        ad = real(sum(conj(g) .* h))
         VERBOSE && @info "grad_loss_vorticity_Tlm" fd ad
         @test isapprox(ad, fd; rtol=1e-5, atol=1e-7)
         # Gradient is (near) zero at the optimum
         gopt = grad_loss_vorticity_Tlm(cfg, Ttarget, ζ_target)
         @test maximum(abs, gopt) < 1e-8
+        # Same convention as grad_enstrophy_Tlm: the residual-free loss
+        # against a zero target is the enstrophy of the vorticity field.
+        @test grad_loss_vorticity_Tlm(cfg, T0, zeros(nlat, nlon)) ≈
+              grad_enstrophy_Tlm(cfg, T0) rtol=1e-10
+    end
+
+    if _vorticity_has_zygote
+        @testset "grad_loss_vorticity_Tlm matches Zygote ($phi_scale)" for phi_scale in (:dft, :quad)
+            withenv("SHTNSKIT_PHI_SCALE" => nothing) do  # the variable overrides cfg.phi_scale
+                zcfg = create_gauss_config(lmax, nlat; nlon=nlon)
+                zcfg.phi_scale = phi_scale
+                @test SHTnsKit.phi_inv_scale(zcfg) ≈ (phi_scale === :quad ? zcfg.nlon / 2π : zcfg.nlon)
+                T0 = 0.4 .* _rand_Tlm(rng, lmax)
+                target = randn(rng, nlat, nlon)
+                # loss_vorticity_grid itself mutates arrays; this is the same loss
+                # through operations Zygote differentiates.
+                ζ_of = [-(l * (l + 1)) * (l >= m) for l in 0:lmax, m in 0:lmax]
+                loss(T) = 0.5 * (2π / nlon) *
+                          sum(zcfg.w .* abs2.(synthesis(zcfg, ζ_of .* T; real_output=true) .- target))
+                @test loss(T0) ≈ loss_vorticity_grid(zcfg, T0, target)
+                @test grad_loss_vorticity_Tlm(zcfg, T0, target) ≈
+                      Zygote.gradient(loss, T0)[1] rtol=1e-10
+            end
+        end
     end
 
     @testset "loss_and_grad_vorticity_Tlm consistency" begin
@@ -122,17 +143,16 @@ _wmat(lmax) = Float64[(m == 0 ? 1.0 : 2.0) for l in 0:lmax, m in 0:lmax]
         ζtarget_n = vorticity_grid(cfgn, Ttarget_n)
         T0 = 0.3 .* _rand_Tlm(rng, lmax)
         h = _rand_Tlm(rng, lmax)
-        W = _wmat(lmax)
         epsilon = 1e-6
         fd = (loss_vorticity_grid(cfgn, T0 .+ epsilon .* h, ζtarget_n) -
               loss_vorticity_grid(cfgn, T0 .- epsilon .* h, ζtarget_n)) / (2epsilon)
 
         g = grad_loss_vorticity_Tlm(cfgn, T0, ζtarget_n)
-        @test isapprox(real(sum(W .* conj(g) .* h)), fd; rtol=2e-5, atol=2e-7)
+        @test isapprox(real(sum(conj(g) .* h)), fd; rtol=2e-5, atol=2e-7)
 
         loss, combined_g = loss_and_grad_vorticity_Tlm(cfgn, T0, ζtarget_n)
         @test loss ≈ loss_vorticity_grid(cfgn, T0, ζtarget_n)
-        @test isapprox(real(sum(W .* conj(combined_g) .* h)), fd;
+        @test isapprox(real(sum(conj(combined_g) .* h)), fd;
                        rtol=2e-5, atol=2e-7)
     end
 end
