@@ -391,34 +391,37 @@ using SHTnsKit
         # `cphi`, so the two halves of the pair disagreed about the convention:
         # under :quad `analysis(synthesis(alm))` came back as `alm/2π` exactly.
         rng = MersenneTwister(7731)
-        for mode in (:dft, :quad)
-            cfg = create_gauss_config(6, 8)
-            cfg.phi_scale = mode
-            alm = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
-            for m in 0:cfg.mmax, l in m:cfg.lmax
-                alm[l+1, m+1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+        withenv("SHTNSKIT_PHI_SCALE" => nothing) do  # the variable overrides cfg.phi_scale
+            for mode in (:dft, :quad)
+                cfg = create_gauss_config(6, 8)
+                cfg.phi_scale = mode
+                @test SHTnsKit.phi_inv_scale(cfg) ≈ (mode === :quad ? cfg.nlon / 2π : cfg.nlon)
+                alm = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+                for m in 0:cfg.mmax, l in m:cfg.lmax
+                    alm[l+1, m+1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+                end
+                S = copy(alm); T = 0.5 .* alm; S[1,1] = 0; T[1,1] = 0
+
+                @test analysis(cfg, synthesis(cfg, alm)) ≈ alm rtol=1e-10
+                Vt, Vp = synthesis_sphtor(cfg, S, T)
+                S2, T2 = analysis_sphtor(cfg, Vt, Vp)
+                @test S2 ≈ S rtol=1e-10
+                @test T2 ≈ T rtol=1e-10
+
+                f = synthesis(cfg, alm)
+                @test analysis_batch(cfg, reshape(f, size(f)..., 1))[:, :, 1] ≈ alm rtol=1e-10
+
+                # the planned path must agree with the cfg form in both modes
+                plan = SHTPlan(cfg)
+                out = similar(alm)
+                analysis!(plan, out, f)
+                @test out ≈ alm rtol=1e-10
+
+                # a hand-built config must not disagree with the constructor's
+                # for the same grid: `:auto` used to mean `:quad` for non-Gauss grids
+                @test SHTnsKit.phi_inv_scale(create_regular_config(6, 10; nlon=14)) ==
+                      Float64(14)
             end
-            S = copy(alm); T = 0.5 .* alm; S[1,1] = 0; T[1,1] = 0
-
-            @test analysis(cfg, synthesis(cfg, alm)) ≈ alm rtol=1e-10
-            Vt, Vp = synthesis_sphtor(cfg, S, T)
-            S2, T2 = analysis_sphtor(cfg, Vt, Vp)
-            @test S2 ≈ S rtol=1e-10
-            @test T2 ≈ T rtol=1e-10
-
-            f = synthesis(cfg, alm)
-            @test analysis_batch(cfg, reshape(f, size(f)..., 1))[:, :, 1] ≈ alm rtol=1e-10
-
-            # the planned path must agree with the cfg form in both modes
-            plan = SHTPlan(cfg)
-            out = similar(alm)
-            analysis!(plan, out, f)
-            @test out ≈ alm rtol=1e-10
-
-            # a hand-built config must not disagree with the constructor's
-            # for the same grid: `:auto` used to mean `:quad` for non-Gauss grids
-            @test SHTnsKit.phi_inv_scale(create_regular_config(6, 10; nlon=14)) ==
-                  Float64(14)
         end
     end
 

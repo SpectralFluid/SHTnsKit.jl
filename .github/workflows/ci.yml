@@ -42,6 +42,23 @@ jobs:
       - name: Run CPU parity runner
         run: julia --project=. test/parity/runtests_cpu.jl
 
+  gpu-host-reference:
+    name: GPU wrappers and kernels on the CPU backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+      - name: Instantiate host reference environment
+        run: julia --project=test/gpu/host -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+      # The vendor parity workflow needs GPU runners; this exercises the same
+      # wrapper bodies and shared kernels through KernelAbstractions.CPU().
+      - name: Run GPU wrapper and shared kernel references
+        run: julia --project=test/gpu/host test/gpu/host/runtests.jl
+
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
     runs-on: ${{ matrix.os }}
@@ -122,7 +139,6 @@ jobs:
         uses: julia-actions/julia-runtest@v1
         env:
           SHTNSKIT_TEST_VERBOSE: "1"
-          SHTNSKIT_PHI_SCALE: "dft"
           SHTNSKIT_FORCE_FFTW: "1"
           # Advanced features testing
           SHTNSKIT_TEST_ADVANCED: "true"
@@ -207,6 +223,7 @@ jobs:
           mpiexec -n 2 julia --project=. test/parallel/test_mpi_comm_cleanup.jl
           mpiexec -n 4 julia --project=. test/parallel/test_mpi_2d_alignment.jl
           mpiexec -n 2 julia --project=. test/parallel/test_mpi_ad_tangent_spaces.jl
+          mpiexec -n 2 julia --project=. test/parallel/test_mpi_ad_public_api.jl
           mpiexec -n 8 julia --project=. test/parallel/test_mpi_audit_fixes.jl
         env:
           SHTNSKIT_TEST_VERBOSE: "1"
@@ -285,16 +302,13 @@ jobs:
               t_anal = @belapsed analysis($cfg, $spatial_data)
               println("Analysis: $(t_anal*1000)ms")
               
-              # Matrix operator benchmark (using cos(θ) operator)
-              try
-                mx = zeros(Float64, 2*cfg.nlm)
-                mul_ct_matrix(cfg, mx)
-                alm_out = similar(alm)
-                t_op = @belapsed SH_mul_mx($cfg, $mx, $alm, $alm_out)
-                println("Matrix operator: $(t_op*1000)ms")
-              catch
-                println("Matrix operator: not available")
-              end
+              # Matrix operator benchmark (cos(θ) operator on packed coefficients)
+              mx = zeros(Float64, 2*cfg.nlm)
+              mul_ct_matrix(cfg, mx)
+              Qlm = randn(ComplexF64, cfg.nlm)
+              Rlm = similar(Qlm)
+              t_op = @belapsed SH_mul_mx($cfg, $mx, $Qlm, $Rlm)
+              println("Matrix operator: $(t_op*1000)ms")
               
               # Turbo benchmark if LoopVectorization is available
               if loopvec_available
