@@ -4,6 +4,7 @@
 
 using Test
 using SHTnsKit
+using ForwardDiff: Dual, value, partials
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
@@ -451,6 +452,80 @@ using SHTnsKit
             SHTnsKit.Plm_norm_dPdtheta_over_sinth_row!(g, dg, gos, 0.31, lmax, m)
             @test all(isfinite, @view dg[m+1:end])
             @test all(isfinite, @view gos[m+1:end])
+        end
+    end
+
+    # The sectoral seed P̄_m^m ∝ sin^m θ leaves the Float64 range (≈1e-308) before
+    # the values it seeds come back to O(1); from lmax ≈ 1900 the unscaled
+    # recurrence returned values off by up to ~1e150. The reference is the plain
+    # recurrence in BigFloat, whose exponent range never underflows.
+    function _plm_norm_reference(lmax::Int, m::Int, x::BigFloat)
+        P = zeros(BigFloat, lmax + 1)
+        s = sqrt(1 - x^2)
+        pmm = 1 / sqrt(4 * BigFloat(π))
+        for k in 1:m
+            pmm = -sqrt(BigFloat(2k + 1) / (2k)) * s * pmm
+        end
+        P[m+1] = pmm
+        m < lmax && (P[m+2] = sqrt(BigFloat(2m + 3)) * x * pmm)
+        for l in (m+2):lmax
+            a = sqrt(BigFloat((2l - 1) * (2l + 1)) / ((l - m) * (l + m)))
+            b = sqrt(BigFloat((2l + 1) * (l - 1 - m) * (l - 1 + m)) /
+                     ((2l - 3) * (l - m) * (l + m)))
+            P[l+1] = a * x * P[l] - b * P[l-1]
+        end
+        return P
+    end
+
+    @testset "Plm_norm_row! keeps the sectoral seed in range at high lmax" begin
+        setprecision(BigFloat, 256) do
+            for (lmax, m, s) in ((2047, 1190, 0.5), (2500, 1500, 0.6),
+                                 (3000, 1743, 0.5), (4000, 3000, 0.05))
+                x = sqrt(1 - s^2)
+                ref = _plm_norm_reference(lmax, m, BigFloat(x))
+                scale = max(1.0, Float64(maximum(abs, ref)))
+                P = zeros(lmax + 1)
+                SHTnsKit.Plm_norm_row!(P, x, lmax, m)
+                @test maximum(abs.(P .- Float64.(ref))) <= 1e-11 * scale
+
+                # The derivative rows are built from the same extended row.
+                dP = zeros(lmax + 1); Pos = zeros(lmax + 1); Q = zeros(lmax + 1)
+                SHTnsKit.Plm_norm_and_dPdtheta_row!(Q, dP, x, lmax, m)
+                @test maximum(abs.(Q .- Float64.(ref))) <= 1e-11 * scale
+                @test all(isfinite, dP)
+                SHTnsKit.Plm_norm_dPdtheta_over_sinth_row!(Q, dP, Pos, x, lmax, m)
+                @test maximum(abs.(Q .- Float64.(ref))) <= 1e-11 * scale
+                @test maximum(abs.(Pos .- Float64.(ref) ./ s)) <= 1e-11 * scale / s
+            end
+        end
+    end
+
+    @testset "Plm_norm_row! extended range in Float32 and for dual numbers" begin
+        setprecision(BigFloat, 256) do
+            # Float32 seeds underflow from lmax ≈ 240: here sin^221 θ ≈ 1e-96.
+            lmax, m, s = 600, 221, 0.368
+            x = sqrt(1 - s^2)
+            ref = Float64.(_plm_norm_reference(lmax, m, BigFloat(x)))
+            P32 = zeros(Float32, lmax + 1)
+            SHTnsKit.Plm_norm_row!(P32, Float32(x), lmax, m)
+            @test maximum(abs, ref) > 0.05          # a non-negligible row
+            @test maximum(abs.(P32 .- ref)) <= 1e-4 * maximum(abs, ref)
+
+            # Dual numbers take the generic 2^-32 thresholds through the scaled
+            # path; values and x-derivatives must both survive the rescaling.
+            lmax, m, s = 600, 500, 0.4
+            x = sqrt(1 - s^2)
+            Pd = Vector{Dual{Nothing,Float64,1}}(undef, lmax + 1)
+            SHTnsKit.Plm_norm_row!(Pd, Dual{Nothing}(x, 1.0), lmax, m)
+            h = BigFloat(1) / BigFloat(10)^30
+            up = _plm_norm_reference(lmax, m, BigFloat(x) + h)
+            dn = _plm_norm_reference(lmax, m, BigFloat(x) - h)
+            mid = _plm_norm_reference(lmax, m, BigFloat(x))
+            dref = Float64.((up .- dn) ./ (2h))
+            @test maximum(abs.(value.(Pd) .- Float64.(mid))) <=
+                  1e-11 * max(1.0, Float64(maximum(abs, mid)))
+            @test maximum(abs.(map(d -> partials(d)[1], Pd) .- dref)) <=
+                  1e-9 * max(1.0, maximum(abs, dref))
         end
     end
 end

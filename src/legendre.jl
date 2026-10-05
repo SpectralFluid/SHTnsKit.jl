@@ -196,6 +196,24 @@ end
 
 const _INV_SQRT_4PI = 0.28209479177387814  # sqrt(1/(4π)) = orthonormal P̄_0^0
 
+# Extended-range bounds for the sectoral seed, as in the device table builder in
+# ext/GPUCommon.jl. A scaled value `p` with exponent `e` stands for `p·2^e`, and
+# rescaling moves `p` between 2^-B and 2^B. Float64 rows stay unscaled until they
+# fall below 2^-480 so that ordinary rows keep the plain recurrence; 2^-32 is safe
+# for every other precision (Float32, BigFloat, dual numbers).
+@inline _plm_scale_bits(::Type{Float64}) = 480
+@inline _plm_scale_bits(::Type) = 32
+
+@inline _plm_tiny(::Type{T}) where {T} = T(ldexp(1.0, -_plm_scale_bits(T)))
+@inline _plm_huge(::Type{T}) where {T} = T(ldexp(1.0, _plm_scale_bits(T)))
+@inline _plm_shift(::Type{T}) where {T} = 2 * _plm_scale_bits(T)
+
+# `2^e` in the row's element type. A power of two below the type's range flushes to
+# zero, which only drops values far below anything a transform can resolve.
+# ForwardDiff duals have no `ldexp`, so they convert a Float64 power instead.
+@inline _plm_pow2(::Type{T}, e::Int) where {T<:AbstractFloat} = ldexp(one(T), e)
+@inline _plm_pow2(::Type{T}, e::Int) where {T<:Real} = convert(T, ldexp(1.0, e))
+
 """
     Plm_norm_row!(P, x, lmax, m)
 
@@ -203,25 +221,101 @@ Fill `P[l+1] = P̄_l^m(x)` for l = m..lmax with the ORTHONORMAL + Condon–Short
 associated Legendre functions (i.e. exactly `cfg.Nlm[l,m] * (raw P_l^m)`), via an
 analytical fully-normalized recurrence that stays bounded (|P̄| ≲ 1) at all l, m —
 no overflow at high lmax. Entries l < m are zeroed.
+
+The sectoral seed `P̄_m^m ∝ sin^m θ` leaves the floating-point range long before
+the values it seeds do: from lmax ≈ 1900 a seed below `floatmin` grows back to
+O(1) by l = lmax. The seed therefore carries a separate power-of-two exponent
+until the recurrence brings it back into range.
 """
 function Plm_norm_row!(P::AbstractVector{T}, x::T, lmax::Int, m::Int) where {T<:Real}
     @inbounds fill!(P, zero(T))
     m < 0 && throw(ArgumentError("m must be ≥ 0"))
     lmax >= m || return P
     s = sqrt(max(zero(T), one(T) - x*x))
-    pmm = T(_INV_SQRT_4PI)
-    @inbounds for k in 1:m
-        pmm = -sqrt(T(2k + 1) / T(2k)) * s * pmm
-    end
+    pmm, e = _plm_sectoral_seed(s, m)
+    e == 0 || return _plm_norm_row_scaled!(P, x, lmax, m, pmm, e)
     P[m+1] = pmm
     lmax == m && return P
     P[m+2] = sqrt(T(2m + 3)) * x * pmm
-    @inbounds for l in (m+2):lmax
+    _plm_norm_recurrence!(P, x, m + 2, lmax, m)
+    return P
+end
+
+# Scaled sectoral seed: returns `(p, e)` with `P̄_m^m(x) = p·2^e`. The magnitude is
+# checked once per block of 8 factors, which keeps the inner products free of
+# data-dependent branches. A block shrinks the value by at most 2^-208 (Float64,
+# where sinθ ≥ 2^-26 unless it is exactly zero) or 2^-92 (Float32), so from the
+# 2^-480 (Float64) or 2^-32 (Float32) threshold it cannot underflow between checks.
+@inline function _plm_sectoral_seed(s::T, m::Int) where {T<:Real}
+    pmm = T(_INV_SQRT_4PI)
+    e = 0
+    tiny = _plm_tiny(T)
+    shift = _plm_shift(T)
+    up = _plm_pow2(T, shift)
+    k = 1
+    @inbounds while k <= m
+        kend = min(k + 7, m)
+        for j in k:kend
+            pmm = -sqrt(T(2j + 1) / T(2j)) * s * pmm
+        end
+        while abs(pmm) < tiny && !(pmm == 0)
+            pmm *= up
+            e -= shift
+        end
+        k = kend + 1
+    end
+    return pmm, e
+end
+
+# Three-term recurrence for degrees `lfirst:lmax`, reading P̄_{l-1}, P̄_{l-2} from `P`.
+@inline function _plm_norm_recurrence!(P::AbstractVector{T}, x::T, lfirst::Int,
+                                       lmax::Int, m::Int) where {T<:Real}
+    @inbounds for l in lfirst:lmax
         a = sqrt((T(2l - 1) * T(2l + 1)) / (T(l - m) * T(l + m)))
         b = sqrt((T(2l + 1) * T(l - 1 - m) * T(l - 1 + m)) / (T(2l - 3) * T(l - m) * T(l + m)))
         P[l+1] = a * x * P[l] - b * P[l-1]
     end
     return P
+end
+
+# Recurrence for a row whose seed is `pmm·2^e` with `e < 0`. The two most recent
+# values stay scaled, sharing `e`, until the exponent returns to zero; the stored
+# values are always the physical ones.
+function _plm_norm_row_scaled!(P::AbstractVector{T}, x::T, lmax::Int, m::Int,
+                               pmm::T, e::Int) where {T<:Real}
+    factor = _plm_pow2(T, e)
+    @inbounds P[m+1] = pmm * factor
+    lmax == m && return P
+    p2 = pmm
+    p1 = sqrt(T(2m + 3)) * x * pmm
+    @inbounds P[m+2] = p1 * factor
+    tiny = _plm_tiny(T)
+    huge = _plm_huge(T)
+    shift = _plm_shift(T)
+    up = _plm_pow2(T, shift)
+    down = _plm_pow2(T, -shift)
+    l = m + 2
+    @inbounds while l <= lmax
+        a = sqrt((T(2l - 1) * T(2l + 1)) / (T(l - m) * T(l + m)))
+        b = sqrt((T(2l + 1) * T(l - 1 - m) * T(l - 1 + m)) / (T(2l - 3) * T(l - m) * T(l + m)))
+        p = a * x * p1 - b * p2
+        P[l+1] = p * factor
+        p2, p1 = p1, p
+        l += 1
+        magnitude = max(abs(p2), abs(p1))
+        if magnitude > huge
+            p2 *= down; p1 *= down
+            e += shift
+            # Back in range: the stored values now equal the scaled pair exactly.
+            e == 0 && break
+            factor = _plm_pow2(T, e)
+        elseif magnitude < tiny && !(magnitude == 0)
+            p2 *= up; p1 *= up
+            e -= shift
+            factor = _plm_pow2(T, e)
+        end
+    end
+    return _plm_norm_recurrence!(P, x, l, lmax, m)
 end
 
 """
