@@ -70,6 +70,37 @@ though their input is a latitude vector. SHTnsKit 2.0 corrected the formerly
 missing factor: results are `2π` times those returned by affected older
 versions. Remove any manual factor that compensated for the old behavior.
 
+## Differences from SHTns
+
+SHTnsKit mirrors the grids, coefficient layouts and normalization options of
+SHTns 3.7, with three deliberate differences in convention. Data moved between
+the two libraries needs these conversions; they are exactly the ones SHTnsKit's
+SHTns 3.7 parity fixtures apply.
+
+| Quantity | Relation | SHTns → SHTnsKit |
+|---|---|---|
+| Toroidal coefficients `Tlm` (`*_sphtor`, `*_qst`) | opposite sign for the same field | `Tlm = -T_shtns` |
+| Complex `LM_cplx` coefficients with odd `m < 0` | SHTns's complex transforms apply `(-1)^m` to negative orders | negate the odd negative orders |
+| [`SH_mul_mx`](@ref) operator vectors | SHTnsKit stores how each `Y_l^m` couples to `Y_{l±1}^m`; SHTns stores what each `(l, m)` receives from `l ± 1` | see below |
+
+The operator layouts coincide for the symmetric cosθ operator, so a
+[`mul_ct_matrix`](@ref) array is the same in both libraries, but not for
+[`st_dt_matrix`](@ref) or other non-symmetric operators. To use an SHTns
+operator vector `mx_shtns` with `SH_mul_mx`:
+
+```julia
+mx = zeros(2 * cfg.nlm)
+for k in 0:(cfg.nlm - 1)            # 0-based packed index of (l, m)
+    l, m = cfg.li[k + 1], cfg.mi[k + 1]
+    if l > m          # coupling of (l, m) to (l-1, m)
+        mx[2k + 1] = mx_shtns[2LM_index(cfg.lmax, cfg.mres, l - 1, m) + 2]
+    end
+    if l < cfg.lmax   # coupling of (l, m) to (l+1, m)
+        mx[2k + 2] = mx_shtns[2LM_index(cfg.lmax, cfg.mres, l + 1, m) + 1]
+    end
+end
+```
+
 ## Interoperability checklist
 
 - Confirm whether the other format stores a real-field `sqrt(2)` factor.
@@ -77,4 +108,6 @@ versions. Remove any manual factor that compensated for the old behavior.
 - Confirm whether coefficients are dense non-negative-`m`, real packed, or
   complex packed.
 - Use the same `mres` interpretation.
+- Exchanging data with SHTns: apply the conversions in
+  [Differences from SHTns](@ref).
 - Test one known `(l,m)` mode before converting a large dataset.
