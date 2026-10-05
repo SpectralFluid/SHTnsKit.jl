@@ -421,7 +421,17 @@ function Base.setproperty!(cfg::SHTConfig, name::Symbol, val)
         return setfield!(getfield(cfg, :_scratch), :m_order, val)
     # ----- structural fields: keep derived state consistent -----
     elseif name === :lmax || name === :mmax || name === :mres
-        setfield!(cfg, name, Int(val))
+        new_value = Int(val)
+        # Validate the whole candidate layout before storing anything. Storing
+        # first let a rejected `cfg.mmax = 30` leave mmax = 30 behind, and an
+        # mmax the grid cannot resolve (nlon < 2*mmax+1) made the next synthesis
+        # write Fourier columns past nlon under `@inbounds`.
+        _validate_spectral_layout(
+            name === :lmax ? new_value : getfield(cfg, :lmax),
+            name === :mmax ? new_value : getfield(cfg, :mmax),
+            name === :mres ? new_value : getfield(cfg, :mres),
+            getfield(cfg, :nlon))
+        setfield!(cfg, name, new_value)
         _rebuild_spectral_layout!(cfg)
         return val
     elseif name === :nlat || name === :nlon || name === :grid_type ||
@@ -439,6 +449,22 @@ function Base.setproperty!(cfg::SHTConfig, name::Symbol, val)
 end
 
 """
+    _validate_spectral_layout(lmax, mmax, mres, nlon)
+
+Throw `ArgumentError` unless `(lmax, mmax, mres)` is a layout the transforms can
+index safely on a grid with `nlon` longitudes.
+"""
+function _validate_spectral_layout(lmax::Int, mmax::Int, mres::Int, nlon::Int)
+    lmax >= 0 || throw(ArgumentError("lmax must be ≥ 0, got $lmax"))
+    mmax >= 0 || throw(ArgumentError("mmax must be ≥ 0, got $mmax"))
+    mmax <= lmax || throw(ArgumentError("mmax must be ≤ lmax, got mmax=$mmax, lmax=$lmax"))
+    mres >= 1 || throw(ArgumentError("mres must be ≥ 1, got $mres"))
+    nlon >= 2*mmax + 1 || throw(ArgumentError(
+        "nlon must be ≥ 2*mmax+1 = $(2*mmax+1) to resolve every azimuthal order, got nlon=$nlon"))
+    return nothing
+end
+
+"""
     _rebuild_spectral_layout!(cfg::SHTConfig)
 
 Regenerate everything derived from `lmax`/`mmax`/`mres` after one of them is
@@ -453,10 +479,7 @@ the on-the-fly path until `prepare_plm_tables!` is called again.
 """
 function _rebuild_spectral_layout!(cfg::SHTConfig)
     lmax = getfield(cfg, :lmax); mmax = getfield(cfg, :mmax); mres = getfield(cfg, :mres)
-    lmax >= 0 || throw(ArgumentError("lmax must be ≥ 0, got $lmax"))
-    mmax >= 0 || throw(ArgumentError("mmax must be ≥ 0, got $mmax"))
-    mmax <= lmax || throw(ArgumentError("mmax must be ≤ lmax, got mmax=$mmax, lmax=$lmax"))
-    mres >= 1 || throw(ArgumentError("mres must be ≥ 1, got $mres"))
+    _validate_spectral_layout(lmax, mmax, mres, getfield(cfg, :nlon))
 
     setfield!(cfg, :nlm, nlm_calc(lmax, mmax, mres))
     li, mi = build_li_mi(lmax, mmax, mres)
@@ -1161,7 +1184,9 @@ Create an equiangular (regular) grid configuration. Regular grids use
 Fejér's first rule on `θ = (i+0.5)π/nlat` nodes by default; set
 `include_poles=true` to use pole-inclusive Clenshaw–Curtis nodes and weights.
 By default associated Legendre tables are precomputed, which mirrors SHTns'
-regular-grid behaviour and improves performance.
+regular-grid behaviour and improves performance. Tables that would exceed 2 GiB
+(see [`estimate_table_memory`](@ref)) are skipped and Legendre rows computed on
+the fly; call [`prepare_plm_tables!`](@ref) to build them regardless.
 
 !!! warning "Needs `nlat ≥ 2*lmax + 1` to be exact"
     Fejér and Clenshaw–Curtis rules with `nlat` nodes integrate polynomials in
@@ -1290,9 +1315,34 @@ function create_regular_config(lmax::Int, nlat::Int; mmax::Int=lmax, mres::Int=1
                     st, norm, cs_phase, real_norm, robert_form, phi_scale)
 
     if precompute_plm
-        prepare_plm_tables!(cfg)
+        _auto_prepare_plm_tables!(cfg)
     end
     return cfg
+end
+
+# Largest Legendre-table allocation (as `estimate_table_memory`) that the
+# constructors precompute on their own; `prepare_plm_tables!` ignores it.
+const _PLM_TABLE_AUTO_LIMIT = Ref{Int}(2^31)
+
+"""
+Precompute Legendre tables for a new configuration unless they would exceed
+`_PLM_TABLE_AUTO_LIMIT` (2 GiB).
+
+The tables hold a full `(lmax+1) × nlat` block per order for both P̄ and its
+derivative, about four times the data they need (the `l < m` rows are unused
+and the hemispheres mirror each other), so the regular-grid default reached
+32 GiB at lmax=1023. Beyond the limit the transforms compute Legendre rows on
+the fly, as on Gauss grids; `prepare_plm_tables!(cfg)` still builds the tables.
+"""
+function _auto_prepare_plm_tables!(cfg::SHTConfig)
+    bytes = estimate_table_memory(cfg)
+    if bytes > _PLM_TABLE_AUTO_LIMIT[]
+        @info "Not precomputing Legendre tables ($(round(bytes / 2^30; digits=1)) GiB) " *
+              "for lmax=$(cfg.lmax), nlat=$(cfg.nlat); rows are computed on the fly. " *
+              "Call prepare_plm_tables!(cfg) to build them anyway." maxlog = 1
+        return cfg
+    end
+    return prepare_plm_tables!(cfg)
 end
 
 """
@@ -1307,7 +1357,12 @@ Supports Gauss–Legendre (`grid_type = :gauss`), regular equiangular
 (`grid_type = :regular` or `:regular_poles`), and Driscoll-Healy
 (`grid_type = :driscoll_healy`) grids, forwarding to the appropriate creator.
 `nlat`/`nlon` defaults are adjusted to satisfy accuracy constraints for the
-chosen grid.
+chosen grid: the default `nlat` becomes `2lmax+1` (at least 2) for equiangular
+grids and `2(lmax+1)` for Driscoll-Healy, the smallest latitude counts for
+which `analysis` exactly inverts `synthesis` on those grids. The default is
+recognised by its value, so passing `nlat = lmax+2` for these grids selects the
+same count; use `create_regular_config` for a grid of exactly `lmax+2`
+latitudes.
 """
 function create_config(lmax::Int; mmax::Int=lmax, mres::Int=1,
                        nlat::Int=lmax + 2,
@@ -1319,11 +1374,18 @@ function create_config(lmax::Int; mmax::Int=lmax, mres::Int=1,
     pole_grid = grid_type === :regular_poles || grid_type === :driscoll_healy
     min_lat = grid_type === :gauss ? (lmax + 1) : (pole_grid ? (lmax + 1) : (lmax + 2))
     include_poles_eff = include_poles || pole_grid
-    # Preserve the long-standing public keyword signature (`nlat=lmax+2`) while
-    # making the omitted/default latitude count valid for the exact DH rule.
-    # Callers that request any other DH size still reach the strict validator.
-    nlat_eff = grid_type === :driscoll_healy && nlat == lmax + 2 ?
-               2 * (lmax + 1) : max(nlat, min_lat)
+    # Preserve the long-standing public keyword signature (`nlat=lmax+2`), which
+    # suits Gauss grids, while making the omitted/default latitude count exact
+    # for the other rules: equiangular grids need 2lmax+1 latitudes (and at
+    # least 2) and Driscoll-Healy 2(lmax+1). With lmax+2 an equiangular round
+    # trip was 7-22% off. The default is recognised by value, so an explicit
+    # `nlat=lmax+2` is treated the same; callers that request any other size
+    # keep it (and still reach the strict validators).
+    nlat_eff = if grid_type !== :gauss && nlat == lmax + 2
+        grid_type === :driscoll_healy ? 2 * (lmax + 1) : max(2 * lmax + 1, 2)
+    else
+        max(nlat, min_lat)
+    end
     nlon_eff = max(nlon, 2*mmax + 1)            # Azimuthal resolution requires ≥ 2*mmax+1
     if grid_type == :gauss
         return create_gauss_config(lmax, nlat_eff; mmax=mmax, mres=mres, nlon=nlon_eff,

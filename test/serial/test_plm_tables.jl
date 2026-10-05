@@ -73,4 +73,23 @@ end
         @test ret === cfg
         @test cfg.use_plm_tables == false
     end
+
+    @testset "constructors skip tables above the memory limit" begin
+        # The dense tables reached 32 GiB by default at lmax=1023; constructors
+        # now compute rows on the fly past a limit, and the transforms agree.
+        @test create_regular_config(8, 17).use_plm_tables
+        previous = SHTnsKit._PLM_TABLE_AUTO_LIMIT[]
+        try
+            SHTnsKit._PLM_TABLE_AUTO_LIMIT[] = 0
+            large = create_regular_config(8, 17)
+            @test !large.use_plm_tables
+            @test isempty(large.plm_tables)
+            alm = zeros(ComplexF64, 9, 9)
+            alm[4, 3] = 0.5 - 0.25im
+            @test analysis(large, synthesis(large, alm)) ≈ alm
+            @test prepare_plm_tables!(large).use_plm_tables  # explicit request still builds
+        finally
+            SHTnsKit._PLM_TABLE_AUTO_LIMIT[] = previous
+        end
+    end
 end

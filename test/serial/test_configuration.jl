@@ -91,6 +91,30 @@ using SHTnsKit
 
         cfg_dh = create_config(lmax; grid_type=:driscoll_healy, nlon=nlon)
         @test cfg_dh.nlat == 2 * (lmax + 1)
+
+        # The default nlat (lmax+2) suits Gauss grids only: equiangular grids
+        # need 2lmax+1 latitudes, and with lmax+2 their round trip was 7-22% off.
+        alm = zeros(ComplexF64, lmax + 1, lmax + 1)
+        for m in 0:lmax, l in m:lmax
+            alm[l + 1, m + 1] = complex(sin(1.7l + m), m == 0 ? 0.0 : cos(0.6l - m))
+        end
+        for grid_type in (:gauss, :regular, :regular_poles, :driscoll_healy)
+            cfg_grid = create_config(lmax; grid_type)
+            @test analysis(cfg_grid, synthesis(cfg_grid, alm)) ≈ alm rtol=1e-12
+        end
+        @test create_config(lmax; grid_type=:regular).nlat == 2lmax + 1
+        @test create_config(lmax; grid_type=:regular, nlat=lmax + 4).nlat == lmax + 4
+        # 2lmax+1 is a single latitude at lmax = 0, below the two every
+        # non-Gauss grid needs.
+        for grid_type in (:gauss, :regular, :regular_poles, :driscoll_healy)
+            cfg0 = create_config(0; grid_type)
+            @test cfg0.nlat >= 2
+            constant = fill(0.3 + 0.0im, 1, 1)
+            @test analysis(cfg0, synthesis(cfg0, constant)) ≈ constant rtol=1e-12
+        end
+        # The value-based default is documented; the explicit constructor keeps
+        # an lmax+2 equiangular grid.
+        @test create_regular_config(lmax, lmax + 2).nlat == lmax + 2
     end
 
     @testset "On-the-fly mode" begin
@@ -356,6 +380,26 @@ using SHTnsKit
         end
         # An inconsistent spectral triple is rejected rather than stored.
         @test_throws ArgumentError (c = create_gauss_config(6, 8); c.mmax = 99)
+
+        # A rejected assignment must leave the configuration untouched; storing
+        # first and validating afterwards left mmax=99 beside a 7×7 Nlm.
+        c = create_gauss_config(6, 8)
+        layout(c) = (c.lmax, c.mmax, c.mres, c.nlm, size(c.Nlm), length(c.li))
+        before = layout(c)
+        @test_throws ArgumentError (c.mmax = 99)
+        @test_throws ArgumentError (c.lmax = 3)        # below mmax = 6
+        @test_throws ArgumentError (c.mres = 0)
+        @test layout(c) == before
+
+        # nlon bounds the resolvable orders. mmax = 30 on nlon = 18 was accepted
+        # and the next synthesis wrote Fourier column 31 of 18 under @inbounds.
+        c = create_gauss_config(8, 10)                 # nlon = 18
+        c.lmax = 40
+        @test_throws ArgumentError (c.mmax = 30)
+        @test c.mmax == 8 && size(c.Nlm) == (41, 9)
+        c.mmax = 8                                     # 2*8+1 = 17 ≤ 18 is fine
+        f = synthesis(c, zeros(ComplexF64, c.lmax + 1, c.mmax + 1))
+        @test size(f) == (c.nlat, c.nlon)
     end
 
     @testset "kwarg SHTConfig constructor validates its invariants" begin
