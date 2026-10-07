@@ -151,7 +151,7 @@ function _batch_rfft_phi!(Fφ_batch::AbstractArray{<:Complex,3}, fields::Abstrac
     try
         plan = _cached_local_fft_plan(:rfft, view(fields, :, :, 1))
         @inbounds for k in 1:nfields
-            mul!(view(Fφ_batch, :, :, k), plan, view(fields, :, :, k))
+            _mul_real_fft!(view(Fφ_batch, :, :, k), plan, view(fields, :, :, k))
         end
         _FFT_BACKEND[] = _FFT_BACKEND_FFTW
     catch e
@@ -213,7 +213,7 @@ function _batch_irfft_phi!(f_out::AbstractArray{<:Real,3}, Fφ_batch::AbstractAr
     try
         plan = _cached_local_fft_plan(:irfft, view(Fφ_batch, :, :, 1), nlon)
         @inbounds for k in 1:nfields
-            mul!(view(f_out, :, :, k), plan, view(Fφ_batch, :, :, k))
+            _mul_real_fft!(view(f_out, :, :, k), plan, view(Fφ_batch, :, :, k))
         end
         _FFT_BACKEND[] = _FFT_BACKEND_FFTW
     catch e

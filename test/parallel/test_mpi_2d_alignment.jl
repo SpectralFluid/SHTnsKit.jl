@@ -43,14 +43,14 @@ end
 const FREF = synthesis(CFG, ALM)
 
 """Build a spatial PencilArray on a `pθ × pφ` process grid, filled from `FGLOB`."""
-function spatial(pθ, pφ)
+function spatial(pθ, pφ, ::Type{T}=Float64) where {T}
     dims = pφ == 1 ? (1,) : (pθ == 1 ? (2,) : (1, 2))
     pen = Pencil((NLAT, NLON), dims, COMM)
-    f = PencilArray{Float64}(undef, pen)
+    f = PencilArray{T}(undef, pen)
     lr = PencilArrays.range_local(pen)
     loc = parent(f)
     for (jj, jg) in enumerate(lr[2]), (ii, ig) in enumerate(lr[1])
-        loc[ii, jj] = FGLOB[ig, jg]
+        loc[ii, jj] = T(FGLOB[ig, jg])
     end
     f
 end
@@ -81,6 +81,16 @@ end
                 Asafe = EXT.dist_analysis_distributed_2d(CFG, f; plan=plan, assume_aligned=false)
                 @test maximum(abs, EXT.gather_to_full_dense_2d(Asafe) .- AREF) <
                       1e-12 * maximum(abs, AREF)
+
+                # Float32 fields keep their precision; the 2D analyses used to
+                # return ComplexF64 coefficients for any input.
+                f32 = spatial(pθ, pφ, Float32)
+                for assume_aligned in (aligned ? (false, true) : (false,))
+                    A32 = EXT.dist_analysis_distributed_2d(CFG, f32; plan, assume_aligned)
+                    @test eltype(A32.local_coeffs) === ComplexF32
+                    @test maximum(abs, EXT.gather_to_full_dense_2d(A32) .- AREF) <
+                          1e-5 * maximum(abs, AREF)
+                end
 
                 dsa = EXT.create_distributed_spectral_array_2d(plan)
                 EXT.scatter_from_dense_2d!(dsa, ALM)

@@ -285,6 +285,15 @@ function SHTnsKit.dist_scalar_laplacian!(cfg::SHTnsKit.SHTConfig,
                                          use_rfft::Bool=false,
                                          real_output::Bool=true)
     comm = communicator(inθφ)
+    # Check the destination before the transform: one that cannot hold the
+    # result used to fail in the final `copyto!`, after all the work. It must
+    # have the element type the allocating form returns.
+    RT = real(float(eltype(inθφ)))
+    expected = real_output ? RT : Complex{RT}
+    _collective_validation_error(
+        comm, eltype(outθφ) === expected ? UInt32(0) : UInt32(0x0004),
+        :dist_scalar_laplacian!,
+    )
     result = _dist_scalar_laplacian(
         cfg, inθφ, outθφ, use_rfft, real_output, comm,
     )

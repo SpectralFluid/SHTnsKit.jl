@@ -1,6 +1,7 @@
 # Installation
 
-SHTnsKit 2.0 supports Julia 1.10, 1.11, and 1.12 on Linux, macOS, and Windows.
+SHTnsKit 2.0 supports Julia 1.10 and later 1.x releases on Linux, macOS, and
+Windows.
 The core package is pure Julia; FFTW.jl is installed automatically.
 
 ## Core package

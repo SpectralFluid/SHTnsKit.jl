@@ -42,6 +42,13 @@ Returns:
 - Gradient matrix of same size as f, representing ∂E/∂f at each point
 """
 function SHTnsKit.fdgrad_scalar_energy(cfg::SHTnsKit.SHTConfig, f::AbstractMatrix)
+    # Dual numbers cannot pass through the distributed kernels, so a PencilArray
+    # is gathered on every rank (a collective call), differentiated as a whole
+    # grid, and its gradient returned in the input's own pencil. Every rank pays
+    # for a full serial gradient: suitable for small grids; zgrad_* scales.
+    values = SHTnsKit._global_values(f)
+    values === f ||
+        return SHTnsKit._local_block_like(f, SHTnsKit.fdgrad_scalar_energy(cfg, values))
     nlat, nlon = size(f)
     # NOTE: AbstractMatrix ≡ AbstractArray{T,2}, so this method (not the generic
     # AbstractArray overload below) is what Julia selects for ANY 2-D input,
@@ -65,21 +72,20 @@ end
 """
     fdgrad_scalar_energy(cfg, fθφ::AbstractArray) -> ∂E/∂fθφ
 
-ForwardDiff gradient computation for distributed arrays (e.g., PencilArrays).
+ForwardDiff gradient for any array type, including distributed PencilArrays.
 
-This overload handles distributed arrays by converting to local arrays for the
-gradient computation, then copying the result back to the distributed format.
-This approach maintains compatibility without requiring hard dependencies.
-
-The conversion pattern is:
-1. Extract local array data for ForwardDiff computation
-2. Compute gradient using standard ForwardDiff machinery  
-3. Copy result back to distributed array type
+Dual numbers cannot pass through the distributed kernels, so a PencilArray is
+gathered on every rank (a collective call), differentiated as a whole grid, and
+its gradient returned as a PencilArray in the input's pencil. Each rank pays
+for a full serial gradient, so this suits small grids; `zgrad_scalar_energy`
+uses the distributed transforms directly.
 """
 function SHTnsKit.fdgrad_scalar_energy(cfg::SHTnsKit.SHTConfig, fθφ::AbstractArray)
-    # Materialize to a plain Matrix. NOTE: for a distributed PencilArray this
-    # yields LOCAL data only — the size guard below rejects a partial grid so we
-    # never silently differentiate the wrong (rank-local) field.
+    values = SHTnsKit._global_values(fθφ)
+    values === fθφ ||
+        return SHTnsKit._local_block_like(fθφ, SHTnsKit.fdgrad_scalar_energy(cfg, values))
+    # Materialize to a plain Matrix; the size guard below rejects anything that
+    # is not the whole grid.
     fθφ_mat = fθφ isa Matrix ? fθφ : Matrix(fθφ)
     nlat = size(fθφ_mat, 1); nlon = size(fθφ_mat, 2)
     (nlat == cfg.nlat && nlon == cfg.nlon) || throw(DimensionMismatch(
@@ -131,6 +137,12 @@ Returns:
 function SHTnsKit.fdgrad_vector_energy(cfg::SHTnsKit.SHTConfig, Vtθφ::AbstractArray, Vpθφ::AbstractArray)
     # Validate dimensions match
     size(Vtθφ) == size(Vpθφ) || throw(DimensionMismatch("Vt and Vp must have the same dimensions"))
+    Vt_values = SHTnsKit._global_values(Vtθφ)
+    if Vt_values !== Vtθφ
+        gVt, gVp = SHTnsKit.fdgrad_vector_energy(
+            cfg, Vt_values, SHTnsKit._global_values(Vpθφ))
+        return SHTnsKit._local_block_like(Vtθφ, gVt), SHTnsKit._local_block_like(Vpθφ, gVp)
+    end
     nlat = length(axes(Vtθφ, 1)); nlon = length(axes(Vtθφ, 2))
     (nlat == cfg.nlat && nlon == cfg.nlon) || throw(DimensionMismatch(
         "fdgrad_vector_energy expects the full $(cfg.nlat)×$(cfg.nlon) grid; got $(nlat)×$(nlon) " *
@@ -188,9 +200,15 @@ Returns:
 function SHTnsKit.fdgrad_vector_energy(cfg::SHTnsKit.SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatrix)
     # Validate dimensions match
     size(Vt) == size(Vp) || throw(DimensionMismatch("Vt and Vp must have the same dimensions"))
+    # This AbstractMatrix method is selected for every 2-D input, including a
+    # 2-D PencilArray: gather it (see `fdgrad_scalar_energy`).
+    Vt_values = SHTnsKit._global_values(Vt)
+    if Vt_values !== Vt
+        gVt, gVp = SHTnsKit.fdgrad_vector_energy(
+            cfg, Vt_values, SHTnsKit._global_values(Vp))
+        return SHTnsKit._local_block_like(Vt, gVt), SHTnsKit._local_block_like(Vp, gVp)
+    end
     nlat, nlon = size(Vt)
-    # As with the scalar case, this AbstractMatrix method is selected for every
-    # 2-D input (incl. 2-D PencilArrays), so the full-grid guard belongs here.
     (nlat == cfg.nlat && nlon == cfg.nlon) || throw(DimensionMismatch(
         "fdgrad_vector_energy expects the full $(cfg.nlat)×$(cfg.nlon) grid; got $(nlat)×$(nlon) " *
         "(a distributed PencilArray gives LOCAL data — gather to the global grid first)."))

@@ -38,18 +38,23 @@ function _record_rotation_payload!(sent::Int, maximum::Int)
     return nothing
 end
 
-@inline _rotation_angle_code(::Type{Float32}) = 1
-@inline _rotation_angle_code(::Type{Float64}) = 2
-@inline _rotation_angle_code(::Type) = 0
+"""
+An angle as Float64, or NaN when it is not a real number. Every `Real` is
+accepted (`π`, integers, rationals), as in the serial rotations; checking the
+value instead of the type also lets ranks pass `0.5f0` and `0.5` alike.
+"""
+_rotation_angle_value(angle::Real) = try
+    Float64(angle)
+catch
+    NaN
+end
+_rotation_angle_value(angle) = NaN
 
+"""Collectively require each angle to be finite and equal on every rank."""
 function _validate_rotation_angles!(comm, angles::Tuple, operation::Symbol)
     flags = UInt32(0)
     for angle in angles
-        code = _rotation_angle_code(typeof(angle))
-        code == 0 && (flags |= 0x8000)
-        MPI.Allreduce(code, min, comm) == MPI.Allreduce(code, max, comm) ||
-            (flags |= 0x8000)
-        value = code == 0 ? 0.0 : Float64(angle)
+        value = _rotation_angle_value(angle)
         isfinite(value) || (flags |= 0x8000)
         reference = Ref(value)
         MPI.Bcast!(reference, 0, comm)
@@ -61,7 +66,8 @@ end
 
 function _validate_rotation_pencils!(cfg, input::PencilArray,
                                      output::PencilArray, angles::Tuple,
-                                     operation::Symbol; general::Bool)
+                                     operation::Symbol; general::Bool,
+                                     mixing_beta=nothing)
     # The first input is the communicator root of trust. Every rank in that
     # communicator must enter with a compatible input; candidate outputs are
     # then preflighted collectively before any mutation or data movement.
@@ -82,6 +88,10 @@ function _validate_rotation_pencils!(cfg, input::PencilArray,
     _validate_identical_pencil_layout!(input, output, operation; comm)
     flags = eltype(input) === eltype(output) ? UInt32(0) : UInt32(0x0004)
     general && cfg.mres != 1 && (flags |= 0x10000)
+    # As in the serial engine: orders above mmax would be silently dropped.
+    mixing_beta === nothing ||
+        !SHTnsKit._rotation_exceeds_orders(cfg.lmax, cfg.mmax, mixing_beta) ||
+        (flags |= 0x80000)
     _collective_validation_error(comm, flags, operation)
     _validate_rotation_angles!(comm, angles, operation)
     return comm
@@ -134,6 +144,7 @@ function _dist_yrotate_rows!(cfg, input::PencilArray, beta::Real,
     c = similar(b)
     d = Matrix{RT}(undef, 2cfg.lmax + 1, 2cfg.lmax + 1)
     dwork = similar(d)
+    previous_l = -2
     local_sent = 0
     local_maximum = 0
 
@@ -166,9 +177,15 @@ function _dist_yrotate_rows!(cfg, input::PencilArray, beta::Real,
                 b[-m + l + 1] = (isodd(m) ? -one(RT) : one(RT)) * conj(canonical)
             end
         end
+        # A rank's degrees are consecutive: build the first one, then advance
+        # (O(l²) per degree instead of rebuilding each from d⁰ at O(l³)).
+        if l == previous_l + 1
+            SHTnsKit._wigner_d_advance!(d, dwork, l, RT(beta))
+        else
+            SHTnsKit.wigner_d_matrix!(d, l, RT(beta), dwork)
+        end
+        previous_l = l
         block = view(d, 1:n, 1:n)
-        work = view(dwork, 1:n, 1:n)
-        SHTnsKit.wigner_d_matrix!(block, l, RT(beta), work)
         @inbounds for m in -l:l
             acc = zero(CT)
             for mp in -l:l
@@ -193,7 +210,7 @@ end
 function _dist_yrotate!(cfg, input::PencilArray, beta::Real,
                         output::PencilArray, operation::Symbol)
     comm = _validate_rotation_pencils!(
-        cfg, input, output, (beta,), operation; general=true,
+        cfg, input, output, (beta,), operation; general=true, mixing_beta=beta,
     )
     return _dist_yrotate_rows!(cfg, input, beta, output, comm)
 end
@@ -223,7 +240,7 @@ function SHTnsKit.dist_SH_rotate_euler(cfg::SHTnsKit.SHTConfig,
                                       output::PencilArray)
     comm = _validate_rotation_pencils!(
         cfg, input, output, (alpha, beta, gamma),
-        :dist_SH_rotate_euler; general=true,
+        :dist_SH_rotate_euler; general=true, mixing_beta=beta,
     )
     first = similar(input); second = similar(input)
     _dist_zrotate_local!(cfg, input, alpha, first)

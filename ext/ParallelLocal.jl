@@ -2,10 +2,6 @@
 # PencilArray local/point evaluations and packed helpers
 ##########
 
-using MPI
-using PencilArrays
-using SHTnsKit
-
 """
     dist_SH_to_lat(cfg, Alm_pencil::PencilArray, cost::Real;
                    nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax,
@@ -709,7 +705,7 @@ function _validate_variant_vector!(cfg::SHTnsKit.SHTConfig, values::PencilArray,
 end
 
 function _distributed_vector(::Type{T}, n::Int, comm) where {T}
-    pen = Pencil((n, 1), (1,), comm)
+    pen = _cached_pencil((n, 1), (1,), comm)
     result = PencilArray{T}(undef, pen)
     fill!(parent(result), zero(T))
     return result
@@ -1219,7 +1215,11 @@ function _synthesis_mode_pencil(cfg::SHTnsKit.SHTConfig, im::Int,
     qglobals = collect(Int, globalindices(coefficients, 1))
     P = Vector{Float64}(undef, ltr + 1)
     rank = MPI.Comm_rank(comm)
-    inverse_scale = axisymmetric ? one(RT) : RT(SHTnsKit.phi_inv_scale(cfg))
+    # Match the serial transforms: `synthesis_axisym` returns the m = 0 grid
+    # column, scaled by the evaluator factor (1/2π under :quad), while
+    # `synthesis_packed_ml` returns Fourier bins, scaled by phi_inv_scale.
+    inverse_scale = RT(axisymmetric ? SHTnsKit._evaluator_phi_scale(cfg) :
+                                      SHTnsKit.phi_inv_scale(cfg))
     for root in 0:(MPI.Comm_size(comm) - 1)
         send = zeros(CT, θcounts[root + 1])
         @inbounds for k in eachindex(send)

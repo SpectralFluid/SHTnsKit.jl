@@ -227,6 +227,15 @@ end
               "f5ec0b731b891260a4c44f94951ddf118086f44b"
         @test fixture["baseline"]["export_count"] == length(baseline_exports)
         @test baseline_exports ⊆ final_exports
+        # An exported name the core never defines reaches `using SHTnsKit`
+        # callers as an UndefVarError rather than the missing-extension hint.
+        @test isempty(filter(name -> !isdefined(SHTnsKit, name), collect(final_exports)))
+        if Base.get_extension(SHTnsKit, :SHTnsKitParallelExt) === nothing
+            cfg = create_gauss_config(2, 3)
+            for constructor in (DistAnalysisPlan, DistPlan, DistSphtorPlan, DistQstPlan)
+                @test_throws "Parallel extension not loaded" constructor(cfg, zeros(3, 5))
+            end
+        end
 
         # A names-only export snapshot does not prove that callers retain the
         # positional, typed, and keyword entry points they compiled against.

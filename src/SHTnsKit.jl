@@ -366,6 +366,24 @@ function synthesis_qst! end
 
 @inline _parallel_ext_module() = Base.get_extension(@__MODULE__, :SHTnsKitParallelExt)
 
+"""Construct the parallel extension's concrete distributed scalar analysis plan."""
+function DistAnalysisPlan(args...; kwargs...)
+    ext = _parallel_ext_module()
+    ext === nothing && error(
+        "Parallel extension not loaded. Load MPI, PencilArrays, and PencilFFTs first",
+    )
+    return getproperty(ext, :DistAnalysisPlan)(args...; kwargs...)
+end
+
+"""Construct the parallel extension's concrete distributed scalar synthesis plan."""
+function DistPlan(args...; kwargs...)
+    ext = _parallel_ext_module()
+    ext === nothing && error(
+        "Parallel extension not loaded. Load MPI, PencilArrays, and PencilFFTs first",
+    )
+    return getproperty(ext, :DistPlan)(args...; kwargs...)
+end
+
 """Construct the parallel extension's concrete distributed vector plan."""
 function DistSphtorPlan(args...; kwargs...)
     ext = _parallel_ext_module()

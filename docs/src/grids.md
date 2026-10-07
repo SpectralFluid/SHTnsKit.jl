@@ -145,8 +145,13 @@ the north pole and exclude the south pole.
 ## Common constructor
 
 [`create_config`](@ref) selects a grid through `grid_type` and forwards the
-normalization and sampling options. Prefer the specific constructors in user
-code when the chosen grid should be obvious at the call site.
+normalization and sampling options. When `nlat` is left at its default it picks
+a latitude count that the grid transforms exactly: `lmax + 2` for Gauss,
+`2lmax + 1` for the equiangular grids, and `2(lmax + 1)` for Driscoll–Healy.
+The default is recognised by its value, so an explicit `nlat = lmax + 2` does
+the same; call [`create_regular_config`](@ref) for exactly `lmax + 2`
+equiangular latitudes. Prefer the specific constructors in user code when the
+chosen grid should be obvious at the call site.
 
 ## Latitude order
 

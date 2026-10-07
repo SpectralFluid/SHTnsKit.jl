@@ -23,14 +23,14 @@ SHTnsKit.jl's distributed extension supports the versions declared in
 | **MPI.jl** | v0.20 | Uses `Allgatherv!` with `VBuffer` API |
 | **PencilArrays.jl** | v0.19 | Uses `range_local`, `size_local`, `get_comm` API |
 | **PencilFFTs.jl** | v0.15 | Compatible distributed FFT support |
-| **Julia** | 1.10, 1.11, or 1.12 | Matches package compatibility bounds |
+| **Julia** | 1.10 or later 1.x | Matches package compatibility bounds |
 
 **Important**: PencilArrays releases outside the declared v0.19 compatibility
 range are not supported.
 
 ### Minimum Requirements
 - **Operating System**: Linux, macOS, or Windows with WSL
-- **Julia**: Version 1.10, 1.11, or 1.12
+- **Julia**: Version 1.10 or later 1.x
 - **Memory**: 8GB RAM (32GB+ for large parallel problems)
 - **Network**: Fast interconnect recommended for multi-node MPI
 

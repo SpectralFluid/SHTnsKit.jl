@@ -1,5 +1,5 @@
 [audit]
-entry_count = 675
+entry_count = 688
 scanner = "deterministic non-overlapping spelling scanner; longer transfer spellings win"
 scope = "src/device_utils.jl and every ext/*.jl file"
 
@@ -33,6 +33,14 @@ key = "ext/GPUCommon.jl|collect|e6cee41a3bb3b75fd1585e61ac01248e63a00d9d911c68c9
 path = "ext/GPUCommon.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 3
+snippet_sha256 = "e6cee41a3bb3b75fd1585e61ac01248e63a00d9d911c68c9a065cfcef36a57be"
+token = "collect"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/GPUCommon.jl|collect|e6cee41a3bb3b75fd1585e61ac01248e63a00d9d911c68c9a065cfcef36a57be|4"
+path = "ext/GPUCommon.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 4
 snippet_sha256 = "e6cee41a3bb3b75fd1585e61ac01248e63a00d9d911c68c9a065cfcef36a57be"
 token = "collect"
 [[entry]]
@@ -2749,14 +2757,6 @@ snippet_sha256 = "1611a3072a05928c550f2a2685e1fa66cc388d366b403a45db1c328882d4af
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|199599a5a0a5fc2dd9d970aefa4164ea63e1d20cd876ebd6e8c4df059e6b14c7|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "199599a5a0a5fc2dd9d970aefa4164ea63e1d20cd876ebd6e8c4df059e6b14c7"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
 key = "ext/ParallelTransforms.jl|matrix|2058a77cc063344bea46220d8dcdf201657420e7601e6e69e15471152cb749d9|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
@@ -2817,6 +2817,30 @@ key = "ext/ParallelTransforms.jl|matrix|5245f8b7195bddab1a1b244787bf442cb3825401
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 2
+snippet_sha256 = "5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7|3"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 3
+snippet_sha256 = "5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7|4"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 4
+snippet_sha256 = "5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7|5"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 5
 snippet_sha256 = "5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54b7"
 token = "matrix"
 [[entry]]
@@ -2893,6 +2917,14 @@ snippet_sha256 = "8da7cf80f66d5937a6770a331a906f576488761edfacbbf6bd8c3fcc6cd8fa
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|90e41b6bd53abe222d3b8bbdb419b546caa6b7e48b2286e6d67f2163d8e1570e|1"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 1
+snippet_sha256 = "90e41b6bd53abe222d3b8bbdb419b546caa6b7e48b2286e6d67f2163d8e1570e"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
 key = "ext/ParallelTransforms.jl|matrix|9a1eee8c30bd8410194d52ea38151074cdd1b8cfd3b9156f91112880e0d43f24|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
@@ -2914,30 +2946,6 @@ path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
 snippet_sha256 = "bf70639fb3ec7733c9661fb5960b52bc776891ee3eb5c9be9eccd66ce222cd49"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d|2"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 2
-snippet_sha256 = "d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d|3"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 3
-snippet_sha256 = "d6d58951abe916b9af8f8eb4693e40433fea0011bfa21d185922d7f61cb2cb0d"
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
@@ -3258,6 +3266,14 @@ path = "ext/ParallelTransforms.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
 snippet_sha256 = "93da1d18b0b0dd32e7d1ef981933881d18dd557a1587dad11a0e5a1dcff9d9dc"
+token = "parent"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/ParallelTransforms.jl|parent|9b28038ea2a7dcab51283a93d2ff51ba8b379c7943baca1e3f59a88da4471d42|1"
+path = "ext/ParallelTransforms.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "9b28038ea2a7dcab51283a93d2ff51ba8b379c7943baca1e3f59a88da4471d42"
 token = "parent"
 [[entry]]
 classification = "metadata_or_storage_preserving"
@@ -4221,11 +4237,43 @@ snippet_sha256 = "4e32115e11d5347f2190b6b542c4974ce36dd01c9eca123060dbc7f96fe3ee
 token = "collect"
 [[entry]]
 classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|copyto|217b3158ad12e6d51c320971e55e14c83e35a777cdddc5751bd2918553a5e44e|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "217b3158ad12e6d51c320971e55e14c83e35a777cdddc5751bd2918553a5e44e"
+token = "copyto"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|copyto|ca9c36881279e876b403291bb8e822e6fc52e8f71252847a8d1f65e9935778ab|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "ca9c36881279e876b403291bb8e822e6fc52e8f71252847a8d1f65e9935778ab"
+token = "copyto"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|copy|0ca4693c54a54f2b1450f8f1770debf8b79c57599c61842e853935196335ffe4|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "0ca4693c54a54f2b1450f8f1770debf8b79c57599c61842e853935196335ffe4"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
 key = "ext/SHTnsKitAdvancedADExt.jl|copy|11154a1e24a1c10bab3991372fe0861ea6f27729071474ecfaf5c7b46aaa6421|1"
 path = "ext/SHTnsKitAdvancedADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
 snippet_sha256 = "11154a1e24a1c10bab3991372fe0861ea6f27729071474ecfaf5c7b46aaa6421"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|copy|4644c22547f2657c0a8ceb170cc32408aff468ea2c7106a708dff658b3873fc6|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "4644c22547f2657c0a8ceb170cc32408aff468ea2c7106a708dff658b3873fc6"
 token = "copy"
 [[entry]]
 classification = "cpu_only"
@@ -4235,6 +4283,62 @@ reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs 
 same_snippet_ordinal = 1
 snippet_sha256 = "4dc90f5dca1a40d6130de0854eb0a046a8e01f1950d9728f3af9d6749674a1a2"
 token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|copy|87dc7bf76cb7f931e993f4767ba50105fba1b4c05f4ce4a2906396904e1e0e1b|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "87dc7bf76cb7f931e993f4767ba50105fba1b4c05f4ce4a2906396904e1e0e1b"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|copy|87dc7bf76cb7f931e993f4767ba50105fba1b4c05f4ce4a2906396904e1e0e1b|2"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 2
+snippet_sha256 = "87dc7bf76cb7f931e993f4767ba50105fba1b4c05f4ce4a2906396904e1e0e1b"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|copy|a7125a049db1b2f3e26b2b30821dbd38269ee2a0718d271f16569db6016475ed|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "a7125a049db1b2f3e26b2b30821dbd38269ee2a0718d271f16569db6016475ed"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|copy|fbb7caaacec0e3646b7700758157052138579e5f1f4053eacb3c95d45e18dc26|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "fbb7caaacec0e3646b7700758157052138579e5f1f4053eacb3c95d45e18dc26"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|matrix|84fc60affb95e6242f0fd24be0cae2966ea91c84bed7d51020fec4ecd46de2ef|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "84fc60affb95e6242f0fd24be0cae2966ea91c84bed7d51020fec4ecd46de2ef"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|matrix|e6635435c94298537c1cef4c89e2f1d2a3688ac8d6865a1f73f659c496ecb959|1"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "e6635435c94298537c1cef4c89e2f1d2a3688ac8d6865a1f73f659c496ecb959"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitAdvancedADExt.jl|matrix|e6635435c94298537c1cef4c89e2f1d2a3688ac8d6865a1f73f659c496ecb959|2"
+path = "ext/SHTnsKitAdvancedADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 2
+snippet_sha256 = "e6635435c94298537c1cef4c89e2f1d2a3688ac8d6865a1f73f659c496ecb959"
+token = "matrix"
 [[entry]]
 classification = "cpu_only"
 key = "ext/SHTnsKitAdvancedADExt.jl|typed_array|6a3f945a436cfadc7d0d88754bc5e5305471ff778353833a998abc86020f20a3|1"
@@ -4613,6 +4717,30 @@ snippet_sha256 = "3a2a9278eadf7357231906b39d457393b19d783b5590f87a7be08868bd5356
 token = "collect"
 [[entry]]
 classification = "cpu_only"
+key = "ext/SHTnsKitParallelADExt.jl|collect|3b5abb4a8ade21f8052dfde3454f2b46cf96a85214ff971acffdec9b49abcd79|1"
+path = "ext/SHTnsKitParallelADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "3b5abb4a8ade21f8052dfde3454f2b46cf96a85214ff971acffdec9b49abcd79"
+token = "collect"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitParallelADExt.jl|collect|7e5e3c603de61aff3e3157555afebc07975f789c21f964d0619a8aeb2fa1c99e|1"
+path = "ext/SHTnsKitParallelADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "7e5e3c603de61aff3e3157555afebc07975f789c21f964d0619a8aeb2fa1c99e"
+token = "collect"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitParallelADExt.jl|collect|8aa3cd3b27c92e9c61e7d12a7c3455d9aa4ba5a00dd47ce32c8558e0bc6f0060|1"
+path = "ext/SHTnsKitParallelADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "8aa3cd3b27c92e9c61e7d12a7c3455d9aa4ba5a00dd47ce32c8558e0bc6f0060"
+token = "collect"
+[[entry]]
+classification = "cpu_only"
 key = "ext/SHTnsKitParallelADExt.jl|collect|9044fd97b70b9f8284e4bdde257d7c4d787b0ac8ecd3c6603956091dd5bb7b8f|1"
 path = "ext/SHTnsKitParallelADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
@@ -4621,123 +4749,27 @@ snippet_sha256 = "9044fd97b70b9f8284e4bdde257d7c4d787b0ac8ecd3c6603956091dd5bb7b
 token = "collect"
 [[entry]]
 classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|a770eb94813d416f9546def9dc0b0891a2e68a6cec00385c21c69fd19de41320|1"
+key = "ext/SHTnsKitParallelADExt.jl|collect|e3e9bf42f6559b7aa65df5da7ee5f35ec869e22db949186652560ed4a0c16e53|1"
 path = "ext/SHTnsKitParallelADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
-snippet_sha256 = "a770eb94813d416f9546def9dc0b0891a2e68a6cec00385c21c69fd19de41320"
+snippet_sha256 = "e3e9bf42f6559b7aa65df5da7ee5f35ec869e22db949186652560ed4a0c16e53"
 token = "collect"
 [[entry]]
 classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|a770eb94813d416f9546def9dc0b0891a2e68a6cec00385c21c69fd19de41320|2"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 2
-snippet_sha256 = "a770eb94813d416f9546def9dc0b0891a2e68a6cec00385c21c69fd19de41320"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|a770eb94813d416f9546def9dc0b0891a2e68a6cec00385c21c69fd19de41320|3"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 3
-snippet_sha256 = "a770eb94813d416f9546def9dc0b0891a2e68a6cec00385c21c69fd19de41320"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|a770eb94813d416f9546def9dc0b0891a2e68a6cec00385c21c69fd19de41320|4"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 4
-snippet_sha256 = "a770eb94813d416f9546def9dc0b0891a2e68a6cec00385c21c69fd19de41320"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|bf783eb7a7a9a08542ad8f6b76b0650714282bbab86129899a8edc853e46d566|1"
+key = "ext/SHTnsKitParallelADExt.jl|copyto|5f0aefa3446b3eed41fbefcc5778f07e4c515a5217ad545690db45949aa7866a|1"
 path = "ext/SHTnsKitParallelADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
-snippet_sha256 = "bf783eb7a7a9a08542ad8f6b76b0650714282bbab86129899a8edc853e46d566"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|e7f798624023c2ecde7f546ededcf0a2fd84596589e3b4d5baf3ec096792708c|1"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 1
-snippet_sha256 = "e7f798624023c2ecde7f546ededcf0a2fd84596589e3b4d5baf3ec096792708c"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|eb17781fd23494b6ea5a1fc09b430a68952178c04c5bd6a1291e798f4c41ccee|1"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 1
-snippet_sha256 = "eb17781fd23494b6ea5a1fc09b430a68952178c04c5bd6a1291e798f4c41ccee"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797|1"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 1
-snippet_sha256 = "f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797|2"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 2
-snippet_sha256 = "f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797|3"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 3
-snippet_sha256 = "f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797|4"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 4
-snippet_sha256 = "f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|collect|fb684b34b1ec73e503ba0f5faa044f9d57e2ac1574328097ee17081d6baaeff9|1"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 1
-snippet_sha256 = "fb684b34b1ec73e503ba0f5faa044f9d57e2ac1574328097ee17081d6baaeff9"
-token = "collect"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|copyto|2dd863bca5c4dc91fc6a32352b70b04314d23a2b4079bdff9216d8538189f6fe|1"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 1
-snippet_sha256 = "2dd863bca5c4dc91fc6a32352b70b04314d23a2b4079bdff9216d8538189f6fe"
+snippet_sha256 = "5f0aefa3446b3eed41fbefcc5778f07e4c515a5217ad545690db45949aa7866a"
 token = "copyto"
 [[entry]]
 classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|copyto|6a85fc5d2c9ac96c3edfb70e867e70155ccab866fe9e7b108d48743386756295|1"
+key = "ext/SHTnsKitParallelADExt.jl|copyto|6068dab29feb752bc25fcae4a035a1752d212f703759b5512deebc13fc0368a9|1"
 path = "ext/SHTnsKitParallelADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
-snippet_sha256 = "6a85fc5d2c9ac96c3edfb70e867e70155ccab866fe9e7b108d48743386756295"
-token = "copyto"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|copyto|8b0265c4ffd001baa2efcc6711ff484fd2086da53e7809a0ed7366a48a889e39|1"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 1
-snippet_sha256 = "8b0265c4ffd001baa2efcc6711ff484fd2086da53e7809a0ed7366a48a889e39"
+snippet_sha256 = "6068dab29feb752bc25fcae4a035a1752d212f703759b5512deebc13fc0368a9"
 token = "copyto"
 [[entry]]
 classification = "cpu_only"
@@ -4749,12 +4781,36 @@ snippet_sha256 = "bdaf106ef5a420bb8511776ad5908fa3cbb5caaa33c83875933de8197862c6
 token = "copyto"
 [[entry]]
 classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|copyto|d7be0215843b548aeb91ad98405b7b16eb68cf43e239f2cf57b7fd5956aade5c|1"
+key = "ext/SHTnsKitParallelADExt.jl|copy|0ca4693c54a54f2b1450f8f1770debf8b79c57599c61842e853935196335ffe4|1"
 path = "ext/SHTnsKitParallelADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
-snippet_sha256 = "d7be0215843b548aeb91ad98405b7b16eb68cf43e239f2cf57b7fd5956aade5c"
-token = "copyto"
+snippet_sha256 = "0ca4693c54a54f2b1450f8f1770debf8b79c57599c61842e853935196335ffe4"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitParallelADExt.jl|copy|87dc7bf76cb7f931e993f4767ba50105fba1b4c05f4ce4a2906396904e1e0e1b|1"
+path = "ext/SHTnsKitParallelADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "87dc7bf76cb7f931e993f4767ba50105fba1b4c05f4ce4a2906396904e1e0e1b"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitParallelADExt.jl|copy|87dc7bf76cb7f931e993f4767ba50105fba1b4c05f4ce4a2906396904e1e0e1b|2"
+path = "ext/SHTnsKitParallelADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 2
+snippet_sha256 = "87dc7bf76cb7f931e993f4767ba50105fba1b4c05f4ce4a2906396904e1e0e1b"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitParallelADExt.jl|copy|fa0e6152740e56faf700fbfe1e1f452528a7cced122a73e005fce7bbef8c19ae|1"
+path = "ext/SHTnsKitParallelADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "fa0e6152740e56faf700fbfe1e1f452528a7cced122a73e005fce7bbef8c19ae"
+token = "copy"
 [[entry]]
 classification = "cpu_only"
 key = "ext/SHTnsKitParallelADExt.jl|matrix|2facba73858bfe14ee2a0ed857874464977a6dfe347173425607c84b3bbb3063|1"
@@ -4771,6 +4827,14 @@ reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs 
 same_snippet_ordinal = 1
 snippet_sha256 = "7dfb6c2d060d864fbb7e6e2384ff952da668a1ddb3c7e09fb853baa65e1253e1"
 token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitParallelADExt.jl|parent|1f3ad388e06be19e78b56ff00bcadf31ec4a1934d7a2b39a2b83f6edf7c395fc|1"
+path = "ext/SHTnsKitParallelADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "1f3ad388e06be19e78b56ff00bcadf31ec4a1934d7a2b39a2b83f6edf7c395fc"
+token = "parent"
 [[entry]]
 classification = "cpu_only"
 key = "ext/SHTnsKitParallelADExt.jl|parent|28b02852bdf0b672b458dce172cb94d787d14a4f8377915ff3e3501b2475c15b|1"
@@ -4797,14 +4861,6 @@ snippet_sha256 = "434946757166eb4d740d7099b0c3722cae537b2856044242cfbf6b50ff64ca
 token = "parent"
 [[entry]]
 classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|parent|5530503c8047df5da6622c1c55081b34021613cc7d186466e31dc140bed9cc48|1"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 1
-snippet_sha256 = "5530503c8047df5da6622c1c55081b34021613cc7d186466e31dc140bed9cc48"
-token = "parent"
-[[entry]]
-classification = "cpu_only"
 key = "ext/SHTnsKitParallelADExt.jl|parent|564f0e0074ab83064c09d05dc068f73feb22d746ad14e9bbefa837f0aa800faf|1"
 path = "ext/SHTnsKitParallelADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
@@ -4813,11 +4869,19 @@ snippet_sha256 = "564f0e0074ab83064c09d05dc068f73feb22d746ad14e9bbefa837f0aa800f
 token = "parent"
 [[entry]]
 classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|parent|6ae08bcd02dc361a85afb6a6beeb59040b97dd1d3f5e97839f8c496ab183985b|1"
+key = "ext/SHTnsKitParallelADExt.jl|parent|7e736eb220a95626161f64ba6b5cbf4232730f619d9d5db8486dfeaed73b3ed7|1"
 path = "ext/SHTnsKitParallelADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
-snippet_sha256 = "6ae08bcd02dc361a85afb6a6beeb59040b97dd1d3f5e97839f8c496ab183985b"
+snippet_sha256 = "7e736eb220a95626161f64ba6b5cbf4232730f619d9d5db8486dfeaed73b3ed7"
+token = "parent"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitParallelADExt.jl|parent|8c6bd9af780e92301cd44ac1d0f075fe557b8f7b61daedcc1d21066ae6f1d363|1"
+path = "ext/SHTnsKitParallelADExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "8c6bd9af780e92301cd44ac1d0f075fe557b8f7b61daedcc1d21066ae6f1d363"
 token = "parent"
 [[entry]]
 classification = "cpu_only"
@@ -4834,14 +4898,6 @@ path = "ext/SHTnsKitParallelADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
 snippet_sha256 = "d65d439a430514bec28f40a9046c6d76136d1406504ddfa4ae484682cedd7703"
-token = "parent"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitParallelADExt.jl|parent|d7c81875c5ecd84378c76020220b0cd1e79aa12bc0874ff79a19b0c6be2f6599|1"
-path = "ext/SHTnsKitParallelADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 1
-snippet_sha256 = "d7c81875c5ecd84378c76020220b0cd1e79aa12bc0874ff79a19b0c6be2f6599"
 token = "parent"
 [[entry]]
 classification = "bounded_pinned_mpi_staging"
@@ -5197,19 +5253,19 @@ snippet_sha256 = "aff9d8b3ba318539f09e49021fe6572df5308b19bd054ac8e0b9f551dc0f25
 token = "parent"
 [[entry]]
 classification = "bounded_pinned_mpi_staging"
+key = "ext/SHTnsKitParallelCUDAExt.jl|vector|6f05a484ef43774be7bff89a73f86fd149ed1507d5f9d8a960fc3d0ff8ced705|1"
+path = "ext/SHTnsKitParallelCUDAExt.jl"
+reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
+same_snippet_ordinal = 1
+snippet_sha256 = "6f05a484ef43774be7bff89a73f86fd149ed1507d5f9d8a960fc3d0ff8ced705"
+token = "vector"
+[[entry]]
+classification = "bounded_pinned_mpi_staging"
 key = "ext/SHTnsKitParallelCUDAExt.jl|vector|8026ced75be30a4ee79eaebf4700cb65b918ed607e1bfffc62b034da6b1691de|1"
 path = "ext/SHTnsKitParallelCUDAExt.jl"
 reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
 same_snippet_ordinal = 1
 snippet_sha256 = "8026ced75be30a4ee79eaebf4700cb65b918ed607e1bfffc62b034da6b1691de"
-token = "vector"
-[[entry]]
-classification = "bounded_pinned_mpi_staging"
-key = "ext/SHTnsKitParallelCUDAExt.jl|vector|a24f0dcc14d951e081d408beb6d1acd0f4b8f86eba91bd1f035e69f9b399a2f1|1"
-path = "ext/SHTnsKitParallelCUDAExt.jl"
-reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
-same_snippet_ordinal = 1
-snippet_sha256 = "a24f0dcc14d951e081d408beb6d1acd0f4b8f86eba91bd1f035e69f9b399a2f1"
 token = "vector"
 [[entry]]
 classification = "cpu_only"
@@ -5301,11 +5357,27 @@ snippet_sha256 = "a93a2bfa0355e3c7cd001f93b48c1ff7a08709afb7fb408782aedb91c19250
 token = "vector"
 [[entry]]
 classification = "cpu_only"
+key = "ext/SHTnsKitZygoteExt.jl|copyto|ca9c36881279e876b403291bb8e822e6fc52e8f71252847a8d1f65e9935778ab|1"
+path = "ext/SHTnsKitZygoteExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "ca9c36881279e876b403291bb8e822e6fc52e8f71252847a8d1f65e9935778ab"
+token = "copyto"
+[[entry]]
+classification = "cpu_only"
 key = "ext/SHTnsKitZygoteExt.jl|copy|11154a1e24a1c10bab3991372fe0861ea6f27729071474ecfaf5c7b46aaa6421|1"
 path = "ext/SHTnsKitZygoteExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
 snippet_sha256 = "11154a1e24a1c10bab3991372fe0861ea6f27729071474ecfaf5c7b46aaa6421"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitZygoteExt.jl|copy|4644c22547f2657c0a8ceb170cc32408aff468ea2c7106a708dff658b3873fc6|1"
+path = "ext/SHTnsKitZygoteExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "4644c22547f2657c0a8ceb170cc32408aff468ea2c7106a708dff658b3873fc6"
 token = "copy"
 [[entry]]
 classification = "cpu_only"
@@ -5315,6 +5387,38 @@ reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs 
 same_snippet_ordinal = 1
 snippet_sha256 = "4dc90f5dca1a40d6130de0854eb0a046a8e01f1950d9728f3af9d6749674a1a2"
 token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitZygoteExt.jl|copy|a7125a049db1b2f3e26b2b30821dbd38269ee2a0718d271f16569db6016475ed|1"
+path = "ext/SHTnsKitZygoteExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "a7125a049db1b2f3e26b2b30821dbd38269ee2a0718d271f16569db6016475ed"
+token = "copy"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitZygoteExt.jl|matrix|84fc60affb95e6242f0fd24be0cae2966ea91c84bed7d51020fec4ecd46de2ef|1"
+path = "ext/SHTnsKitZygoteExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "84fc60affb95e6242f0fd24be0cae2966ea91c84bed7d51020fec4ecd46de2ef"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitZygoteExt.jl|matrix|ea8335a96441744247067b762ff405f7bd8280d46e3021c5fe4a409d66b81ca7|1"
+path = "ext/SHTnsKitZygoteExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 1
+snippet_sha256 = "ea8335a96441744247067b762ff405f7bd8280d46e3021c5fe4a409d66b81ca7"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/SHTnsKitZygoteExt.jl|matrix|ea8335a96441744247067b762ff405f7bd8280d46e3021c5fe4a409d66b81ca7|2"
+path = "ext/SHTnsKitZygoteExt.jl"
+reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
+same_snippet_ordinal = 2
+snippet_sha256 = "ea8335a96441744247067b762ff405f7bd8280d46e3021c5fe4a409d66b81ca7"
+token = "matrix"
 [[entry]]
 classification = "cpu_only"
 key = "src/device_utils.jl|array|ade43c800a30fbe5fc4f5ca5703b48f9e550779a49a242ec186df1564274ca31|1"

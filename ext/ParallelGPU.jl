@@ -29,6 +29,13 @@ ParallelGPUAdapter(name::Symbol, matches, array_type, device, gpu_aware,
     synchronize, allocate_pinned, device_to_host!, host_to_device!,
 )
 
+# Julia 1.11+ arrays wrap a separately collected `Memory`, and `reshape` returns
+# a new wrapper over it. Host mirrors keep only reshaped wrappers, so pinning
+# must follow the backing memory: a finalizer on the allocated `Vector` would
+# unpin storage that is still in use once that wrapper is collected.
+_pinned_storage(host::Array) =
+    @static VERSION >= v"1.11.0-" ? host.ref.mem : host
+
 const _PARALLEL_GPU_ADAPTERS = Dict{Symbol,WeakRef}()
 const _PARALLEL_GPU_ADAPTER_LOCK = ReentrantLock()
 

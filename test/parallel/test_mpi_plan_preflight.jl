@@ -22,6 +22,14 @@ function zero_spatial(cfg, comm_=comm)
     return PencilArray(pen, zeros(Float64, PencilArrays.size_local(pen)...))
 end
 
+# Pin as the vendor adapters do, then keep only a reshaped wrapper, as the GPU
+# transpose host mirrors do.
+function pinned_mirror(released::Ref{Bool})
+    host = Vector{Float64}(undef, 64)
+    finalizer(_ -> (released[] = true), ParExt._pinned_storage(host))
+    return reshape(host, 8, 8)
+end
+
 function distributed_spatial(cfg, values; decompose_theta::Bool=true)
     pen = decompose_theta ?
         Pencil((cfg.nlat, cfg.nlon), (1,), comm) :
@@ -397,6 +405,20 @@ end
         cfg_grid = create_gauss_config(lmax, nlat; nlon)
         rank == nprocs - 1 && (cfg_grid.w[1] = nextfloat(cfg_grid.w[1]))
         @test_throws ArgumentError ParExt._validate_cfg_replicated(cfg_grid, comm)
+    end
+
+    @testset "exported plan constructors and local_size reach the extension" begin
+        @test SHTnsKit.DistAnalysisPlan(cfg, field) isa ParExt.DistAnalysisPlan
+        @test SHTnsKit.DistPlan(cfg, field) isa ParExt.DistPlan
+        @test SHTnsKit.DistSphtorPlan(cfg, field) isa ParExt.DistSphtorPlan
+        @test SHTnsKit.DistQstPlan(cfg, field) isa ParExt.DistQstPlan
+
+        distributed = ParExt.create_distributed_spectral_array(
+            ParExt.create_distributed_spectral_plan(lmax, lmax, comm),
+        )
+        @test ParExt.local_size === SHTnsKit.local_size
+        @test SHTnsKit.local_size(distributed) == length(distributed.local_coeffs)
+        @test SHTnsKit.local_size(parent(field)) == size(parent(field))
     end
 
     @testset "planned cfg-form pencils match their construction prototype" begin
@@ -1042,6 +1064,22 @@ end
             end
         end
     end
+end
+
+@testset "pinned host storage lives as long as its reshaped mirrors" begin
+    # Julia 1.11+ collects the allocated Vector wrapper separately from its
+    # Memory, so pinning tied to the wrapper was released under live mirrors.
+    released = Ref(false)
+    mirror = pinned_mirror(released)
+    for _ in 1:3
+        GC.gc(true)
+    end
+    @test !released[]
+    mirror[1] = 1.0
+    host = Vector{ComplexF64}(undef, 5)
+    storage = ParExt._pinned_storage(host)
+    @test pointer(storage) == pointer(host)
+    @test sizeof(storage) == sizeof(host)
 end
 
 @testset "distributed spectral payloads are validated before variable gathers" begin

@@ -12,7 +12,7 @@ along the m dimension (dimension 2) for optimal SHT performance.
 function SHTnsKit.create_spectral_pencil(cfg::SHTnsKit.SHTConfig; comm=MPI.COMM_WORLD)
     # Distribute along m (dimension 2) - each rank owns all l values for its m subset
     # This is optimal because each m-column is independent in Legendre transforms
-    return Pencil((cfg.lmax + 1, cfg.mmax + 1), comm)
+    return _cached_pencil((cfg.lmax + 1, cfg.mmax + 1), (2,), comm)
 end
 
 """
@@ -43,7 +43,7 @@ compatibility result.
 function SHTnsKit.create_spatial_pencil(cfg::SHTnsKit.SHTConfig; comm=MPI.COMM_WORLD)
     # Decompose dimension 1 (θ / latitude). The (1,) tuple selects which global
     # dimension to split; omitting it would default to the last dim (φ).
-    return Pencil((cfg.nlat, cfg.nlon), (1,), comm)
+    return _cached_pencil((cfg.nlat, cfg.nlon), (1,), comm)
 end
 
 """
@@ -137,6 +137,35 @@ function SHTnsKit.spectral_pencil_to_matrix(cfg::SHTnsKit.SHTConfig, Alm_p::Penc
     MPI.Allreduce!(Alm, +, known_comm)
 
     return Alm
+end
+
+"""
+Gather a `PencilArray`'s global values on every rank (collective). Used by the
+ForwardDiff wrappers, which cannot carry dual numbers through the distributed
+kernels.
+"""
+function SHTnsKit._global_values(arr::PencilArray)
+    comm = communicator(arr)
+    _validate_parallel_storage!(comm, :_global_values, arr)
+    values = zeros(eltype(arr), size_global(arr))
+    owned = PencilArrays.global_view(arr)
+    for index in CartesianIndices(owned)
+        values[index] = owned[index]
+    end
+    return MPI.Allreduce!(values, +, comm)
+end
+
+"""This rank's block of the replicated global `values`, in `arr`'s pencil."""
+function SHTnsKit._local_block_like(arr::PencilArray, values::AbstractArray)
+    size(values) == size_global(arr) || throw(DimensionMismatch(
+        "global values of size $(size(values)) do not match the PencilArray's global size $(size_global(arr))",
+    ))
+    result = PencilArray{eltype(values)}(undef, pencil(arr))
+    owned = PencilArrays.global_view(result)
+    for index in CartesianIndices(owned)
+        owned[index] = values[index]
+    end
+    return result
 end
 
 ##########
@@ -684,6 +713,10 @@ function _validate_pencil_batch!(cfg::SHTnsKit.SHTConfig, values::Tuple,
             (flags |= 0x0002)
         ndims(parent(value)) == 3 && size(parent(value), 3) == nfields ||
             (flags |= 0x0002)
+        # Each field is rebuilt on the batch's own topology (see
+        # `_batch_field_pencil`); a topology that decomposes all three
+        # dimensions has no two-dimensional counterpart.
+        length(PencilArrays.decomposition(pencil(value))) <= 2 || (flags |= 0x0002)
         eltype(value) === eltype(reference) || (flags |= 0x0004)
     end
     for value in Iterators.drop(values, 1)
@@ -695,11 +728,37 @@ function _validate_pencil_batch!(cfg::SHTnsKit.SHTConfig, values::Tuple,
     return comm, nfields
 end
 
-function _pencil_batch_field(cfg::SHTnsKit.SHTConfig, batch::PencilArray,
-                             field_index::Int, kind::Symbol, comm)
-    pen = kind === :spatial ? SHTnsKit.create_spatial_pencil(cfg; comm) :
-                              SHTnsKit.create_spectral_pencil(cfg; comm)
-    field = PencilArray{eltype(batch)}(undef, pen)
+"""
+    _batch_field_pencil(batch, canonical, comm) -> Pencil
+
+The two-dimensional pencil that one field of `batch` is copied into, chosen so
+that the field's local block is exactly the batch's local `(:, :, k)` slice.
+
+When every rank's slice already coincides with the `canonical` pencil (the
+default θ-split spatial or m-split spectral layout), that pencil is used, as the
+per-field transforms expect. Otherwise the field takes the batch's own topology
+and decomposition restricted to the first two dimensions. A topology axis that
+decomposes the batch dimension has a single process (`_validate_pencil_batch!`
+requires the batch dimension to be local), so it is placed on the field
+dimension left free.
+
+Copying the slice into the canonical pencil regardless scrambled every field of
+a batch with another decomposition, including PencilArrays' own default for
+three dimensions. Collective over `comm`.
+"""
+function _batch_field_pencil(batch::PencilArray, canonical, comm)
+    p = pencil(batch)
+    same_block = range_local(p)[1:2] == range_local(canonical)
+    MPI.Allreduce(same_block, &, comm) && return canonical
+    ndims(p) == 2 && return p        # a 2-D pencil carrying an extra batch dimension
+    decomposition = PencilArrays.decomposition(p)
+    free = [d for d in (1, 2) if !(d in decomposition)]
+    field_decomposition = map(d -> d == 3 ? popfirst!(free) : d, decomposition)
+    return Pencil(PencilArrays.topology(p), size_global(p)[1:2], field_decomposition)
+end
+
+function _pencil_batch_field(batch::PencilArray, field_index::Int, field_pencil)
+    field = PencilArray{eltype(batch)}(undef, field_pencil)
     copyto!(parent(field), @view(parent(batch)[:, :, field_index]))
     return field
 end
@@ -708,8 +767,10 @@ function _pencil_batch_output(cfg::SHTnsKit.SHTConfig, ::Type{T}, nfields::Int,
                               kind::Symbol, comm) where {T}
     global_shape = kind === :spatial ? (cfg.nlat, cfg.nlon, nfields) :
                                        (cfg.lmax + 1, cfg.mmax + 1, nfields)
+    # Same partition as the per-field results, which use the default θ-split
+    # spatial and m-split spectral pencils of `comm`.
     decomposition = kind === :spatial ? (1,) : (2,)
-    return PencilArray{T}(undef, Pencil(global_shape, decomposition, comm))
+    return PencilArray{T}(undef, _cached_pencil(global_shape, decomposition, comm))
 end
 
 function SHTnsKit.analysis_sphtor_batch(cfg::SHTnsKit.SHTConfig,
@@ -724,11 +785,14 @@ function SHTnsKit.analysis_sphtor_batch(cfg::SHTnsKit.SHTConfig,
     CT = Complex{float(eltype(Vt))}
     S = _pencil_batch_output(cfg, CT, nfields, :spectral, comm)
     Tlm = similar(S)
+    field_pencil = _batch_field_pencil(
+        Vt, SHTnsKit.create_spatial_pencil(cfg; comm), comm,
+    )
     for field_index in 1:nfields
         St, Tt = SHTnsKit.analysis_sphtor(
             cfg,
-            _pencil_batch_field(cfg, Vt, field_index, :spatial, comm),
-            _pencil_batch_field(cfg, Vp, field_index, :spatial, comm);
+            _pencil_batch_field(Vt, field_index, field_pencil),
+            _pencil_batch_field(Vp, field_index, field_pencil);
             comm,
         )
         copyto!(@view(parent(S)[:, :, field_index]), parent(St))
@@ -751,11 +815,14 @@ function SHTnsKit.synthesis_sphtor_batch(cfg::SHTnsKit.SHTConfig,
     Vt = _pencil_batch_output(cfg, OT, nfields, :spatial, comm)
     Vp = similar(Vt)
     prototype = PencilArray{OT}(undef, SHTnsKit.create_spatial_pencil(cfg; comm))
+    field_pencil = _batch_field_pencil(
+        S, SHTnsKit.create_spectral_pencil(cfg; comm), comm,
+    )
     for field_index in 1:nfields
         vt, vp = SHTnsKit.synthesis_sphtor(
             cfg,
-            _pencil_batch_field(cfg, S, field_index, :spectral, comm),
-            _pencil_batch_field(cfg, Tlm, field_index, :spectral, comm);
+            _pencil_batch_field(S, field_index, field_pencil),
+            _pencil_batch_field(Tlm, field_index, field_pencil);
             prototype_θφ=prototype, real_output,
         )
         copyto!(@view(parent(Vt)[:, :, field_index]), parent(vt))
@@ -778,9 +845,12 @@ function SHTnsKit.analysis_qst_batch(cfg::SHTnsKit.SHTConfig,
         output = _pencil_batch_output(
             cfg, Complex{float(eltype(Vr))}, nfields, :spectral, comm,
         )
+        field_pencil = _batch_field_pencil(
+            Vr, SHTnsKit.create_spatial_pencil(cfg; comm), comm,
+        )
         for k in 1:nfields
             q = dist_analysis_pencil(
-                cfg, _pencil_batch_field(cfg, Vr, k, :spatial, comm),
+                cfg, _pencil_batch_field(Vr, k, field_pencil),
             )
             copyto!(@view(parent(output)[:, :, k]), parent(q))
         end
@@ -800,9 +870,12 @@ function SHTnsKit.synthesis_qst_batch(cfg::SHTnsKit.SHTConfig,
     CT = eltype(Q); RT = typeof(real(zero(CT))); OT = real_output ? RT : CT
     Vr = _pencil_batch_output(cfg, OT, nfields, :spatial, comm)
     prototype = PencilArray{OT}(undef, SHTnsKit.create_spatial_pencil(cfg; comm))
+    field_pencil = _batch_field_pencil(
+        Q, SHTnsKit.create_spectral_pencil(cfg; comm), comm,
+    )
     for k in 1:nfields
         vr = SHTnsKit.dist_synthesis(
-            cfg, _pencil_batch_field(cfg, Q, k, :spectral, comm);
+            cfg, _pencil_batch_field(Q, k, field_pencil);
             prototype_θφ=prototype, real_output,
         )
         copyto!(@view(parent(Vr)[:, :, k]), vr)

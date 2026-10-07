@@ -2,8 +2,7 @@ module SHTnsKitAdvancedADExt
 
 using ChainRulesCore
 using SHTnsKit
-using SHTnsKit: LM_index, LM_cplx_index, wigner_d_matrix
-import SHTnsKit: wigner_d_matrix_deriv
+using SHTnsKit: LM_index, LM_cplx_index
 
     # Materialize Thunk/InplaceableThunk tangents before we try to collect/index.
     # ChainRules 1.x passes lazy tangents into pullbacks (e.g. from sum_abs2)
@@ -41,6 +40,13 @@ import SHTnsKit: wigner_d_matrix_deriv
     @inline _materialize_coeff(A, cfg) =
         A isa ChainRulesCore.AbstractZero ? _coeff_zeros(cfg) : _to_complex(A)
 
+    # An output the loss never uses arrives as an AbstractZero cotangent; its
+    # pullback owes zero tangents to every differentiable argument. Pullbacks
+    # return exactly one tangent per positional argument (keywords get none):
+    # an extra entry breaks ChainRulesTestUtils and Diffractor.
+    @inline _zero_tangents(n::Int) =
+        (NoTangent(), NoTangent(), ntuple(_ -> ZeroTangent(), n)...)
+
 
     # `fft_scratch` / `use_rfft` pick a different FFT implementation of the SAME
     # linear operator, so the adjoint is unchanged — but a pullback must still
@@ -51,6 +57,8 @@ import SHTnsKit: wigner_d_matrix_deriv
         y = SHTnsKit.analysis(cfg, f; fft_scratch, use_rfft)
         project_f = ProjectTo(f)
         function pullback(ȳ)
+            ȳ = _unthunk(ȳ)
+            ȳ isa ChainRulesCore.AbstractZero && return _zero_tangents(1)
             ȳA = _to_complex(ȳ)
             f̄ = project_f(_adjoint_analysis(cfg, ȳA))
             return NoTangent(), NoTangent(), f̄
@@ -72,9 +80,10 @@ import SHTnsKit: wigner_d_matrix_deriv
         project_alm = ProjectTo(alm)
         function pullback(ȳ)
             ȳ_mat = ChainRulesCore.unthunk(ȳ)      # materialize Thunk/InplaceableThunk
+            ȳ_mat isa ChainRulesCore.AbstractZero && return _zero_tangents(1)
             ȳA = ȳ_mat isa AbstractMatrix ? ȳ_mat : collect(ȳ_mat)
             alm̄ = project_alm(SHTnsKit._adjoint_synthesis(cfg, ȳA; real_output=real_output))
-            return NoTangent(), NoTangent(), alm̄, (; real_output=NoTangent())
+            return NoTangent(), NoTangent(), alm̄
         end
         return y, pullback
     end
@@ -89,6 +98,7 @@ import SHTnsKit: wigner_d_matrix_deriv
         project_fields = ProjectTo(fields)
         function pullback(ȳ)
             ȳ = _unthunk(ȳ)
+            ȳ isa ChainRulesCore.AbstractZero && return _zero_tangents(1)
             ȳA = eltype(ȳ) <: Complex ? ȳ : complex.(ȳ)
             nfields = size(ȳA, 3)
             f̄_raw = Array{complex(float(eltype(ȳA))),3}(undef, cfg.nlat, cfg.nlon, nfields)
@@ -108,6 +118,7 @@ import SHTnsKit: wigner_d_matrix_deriv
         project_alm_batch = ProjectTo(alm_batch)
         function pullback(ȳ)
             ȳ = _unthunk(ȳ)
+            ȳ isa ChainRulesCore.AbstractZero && return _zero_tangents(1)
             nfields = size(ȳ, 3)
             ālm = zeros(complex(float(eltype(ȳ))), cfg.lmax + 1, cfg.mmax + 1, nfields)
             @inbounds for k in 1:nfields
@@ -116,7 +127,7 @@ import SHTnsKit: wigner_d_matrix_deriv
                 # here was wrong — off by the w_i·cphi factors (FD-checked).
                 ālm[:, :, k] .= SHTnsKit._adjoint_synthesis(cfg, @view(ȳ[:, :, k]); real_output=real_output)
             end
-            return NoTangent(), NoTangent(), project_alm_batch(ālm), (; real_output=NoTangent())
+            return NoTangent(), NoTangent(), project_alm_batch(ālm)
         end
         return y, pullback
     end
@@ -143,6 +154,8 @@ import SHTnsKit: wigner_d_matrix_deriv
         y = SHTnsKit.analysis_packed(cfg, Vr)
         project_Vr = ProjectTo(Vr)
         function pullback(ȳ)
+            ȳ = _unthunk(ȳ)
+            ȳ isa ChainRulesCore.AbstractZero && return _zero_tangents(1)
             Ā = _unpack_lm(cfg, _to_complex(ȳ))
             Vr̄ = project_Vr(vec(_adjoint_analysis(cfg, Ā)))
             return NoTangent(), NoTangent(), Vr̄
@@ -154,7 +167,9 @@ import SHTnsKit: wigner_d_matrix_deriv
         y = SHTnsKit.synthesis_packed(cfg, Qlm)
         project_Qlm = ProjectTo(Qlm)
         function pullback(ȳ)
-            f̄ = reshape(_unthunk(ȳ), cfg.nlat, cfg.nlon)
+            ȳ = _unthunk(ȳ)
+            ȳ isa ChainRulesCore.AbstractZero && return _zero_tangents(1)
+            f̄ = reshape(ȳ, cfg.nlat, cfg.nlon)
             Qlm̄ = project_Qlm(_pack_lm(cfg, SHTnsKit._adjoint_synthesis(cfg, f̄; real_output=true)))
             return NoTangent(), NoTangent(), Qlm̄
         end
@@ -186,6 +201,8 @@ import SHTnsKit: wigner_d_matrix_deriv
         project_Vt = ProjectTo(Vt)
         project_Vp = ProjectTo(Vp)
         function pullback(ṠTl)
+            ṠTl = _unthunk(ṠTl)
+            ṠTl isa ChainRulesCore.AbstractZero && return _zero_tangents(2)
             Slm̄, Tlm̄ = ṠTl
             # analysis-like: the primal divides by M on the way out, so the
             # cotangent is divided before the internal-convention adjoint.
@@ -218,8 +235,7 @@ import SHTnsKit: wigner_d_matrix_deriv
             V̄t = V̄t isa ChainRulesCore.AbstractZero ? zsp() : V̄t
             V̄p = V̄p isa ChainRulesCore.AbstractZero ? zsp() : V̄p
             S̄, T̄ = SHTnsKit._adjoint_synthesis_sphtor(cfg, V̄t, V̄p; real_output=real_output)
-            return NoTangent(), NoTangent(), project_Slm(S̄), project_Tlm(T̄),
-                   (; real_output=NoTangent())
+            return NoTangent(), NoTangent(), project_Slm(S̄), project_Tlm(T̄)
         end
         return (Vt, Vp), pullback
     end
@@ -241,8 +257,7 @@ import SHTnsKit: wigner_d_matrix_deriv
             V̄p = ChainRulesCore.unthunk(V̄[3]); V̄p = V̄p isa ChainRulesCore.AbstractZero ? zsp() : V̄p
             Q̄ = SHTnsKit._adjoint_synthesis(cfg, V̄r; real_output=real_output)
             S̄, T̄ = SHTnsKit._adjoint_synthesis_sphtor(cfg, V̄t, V̄p; real_output=real_output)
-            return NoTangent(), NoTangent(), project_Q(Q̄), project_S(S̄), project_T(T̄),
-                   (; real_output=NoTangent(), use_rfft=NoTangent())
+            return NoTangent(), NoTangent(), project_Q(Q̄), project_S(S̄), project_T(T̄)
         end
         return (Vr, Vt, Vp), pullback
     end
@@ -257,10 +272,60 @@ import SHTnsKit: wigner_d_matrix_deriv
             T̄ = _materialize_coeff(Ā[3], cfg)
             V̄r = _adjoint_analysis(cfg, Q̄)
             V̄t, V̄p = _adjoint_analysis_sphtor(cfg, S̄, T̄)
-            return NoTangent(), NoTangent(), project_Vr(V̄r), project_Vt(V̄t), project_Vp(V̄p),
-                   (; use_rfft=NoTangent())
+            return NoTangent(), NoTangent(), project_Vr(V̄r), project_Vt(V̄t), project_Vp(V̄p)
         end
         return (Qlm, Slm, Tlm), pullback
+    end
+
+    # Energy diagnostics are quadratic forms whose gradients the core already
+    # provides (`grad_energy_scalar_alm`, ...). Without rules Zygote traced their
+    # scalar loops and recorded a closure per coefficient: about 33 GB for
+    # `zgrad_scalar_energy` at lmax=255. The primal operands are copied because
+    # callers may reuse the coefficient buffer before the pullback runs.
+    function ChainRulesCore.rrule(::typeof(SHTnsKit.energy_scalar), cfg::SHTnsKit.SHTConfig,
+                                  alm::AbstractMatrix; real_field::Bool=true)
+        E = SHTnsKit.energy_scalar(cfg, alm; real_field)
+        alm0 = copy(alm)
+        project_alm = ProjectTo(alm)
+        function energy_scalar_pullback(Ē)
+            Ē = _unthunk(Ē)
+            Ē isa ChainRulesCore.AbstractZero &&
+                return NoTangent(), NoTangent(), ZeroTangent()
+            ḡ = SHTnsKit.grad_energy_scalar_alm(cfg, alm0; real_field)
+            return NoTangent(), NoTangent(), project_alm(Ē .* ḡ)
+        end
+        return E, energy_scalar_pullback
+    end
+
+    function ChainRulesCore.rrule(::typeof(SHTnsKit.energy_vector), cfg::SHTnsKit.SHTConfig,
+                                  Slm::AbstractMatrix, Tlm::AbstractMatrix;
+                                  real_field::Bool=true)
+        E = SHTnsKit.energy_vector(cfg, Slm, Tlm; real_field)
+        S0 = copy(Slm); T0 = copy(Tlm)
+        project_S = ProjectTo(Slm); project_T = ProjectTo(Tlm)
+        function energy_vector_pullback(Ē)
+            Ē = _unthunk(Ē)
+            Ē isa ChainRulesCore.AbstractZero &&
+                return NoTangent(), NoTangent(), ZeroTangent(), ZeroTangent()
+            gS, gT = SHTnsKit.grad_energy_vector_Slm_Tlm(cfg, S0, T0; real_field)
+            return NoTangent(), NoTangent(), project_S(Ē .* gS), project_T(Ē .* gT)
+        end
+        return E, energy_vector_pullback
+    end
+
+    function ChainRulesCore.rrule(::typeof(SHTnsKit.enstrophy), cfg::SHTnsKit.SHTConfig,
+                                  Tlm::AbstractMatrix; real_field::Bool=true)
+        Z = SHTnsKit.enstrophy(cfg, Tlm; real_field)
+        T0 = copy(Tlm)
+        project_T = ProjectTo(Tlm)
+        function enstrophy_pullback(Z̄)
+            Z̄ = _unthunk(Z̄)
+            Z̄ isa ChainRulesCore.AbstractZero &&
+                return NoTangent(), NoTangent(), ZeroTangent()
+            return NoTangent(), NoTangent(),
+                   project_T(Z̄ .* SHTnsKit.grad_enstrophy_Tlm(cfg, T0; real_field))
+        end
+        return Z, enstrophy_pullback
     end
 
     # Complex packed (LM_cplx layout — both signs of m stored explicitly).
@@ -340,6 +405,8 @@ import SHTnsKit: wigner_d_matrix_deriv
     function ChainRulesCore.rrule(::typeof(SHTnsKit.analysis_packed_cplx), cfg::SHTnsKit.SHTConfig, z)
         y = SHTnsKit.analysis_packed_cplx(cfg, z)
         function pullback(ȳ)
+            ȳ = _unthunk(ȳ)
+            ȳ isa ChainRulesCore.AbstractZero && return _zero_tangents(1)
             z̄ = _adjoint_analysis_packed_cplx(cfg, _to_complex(ȳ))
             return NoTangent(), NoTangent(), z̄
         end
@@ -349,37 +416,39 @@ import SHTnsKit: wigner_d_matrix_deriv
     function ChainRulesCore.rrule(::typeof(SHTnsKit.synthesis_packed_cplx), cfg::SHTnsKit.SHTConfig, alm)
         y = SHTnsKit.synthesis_packed_cplx(cfg, alm)
         function pullback(ȳ)
+            ȳ = _unthunk(ȳ)
+            ȳ isa ChainRulesCore.AbstractZero && return _zero_tangents(1)
             alm̄ = _adjoint_synthesis_packed_cplx(cfg, _to_complex(ȳ))
             return NoTangent(), NoTangent(), alm̄
         end
         return y, pullback
     end
 
-# Rotations: adjoints via inverse/adjoint rotation.
-# The packed real-field rotations map coefficient vectors whose m>0 entries carry
-# DOUBLE weight in the physical (field) inner product. Zygote/ChainRules use the
-# STANDARD packed inner product ⟨a,b⟩=Σ conj(a)b, so the correct adjoint of a
-# rotation R is Q̄ = W·R⁻¹·(W⁻¹ ȳ) with W = diag(wm), wm = 2 for m>0. (For the
-# diagonal Z-rotation W cancels.) The coefficient and angle pullbacks below are
+# Rotations of packed real-field coefficients are ℝ-linear (negative orders are
+# conjugates of the stored ones), so their adjoint is not the inverse rotation:
+# `W·R⁻¹·W⁻¹` is only correct for cotangents with real m=0 entries. The exact
+# adjoint lives in SHTnsKit (`_rotation_apply_real_adjoint`) and is shared with
+# the Zygote extension. The coefficient and angle pullbacks below are
 # finite-difference verified in test/serial/test_rotation_gradients.jl.
-_rot_wm(cfg, ::Type{T}) where {T<:AbstractFloat} =
-    T[cfg.mi[k] == 0 ? one(T) : T(2) for k in 1:cfg.nlm]
-
-function _configured_rotation_adjoint!(cfg, inverse, ȳ, Q̄)
-    RT = typeof(real(zero(eltype(Q̄))))
-    wm = _rot_wm(cfg, RT)
-    # For a configured forward F=C⁻¹RC, the Euclidean adjoint is
-    # F*=C R* C⁻¹. R*=W R⁻¹ W⁻¹ in real-packed storage.
+#
+# `rotation` is the FORWARD rotation of the configured primal F = C⁻¹ R C, whose
+# adjoint is C Rᵀ C⁻¹.
+function _configured_rotation_adjoint!(cfg, rotation, ȳ, Q̄)
     ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
-    Q̄_canonical = SHTnsKit._uses_canonical_convention(cfg) ? Q̄ : similar(Q̄)
-    SHTnsKit.shtns_rotation_apply_real(
-        inverse, ȳ_canonical ./ wm, Q̄_canonical,
-    )
-    Q̄_canonical .*= wm
-    if Q̄_canonical !== Q̄
+    Q̄_canonical = SHTnsKit._rotation_apply_real_adjoint(rotation, ȳ_canonical)
+    if SHTnsKit._uses_canonical_convention(cfg)
+        copyto!(Q̄, Q̄_canonical)
+    else
         SHTnsKit.convert_alm_norm!(Q̄, Q̄_canonical, cfg; to_internal=true)
     end
     return Q̄
+end
+
+# The forward rotations behind the configured axis wrappers.
+function _axis_rotation(cfg, α, β, γ)
+    rotation = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
+    SHTnsKit.shtns_rotation_set_angles_ZYZ(rotation, α, β, γ)
+    return rotation
 end
 
 # Rotation kernels consume canonical ZYZ angles, which can differ from the
@@ -401,6 +470,9 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Zrotate), cfg::SHTnsKit.SHTCo
     # before the pullback. Preserve the primal values needed for dR/dα.
     rotated = copy(y)
     function pullback(ȳ)
+        ȳ = _unthunk(ȳ)
+        ȳ isa ChainRulesCore.AbstractZero &&
+            return NoTangent(), NoTangent(), ZeroTangent(), ZeroTangent(), ZeroTangent()
         # Diagonal rotation Rlm = Qlm·e^{-imα} ⇒ Q̄ = ȳ·e^{imα} = SH_Zrotate(ȳ, -α).
         Q̄ = similar(Qlm)
         SHTnsKit.SH_Zrotate(cfg, ȳ, -alpha, Q̄)
@@ -424,14 +496,17 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Yrotate), cfg::SHTnsKit.SHTCo
     Qlm_canonical = copy(SHTnsKit._internal_coefficients(Qlm, cfg))
     y = SHTnsKit.SH_Yrotate(cfg, Qlm, alpha, Rlm)
     function pullback(ȳ)
-        inverse = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
-        SHTnsKit.shtns_rotation_set_angles_ZYZ(inverse, 0.0, -alpha, 0.0)
+        ȳ = _unthunk(ȳ)
+        ȳ isa ChainRulesCore.AbstractZero &&
+            return NoTangent(), NoTangent(), ZeroTangent(), ZeroTangent(), ZeroTangent()
         Q̄ = similar(Qlm)
-        _configured_rotation_adjoint!(cfg, inverse, ȳ, Q̄)
+        _configured_rotation_adjoint!(cfg, _axis_rotation(cfg, 0.0, float(alpha), 0.0), ȳ, Q̄)
         # angle gradient via d/dβ of Wigner-d at β=alpha
         dα = zero(float(alpha))
         lmax, mmax = cfg.lmax, cfg.mmax
         ȳ_canonical = SHTnsKit._analysis_cotangent_to_canonical(ȳ, cfg)
+        dl = Matrix{typeof(float(alpha))}(undef, 2lmax + 1, 2lmax + 1)
+        dwork = similar(dl); dd = similar(dl)
         for l in 0:lmax
             mm = min(l, mmax)
             b = zeros(eltype(ȳ_canonical), 2l+1)
@@ -446,7 +521,8 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Yrotate), cfg::SHTnsKit.SHTCo
                     b[-mp + l + 1] = (-1)^mp * conj(Qlm_canonical[idxp])
                 end
             end
-            dd = wigner_d_matrix_deriv(l, float(alpha))
+            SHTnsKit._wigner_d_advance!(dl, dwork, l, float(alpha))
+            SHTnsKit._wigner_d_deriv!(dd, dl, l)
             # ∂R_m = (dd * b)_m for m>=0 (no left/right phases)
             for m in 0:mm
                 lm = LM_index(lmax, 1, l, m) + 1
@@ -465,28 +541,29 @@ end
 function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Yrotate90), cfg::SHTnsKit.SHTConfig, Qlm, Rlm)
     y = SHTnsKit.SH_Yrotate90(cfg, Qlm, Rlm)
     function pullback(ȳ)
-        inverse = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
-        SHTnsKit.shtns_rotation_set_angles_ZYZ(inverse, 0.0, -π/2, 0.0)
+        ȳ = _unthunk(ȳ)
+        ȳ isa ChainRulesCore.AbstractZero &&
+            return NoTangent(), NoTangent(), ZeroTangent(), ZeroTangent()
         Q̄ = similar(Qlm)
-        _configured_rotation_adjoint!(cfg, inverse, ȳ, Q̄)
+        _configured_rotation_adjoint!(cfg, _axis_rotation(cfg, 0.0, π/2, 0.0), ȳ, Q̄)
         return NoTangent(), NoTangent(), Q̄, ZeroTangent()
     end
     return y, pullback
 end
 
-    function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Xrotate90), cfg::SHTnsKit.SHTConfig, Qlm, Rlm)
-        y = SHTnsKit.SH_Xrotate90(cfg, Qlm, Rlm)
-        function pullback(ȳ)
-            # The setter's effective forward matrix-order angles are
-            # (-π/2, π/2, π/2); invert them and convert back to setter order.
-            r = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax)
-            SHTnsKit.shtns_rotation_set_angles_ZYZ(r, π/2, -π/2, -π/2)
-            Q̄ = similar(Qlm)
-            _configured_rotation_adjoint!(cfg, r, ȳ, Q̄)
-            return NoTangent(), NoTangent(), Q̄, ZeroTangent()
-        end
-        return y, pullback
+function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_Xrotate90), cfg::SHTnsKit.SHTConfig, Qlm, Rlm)
+    y = SHTnsKit.SH_Xrotate90(cfg, Qlm, Rlm)
+    function pullback(ȳ)
+        ȳ = _unthunk(ȳ)
+        ȳ isa ChainRulesCore.AbstractZero &&
+            return NoTangent(), NoTangent(), ZeroTangent(), ZeroTangent()
+        # Same setter call as the primal (`SH_Xrotate90` in src/rotations.jl).
+        Q̄ = similar(Qlm)
+        _configured_rotation_adjoint!(cfg, _axis_rotation(cfg, π/2, π/2, -π/2), ȳ, Q̄)
+        return NoTangent(), NoTangent(), Q̄, ZeroTangent()
     end
+    return y, pullback
+end
 
 # Diagonal map from the configured coefficient convention to the canonical
 # basis. The primal is C⁻¹ R C, so its adjoint is C R* C⁻¹.
@@ -517,6 +594,9 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_cplx), r::S
     Zε = ε .* scales .* Zlm
     y = SHTnsKit.shtns_rotation_apply_cplx(r, Zlm, Rlm)
     function pullback(ȳ)
+        ȳ = _unthunk(ȳ)
+        ȳ isa ChainRulesCore.AbstractZero &&
+            return NoTangent(), ZeroTangent(), ZeroTangent(), ZeroTangent()
         Z̄ = similar(Zlm)
         fill!(Z̄, zero(eltype(Z̄)))
         # This pullback reimplements the Wigner engine, which works in the Y_l^m
@@ -526,6 +606,8 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_cplx), r::S
         # ε is real and self-inverse, so the angle gradients are unaffected.
         ȳε = ε .* (_unthunk(ȳ) ./ scales)
         gα = 0.0; gβ = 0.0; gγ = 0.0
+        dbuf = Matrix{typeof(β)}(undef, 2lmax + 1, 2lmax + 1)
+        dwork = similar(dbuf); ddbuf = similar(dbuf)
         for l in 0:lmax
             mm = min(l, mmax)
             n = 2l + 1
@@ -539,7 +621,8 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_cplx), r::S
                 # We need c_m; recompute below after d multiplication
             end
             # b̄ = d^T(β) c̄
-            dl = wigner_d_matrix(l, β)
+            SHTnsKit._wigner_d_advance!(dbuf, dwork, l, β)
+            dl = view(dbuf, 1:n, 1:n)
             bbar = zeros(eltype(Zε), n)
             for mp in -l:l
                 s = zero(eltype(Zε))
@@ -573,7 +656,7 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_cplx), r::S
             end
             gγ += gγ_l
             # β-grad: use derivative d'(β)
-            ddl = wigner_d_matrix_deriv(l, β)
+            ddl = SHTnsKit._wigner_d_deriv!(ddbuf, dl, l)
             gβ_l = 0.0
             for m in -mm:mm
                 idxm = LM_cplx_index(lmax, mmax, l, m) + 1
@@ -597,7 +680,9 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_cplx), r::S
     return y, pullback
 end
 
-# Adjoint for real packed rotation: extend to full, apply cplx adjoint, fold back
+# Adjoint for real packed rotation. The coefficient adjoint is the shared exact
+# one (SHTnsKit._rotation_apply_real_adjoint); the angle gradients differentiate
+# the canonical engine and are returned in the stored parameter order.
 function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_real), r::SHTnsKit.SHTRotation, Qlm, Rlm)
     rotation = deepcopy(r)
     lmax, mmax = rotation.lmax, rotation.mmax
@@ -606,65 +691,28 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_real), r::S
     Qcanonical = scales .* Qlm
     y = SHTnsKit.shtns_rotation_apply_real(r, Qlm, Rlm)
     function pullback(ȳ)
-        ȳcanonical = _unthunk(ȳ) ./ scales
-        # Extend cotangent on packed to full complex
-        Zbar_full = zeros(eltype(Qlm), SHTnsKit.nlm_cplx_calc(lmax, mmax, 1))
-        for l in 0:lmax
-            mm = min(l, mmax)
-            # m = 0
-            idxp0 = LM_index(lmax, 1, l, 0) + 1
-            idxc0 = LM_cplx_index(lmax, mmax, l, 0) + 1
-            Zbar_full[idxc0] = ȳcanonical[idxp0]
-            for m in 1:mm
-                idxp = LM_index(lmax, 1, l, m) + 1
-                idxc = LM_cplx_index(lmax, mmax, l, m) + 1
-                Zbar_full[idxc] = ȳcanonical[idxp]
-                # negative m gets zero from packing adjoint
-            end
-        end
-        # Compute adjoint of complex rotation (transpose of Wigner-d matrix)
-        Z̄ = zeros(eltype(Zbar_full), length(Zbar_full))
-        for l in 0:lmax
-            mm = min(l, mmax)
-            n = 2l + 1
-            cbar = zeros(eltype(Z̄), n)
-            for m in -mm:mm
-                idx = LM_cplx_index(lmax, mmax, l, m) + 1
-                cbar[m + l + 1] = Zbar_full[idx] * cis(m * α)
-            end
-            dl = wigner_d_matrix(l, β)
-            bbar = zeros(eltype(Z̄), n)
-            for mp in -l:l
-                s = zero(eltype(Z̄))
-                for m in -l:l
-                    s += dl[m + l + 1, mp + l + 1] * cbar[m + l + 1]
-                end
-                bbar[mp + l + 1] = s
-            end
-            for mp in -mm:mm
-                idx = LM_cplx_index(lmax, mmax, l, mp) + 1
-                Z̄[idx] += bbar[mp + l + 1] * cis(mp * γ)
-            end
-        end
+        ȳ = _unthunk(ȳ)
+        ȳ isa ChainRulesCore.AbstractZero &&
+            return NoTangent(), ZeroTangent(), ZeroTangent(), ZeroTangent()
+        Q̄ = similar(Qlm)
+        copyto!(Q̄, SHTnsKit._rotation_apply_real_adjoint(rotation, ȳ))
+        ȳcanonical = ȳ ./ scales
+        CT = promote_type(eltype(Qcanonical), ComplexF64)
         # Angle gradients (pack-domain contribution using m≥0 only)
         gα = 0.0; gβ = 0.0; gγ = 0.0
+        dbuf = Matrix{typeof(β)}(undef, 2lmax + 1, 2lmax + 1)
+        dwork = similar(dbuf); ddbuf = similar(dbuf)
         for l in 0:lmax
             mm = min(l, mmax)
-            dl = wigner_d_matrix(l, β)
-            ddl = wigner_d_matrix_deriv(l, β)  # depends only on (l,β); hoisted out of the m-loop below
-            b = zeros(eltype(Z̄), 2l + 1)
+            SHTnsKit._wigner_d_advance!(dbuf, dwork, l, β)
+            dl = view(dbuf, 1:(2l + 1), 1:(2l + 1))
+            ddl = SHTnsKit._wigner_d_deriv!(ddbuf, dl, l)  # depends only on (l,β); hoisted out of the m-loop below
+            b = zeros(CT, 2l + 1)
             for mp in -mm:mm
-                idx = SHTnsKit.LM_cplx_index(lmax, mmax, l, mp) + 1
-                b[mp + l + 1] = (SHTnsKit.LM_cplx_index(lmax, mmax, l, mp) >= 0) ? (begin
-                    # reconstruct from packed Qlm
-                    if mp == 0
-                        Qcanonical[SHTnsKit.LM_index(lmax, 1, l, 0) + 1]
-                    elseif mp > 0
-                        Qcanonical[SHTnsKit.LM_index(lmax, 1, l, mp) + 1]
-                    else
-                        (-1)^(-mp) * conj(Qcanonical[SHTnsKit.LM_index(lmax, 1, l, -mp) + 1])
-                    end
-                end) : 0
+                # Reconstruct the Wigner-basis input from packed Qlm.
+                b[mp + l + 1] = mp >= 0 ?
+                    Qcanonical[SHTnsKit.LM_index(lmax, 1, l, mp) + 1] :
+                    (-1)^(-mp) * conj(Qcanonical[SHTnsKit.LM_index(lmax, 1, l, -mp) + 1])
                 b[mp + l + 1] *= cis(-mp * γ)
             end
             c = dl * b
@@ -672,9 +720,8 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_real), r::S
                 idxp = SHTnsKit.LM_index(lmax, 1, l, m) + 1
                 Rm = c[m + l + 1] * cis(-m * α)
                 gα += real(conj(ȳcanonical[idxp]) * ((0 - 1im) * m * Rm))
-                # β
-                sβ = zero(eltype(Z̄))
-                sγ = zero(eltype(Z̄))
+                sβ = zero(CT)
+                sγ = zero(CT)
                 for mp in -l:l
                     sβ += ddl[m + l + 1, mp + l + 1] * b[mp + l + 1]
                     sγ += dl[m + l + 1, mp + l + 1] * ((0 - 1im) * mp * b[mp + l + 1])
@@ -683,22 +730,6 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_real), r::S
                 gγ += real(conj(ȳcanonical[idxp]) * (sγ * cis(-m * α)))
             end
         end
-        # Fold back to packed positive-m: q̄(m) = Z̄(m) + (-1)^m conj(Z̄(-m))
-        Q̄ = zeros(eltype(Qlm), length(Qlm))
-        for l in 0:lmax
-            mm = min(l, mmax)
-            # m=0
-            idxp0 = LM_index(lmax, 1, l, 0) + 1
-            idxc0 = LM_cplx_index(lmax, mmax, l, 0) + 1
-            Q̄[idxp0] = Z̄[idxc0]
-            for m in 1:mm
-                idxp = LM_index(lmax, 1, l, m) + 1
-                idxc_p = LM_cplx_index(lmax, mmax, l, m) + 1
-                idxc_n = LM_cplx_index(lmax, mmax, l, -m) + 1
-                Q̄[idxp] = Z̄[idxc_p] + (-1)^m * conj(Z̄[idxc_n])
-            end
-        end
-        Q̄ .*= scales
         rt = _rotation_rrule_tangent(rotation, gα, gβ, gγ)
         return NoTangent(), rt, Q̄, ZeroTangent()
     end
@@ -709,27 +740,35 @@ end
 # Forward: R[lm0] = mx[2*lm_prev+2]*Q[lm_prev] + mx[2*lm_next+1]*Q[lm_next]
 # where lm_prev = LM_index(l-1,m) and lm_next = LM_index(l+1,m)
 function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_mul_mx), cfg::SHTnsKit.SHTConfig, mx, Qlm, Rlm)
+    # The pullback needs the primal operands, but callers routinely reuse the
+    # buffers before it runs (`SH_mul_mx(cfg, mx, R, Q)` overwrites Q). The
+    # primal itself still sees the caller's arrays, so its alias check applies.
+    mx0 = copy(mx)
+    Q0 = copy(Qlm)
     y = SHTnsKit.SH_mul_mx(cfg, mx, Qlm, Rlm)
     function pullback(ȳ)
+        ȳ = _unthunk(ȳ)
+        ȳ isa ChainRulesCore.AbstractZero &&
+            return NoTangent(), NoTangent(), ZeroTangent(), ZeroTangent(), ZeroTangent()
         lmax = cfg.lmax; mres = cfg.mres
-        Q̄ = zeros(eltype(Qlm), length(Qlm))
-        mx̄ = zeros(eltype(mx), length(mx))
+        Q̄ = zeros(eltype(Q0), length(Q0))
+        mx̄ = zeros(eltype(mx0), length(mx0))
         @inbounds for lm0 in 0:(cfg.nlm-1)
             l = cfg.li[lm0+1]; m = cfg.mi[lm0+1]
             rbar = ȳ[lm0 + 1]
-            # Contribution from lower neighbor Y_{l-1}^m (uses mx[2*lm_prev + 2])
+            # Contribution from lower neighbor Y_{l-1}^m (uses mx0[2*lm_prev + 2])
             if l > m && l > 0
                 lm_prev = LM_index(lmax, mres, l-1, m)
-                c_from_below = mx[2*lm_prev + 2]  # b_{l-1}^m coefficient
+                c_from_below = mx0[2*lm_prev + 2]  # b_{l-1}^m coefficient
                 Q̄[lm_prev + 1] += c_from_below * rbar  # mx is real, no conj needed
-                mx̄[2*lm_prev + 2] += real(conj(rbar) * Qlm[lm_prev + 1])
+                mx̄[2*lm_prev + 2] += real(conj(rbar) * Q0[lm_prev + 1])
             end
-            # Contribution from upper neighbor Y_{l+1}^m (uses mx[2*lm_next + 1])
+            # Contribution from upper neighbor Y_{l+1}^m (uses mx0[2*lm_next + 1])
             if l < lmax
                 lm_next = LM_index(lmax, mres, l+1, m)
-                c_from_above = mx[2*lm_next + 1]  # a_{l+1}^m coefficient
+                c_from_above = mx0[2*lm_next + 1]  # a_{l+1}^m coefficient
                 Q̄[lm_next + 1] += c_from_above * rbar  # mx is real, no conj needed
-                mx̄[2*lm_next + 1] += real(conj(rbar) * Qlm[lm_next + 1])
+                mx̄[2*lm_next + 1] += real(conj(rbar) * Q0[lm_next + 1])
             end
         end
         return NoTangent(), NoTangent(), mx̄, Q̄, ZeroTangent()

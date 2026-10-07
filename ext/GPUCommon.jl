@@ -46,41 +46,68 @@ function launch_sht_loop!(args...)
     return nothing
 end
 
-"""One cached table set plus its mutable-configuration signature and LRU tick."""
+"""
+One cached table set plus its mutable-configuration signature, LRU tick and,
+when known, a weak reference to the configuration it was built for.
+"""
 struct ScalarTableCacheEntry
     signature::UInt
     tick::UInt64
     value::Any
+    owner::Union{Nothing,WeakRef}
 end
 
-"""Immutable rotation-block cache entry with LRU publication tick."""
+"""Immutable rotation-block cache entry with LRU publication tick and size."""
 struct RotationBlockCacheEntry
     tick::UInt64
     value::Any
+    bytes::Int
 end
 
-"""Thread-safe bounded cache keyed by device, precision, and rotation inputs."""
+"""
+Thread-safe bounded cache keyed by device, precision, and rotation inputs.
+
+Besides the entry count, the device memory held per device is bounded by
+`max_bytes_per_device` (1 GiB by default): a dense block set grows like lmax³
+(about 11 GB in Float64 at lmax=1023), so eight cached sets could pin the whole
+device. A set larger than the budget is returned without being cached.
+"""
 mutable struct RotationBlockCache
     entries::Dict{Tuple,RotationBlockCacheEntry}
     tick::UInt64
     max_per_device::Int
+    max_bytes_per_device::Int
     lock::ReentrantLock
 end
 
-function RotationBlockCache(max_per_device::Integer=8)
+function RotationBlockCache(max_per_device::Integer=8;
+                            max_bytes_per_device::Integer=1 << 30)
     max_per_device > 0 || throw(ArgumentError("max_per_device must be positive"))
+    max_bytes_per_device >= 0 ||
+        throw(ArgumentError("max_bytes_per_device must be non-negative"))
     return RotationBlockCache(Dict{Tuple,RotationBlockCacheEntry}(), 0,
-                              Int(max_per_device), ReentrantLock())
+                              Int(max_per_device), Int(max_bytes_per_device),
+                              ReentrantLock())
 end
 
 @inline _rotation_device(key::Tuple) = key[1]
+
+"""Bytes held by the array fields of a cached value (device or host arrays)."""
+function _cached_bytes(value)
+    total = 0
+    for name in fieldnames(typeof(value))
+        field = getfield(value, name)
+        field isa AbstractArray && (total += sizeof(field))
+    end
+    return total
+end
 
 function rotation_cache_lookup(cache::RotationBlockCache, key::Tuple)
     return lock(cache.lock) do
         entry = get(cache.entries, key, nothing)
         entry === nothing && return nothing
         cache.tick += 1
-        cache.entries[key] = RotationBlockCacheEntry(cache.tick, entry.value)
+        cache.entries[key] = RotationBlockCacheEntry(cache.tick, entry.value, entry.bytes)
         return entry.value
     end
 end
@@ -90,17 +117,26 @@ function rotation_cache_insert!(cache::RotationBlockCache, key::Tuple, value)
         existing = get(cache.entries, key, nothing)
         if existing !== nothing
             cache.tick += 1
-            cache.entries[key] = RotationBlockCacheEntry(cache.tick, existing.value)
+            cache.entries[key] = RotationBlockCacheEntry(
+                cache.tick, existing.value, existing.bytes,
+            )
             return existing.value
         end
+        bytes = _cached_bytes(value)
+        bytes > cache.max_bytes_per_device && return value
         device_keys = [candidate for candidate in keys(cache.entries)
                        if _rotation_device(candidate) == _rotation_device(key)]
-        if length(device_keys) >= cache.max_per_device
+        held = sum(candidate -> cache.entries[candidate].bytes, device_keys; init=0)
+        while !isempty(device_keys) &&
+              (length(device_keys) >= cache.max_per_device ||
+               held + bytes > cache.max_bytes_per_device)
             oldest = argmin(candidate -> cache.entries[candidate].tick, device_keys)
+            held -= cache.entries[oldest].bytes
             delete!(cache.entries, oldest)
+            filter!(!=(oldest), device_keys)
         end
         cache.tick += 1
-        cache.entries[key] = RotationBlockCacheEntry(cache.tick, value)
+        cache.entries[key] = RotationBlockCacheEntry(cache.tick, value, bytes)
         return value
     end
 end
@@ -157,6 +193,11 @@ The dictionary key deliberately uses configuration identity rather than its
 mutable signature. A convention/grid mutation therefore replaces the stale
 entry instead of accumulating another device allocation. Values are built
 outside this cache's lock by the vendor extension.
+
+Entries inserted with an `owner` hold it weakly and are dropped at the next
+cache access once it has been reclaimed. Before, a strong entry keyed only by
+`objectid(cfg)` kept a dead configuration's device tables (8.6 GB in Float64
+at lmax=1023) alive until LRU eviction, which never came for a quiet device.
 """
 mutable struct ScalarTableCache
     entries::Dict{Tuple{Any,UInt,DataType},ScalarTableCacheEntry}
@@ -173,31 +214,50 @@ function ScalarTableCache(max_per_device::Integer=8)
     )
 end
 
+"""Drop entries whose weakly held owner has been reclaimed (lock held)."""
+function _drop_dead_owners!(cache::ScalarTableCache)
+    for key in collect(keys(cache.entries))
+        owner = cache.entries[key].owner
+        owner !== nothing && owner.value === nothing && delete!(cache.entries, key)
+    end
+    return nothing
+end
+
+"""Whether `entry` was built for `owner` (an object id can be reused)."""
+@inline _owned_by(entry::ScalarTableCacheEntry, owner) =
+    owner === nothing || entry.owner === nothing || entry.owner.value === owner
+
 function scalar_cache_lookup(cache::ScalarTableCache, device, identity::UInt,
-                             precision::DataType, signature::UInt)
+                             precision::DataType, signature::UInt; owner=nothing)
     key = (device, identity, precision)
     return lock(cache.lock) do
+        _drop_dead_owners!(cache)
         entry = get(cache.entries, key, nothing)
         entry === nothing && return nothing
-        if entry.signature != signature
+        if entry.signature != signature || !_owned_by(entry, owner)
             delete!(cache.entries, key)
             return nothing
         end
         cache.tick += 1
-        cache.entries[key] = ScalarTableCacheEntry(signature, cache.tick, entry.value)
+        cache.entries[key] = ScalarTableCacheEntry(
+            signature, cache.tick, entry.value, entry.owner,
+        )
         return entry.value
     end
 end
 
 function scalar_cache_insert!(cache::ScalarTableCache, device, identity::UInt,
-                              precision::DataType, signature::UInt, value)
+                              precision::DataType, signature::UInt, value;
+                              owner=nothing)
     key = (device, identity, precision)
     return lock(cache.lock) do
+        _drop_dead_owners!(cache)
         existing = get(cache.entries, key, nothing)
-        if existing !== nothing && existing.signature == signature
+        if existing !== nothing && existing.signature == signature &&
+           _owned_by(existing, owner)
             cache.tick += 1
             cache.entries[key] = ScalarTableCacheEntry(
-                signature, cache.tick, existing.value,
+                signature, cache.tick, existing.value, existing.owner,
             )
             return existing.value
         end
@@ -212,13 +272,16 @@ function scalar_cache_insert!(cache::ScalarTableCache, device, identity::UInt,
             delete!(cache.entries, oldest)
         end
         cache.tick += 1
-        cache.entries[key] = ScalarTableCacheEntry(signature, cache.tick, value)
+        cache.entries[key] = ScalarTableCacheEntry(
+            signature, cache.tick, value,
+            owner === nothing ? nothing : WeakRef(owner),
+        )
         return value
     end
 end
 
 """
-    scalar_cache_publish!(complete, cache, device, identity, precision, signature, value)
+    scalar_cache_publish!(complete, cache, device, identity, precision, signature, value; owner=nothing)
 
 Wait for an asynchronous immutable-table build to complete before making the
 value visible to cache readers. `complete` deliberately runs before
@@ -227,10 +290,10 @@ cache's double-checked behavior when concurrent builders race for one key.
 """
 function scalar_cache_publish!(complete, cache::ScalarTableCache, device,
                                identity::UInt, precision::DataType,
-                               signature::UInt, value)
+                               signature::UInt, value; owner=nothing)
     complete()
     return scalar_cache_insert!(
-        cache, device, identity, precision, signature, value,
+        cache, device, identity, precision, signature, value; owner,
     )
 end
 
@@ -249,6 +312,7 @@ end
 
 function scalar_cache_size(cache::ScalarTableCache; device=nothing)
     return lock(cache.lock) do
+        _drop_dead_owners!(cache)
         device === nothing && return length(cache.entries)
         return count(key -> key[1] == device, keys(cache.entries))
     end
@@ -362,7 +426,7 @@ is not a valid cache key: changing pole order, quadrature, or a convention must
 select fresh device tables.
 """
 function scalar_config_signature(cfg::SHTnsKit.SHTConfig)
-    grid_hash = hash(Tuple(cfg.x), hash(Tuple(cfg.w)))
+    grid_hash = _hash_values(cfg.x, _hash_values(cfg.w, hash(length(cfg.x))))
     return hash((
         objectid(cfg), cfg.lmax, cfg.mmax, cfg.mres, cfg.nlat, cfg.nlon,
         cfg.grid_type, cfg.cphi, cfg.south_pole_first,
@@ -371,31 +435,79 @@ function scalar_config_signature(cfg::SHTnsKit.SHTConfig)
 end
 
 """
+Hash every element of `values` into `h`. Converting an array to a `Tuple` first
+(as the signatures used to) allocates and specializes on its length, and
+`hash(::AbstractArray)` samples only a few elements of a large array, which
+would miss most in-place mutations.
+"""
+function _hash_values(values, h::UInt)
+    for value in values
+        h = hash(value, h)
+    end
+    return h
+end
+
+"""
 Fingerprint every mutable input consumed only by vector derivative tables.
 
 Scalar transforms do not depend on `Nlm`; keeping this separate prevents an
 `Nlm` mutation from rebuilding scalar tables while still invalidating the
-pole-sensitive vector cache entry for the same configuration identity.
+pole-sensitive vector cache entry for the same configuration identity. The
+derivative tables read `Nlm` only for the exact-pole m = 1 limits, so the
+signature covers that column; hashing all of `Nlm` on every call cost 110 ms
+and 34 MB at lmax=1023.
 """
 function vector_config_signature(cfg::SHTnsKit.SHTConfig)
-    return hash(Tuple(cfg.Nlm), scalar_config_signature(cfg))
+    column = cfg.mmax >= 1 ? view(cfg.Nlm, :, 2) : view(cfg.Nlm, 1:0, 1)
+    return _hash_values(column, scalar_config_signature(cfg))
 end
 
-"""Build the small typed host setup vectors copied once into a vendor cache."""
+"""
+    scalar_host_tables(cfg, T) -> (nodes, weights, scales, sint)
+
+Host setup copied once into a vendor cache: the Float64 latitude nodes the
+Legendre tables are built from, and the weights, convention scales and
+`sin θ` in the device precision `T`.
+
+The nodes stay Float64 whatever `T` is. Rounding them to Float32 moved every
+P̄ₗᵐ by O(l²·ε) before a Float32 recurrence compounded the error, so Float32
+GPU transforms lost about three digits by lmax=255. The table kernels now run
+the recurrence in the nodes' precision and round each stored entry once. The
+vector kernels likewise take `sin θ` computed from the exact node rather than
+`sqrt(1 - x²)` of a rounded one, which lost accuracy next to the poles.
+"""
 function scalar_host_tables(cfg::SHTnsKit.SHTConfig, ::Type{T}) where {T<:AbstractFloat}
+    nodes = Float64.(cfg.x)
+    sint = T.(sqrt.(max.(0.0, 1 .- nodes .^ 2)))
+    return nodes, T.(cfg.w), coefficient_scales(cfg, T), sint
+end
+
+"""
+    coefficient_scales(cfg, T) -> Matrix{T}
+
+Factors converting configured coefficients to the canonical normalization,
+indexed `[l + 1, m + 1]`. Point evaluation needs only these, not the
+`nlat × (lmax+1) × (mmax+1)` Legendre table built alongside them.
+"""
+function coefficient_scales(cfg::SHTnsKit.SHTConfig, ::Type{T}) where {T<:AbstractFloat}
     scales = Matrix{T}(undef, cfg.lmax + 1, cfg.mmax + 1)
     fill!(scales, one(T))
     for m in 0:cfg.mmax, l in m:cfg.lmax
         scales[l + 1, m + 1] = T(SHTnsKit.coefficient_scale_to_canonical(cfg, l, m))
     end
-    return T.(cfg.x), T.(cfg.w), scales
+    return scales
 end
 
-"""Build the typed host setup copied into a vendor's vector-table cache."""
+"""
+    vector_host_tables(cfg, T) -> (nodes, weights, scales, Nlm, sint)
+
+`scalar_host_tables` plus the Float64 normalization `Nlm` that the vector
+derivative tables are built from.
+"""
 function vector_host_tables(cfg::SHTnsKit.SHTConfig,
                             ::Type{T}) where {T<:AbstractFloat}
-    x, weights, scales = scalar_host_tables(cfg, T)
-    return x, weights, scales, T.(cfg.Nlm)
+    nodes, weights, scales, sint = scalar_host_tables(cfg, T)
+    return nodes, weights, scales, Float64.(cfg.Nlm), sint
 end
 
 # Preserve diagonal seeds that are smaller than the device format can store.
@@ -455,10 +567,68 @@ end
     end
 end
 
+"""Store P̄ₗᵐ, dP̄ₗᵐ/dθ and P̄ₗᵐ/sinθ from a recurrence pair sharing `exponent`."""
+@inline function _store_vector_entry!(Plm, dtheta, over_sin, i, l, m,
+                                      xi::T, s::T, current::T, previous::T,
+                                      exponent::Int32) where {T}
+    beta = l == m ? zero(T) : sqrt(T((2l + 1) * (l * l - m * m)) / T(2l - 1))
+    @inbounds begin
+        Plm[i, l + 1, m + 1] = ldexp(current, exponent)
+        dtheta[i, l + 1, m + 1] =
+            ldexp((T(l) * xi * current - beta * previous) / s, exponent)
+        over_sin[i, l + 1, m + 1] = ldexp(current / s, exponent)
+    end
+    return nothing
+end
+
 """
-Build orthonormal P, dP/dtheta, and P/sin(theta) tables in backend precision.
-The exact-pole branch evaluates the finite m=1 limits analytically; no kernel
-ever forms a singular quotient and masks it afterwards.
+`_legendre_table_row!` plus the dP̄/dθ and P̄/sinθ entries of the same row
+(`s = sin θ > 0`), formed from the recurrence's own values. Reading the stored
+P̄ back instead would difference entries already rounded to the table's
+precision.
+"""
+@inline function _legendre_vector_row!(Plm, dtheta, over_sin, xi::T, s::T,
+                                       i, m, lmax) where {T}
+    pmm = inv(sqrt(T(4) * T(pi)))
+    exponent = Int32(0)
+    @inbounds for k in 1:m
+        tk = T(k)
+        pmm = -sqrt((T(2) * tk + one(T)) / (T(2) * tk)) * s * pmm
+        if !iszero(pmm) && abs(pmm) < T(0x1p-32)
+            pmm *= T(0x1p64)
+            exponent -= Int32(64)
+        end
+    end
+    _store_vector_entry!(Plm, dtheta, over_sin, i, m, m, xi, s, pmm, zero(T),
+                         exponent)
+    m < lmax || return nothing
+    pm1m = sqrt(T(2m + 3)) * xi * pmm
+    _store_vector_entry!(Plm, dtheta, over_sin, i, m + 1, m, xi, s, pm1m, pmm,
+                         exponent)
+    previous2, previous1, exponent = _rescale_legendre_pair(pmm, pm1m, exponent)
+    @inbounds for l in (m + 2):lmax
+        tl = T(l)
+        tm = T(m)
+        a = sqrt(((T(2) * tl - one(T)) * (T(2) * tl + one(T))) /
+                 ((tl - tm) * (tl + tm)))
+        b = sqrt(((T(2) * tl + one(T)) * (tl - one(T) - tm) *
+                  (tl - one(T) + tm)) /
+                 ((T(2) * tl - T(3)) * (tl - tm) * (tl + tm)))
+        value = a * xi * previous1 - b * previous2
+        _store_vector_entry!(Plm, dtheta, over_sin, i, l, m, xi, s, value,
+                             previous1, exponent)
+        previous2, previous1, exponent =
+            _rescale_legendre_pair(previous1, value, exponent)
+    end
+    return nothing
+end
+
+"""
+Build orthonormal P, dP/dtheta, and P/sin(theta) tables. The recurrence runs in
+the precision of the nodes `x` (Float64 from `scalar_host_tables`) and each
+entry is rounded once when stored in the tables' precision. The exact-pole
+branch evaluates the finite m=1 limits analytically; no kernel ever forms a
+singular quotient and masks it afterwards.
 """
 @kernel function vector_derivative_table_kernel!(Plm, dtheta, over_sin,
                                                   x, Nlm, lmax, mmax)
@@ -468,7 +638,11 @@ ever forms a singular quotient and masks it afterwards.
         xi = x[i]
         T = typeof(xi)
         s = sqrt(max(zero(T), one(T) - xi * xi))
-        _legendre_table_row!(Plm, xi, i, m, lmax)
+        if iszero(s)
+            _legendre_table_row!(Plm, xi, i, m, lmax)
+        else
+            _legendre_vector_row!(Plm, dtheta, over_sin, xi, s, i, m, lmax)
+        end
 
         @inbounds for l in 0:lmax
             if l < m
@@ -478,7 +652,7 @@ ever forms a singular quotient and masks it afterwards.
             elseif iszero(s)
                 if m == 1
                     half_ll1 = T(l * (l + 1)) / T(2)
-                    N = Nlm[l + 1, m_idx]
+                    N = T(Nlm[l + 1, m_idx])
                     north = xi > zero(T)
                     dsign = north ? -one(T) : (isodd(l) ? one(T) : -one(T))
                     psign = north ? -one(T) : (iseven(l) ? one(T) : -one(T))
@@ -488,14 +662,6 @@ ever forms a singular quotient and masks it afterwards.
                     dtheta[i, l + 1, m_idx] = zero(T)
                     over_sin[i, l + 1, m_idx] = zero(T)
                 end
-            else
-                current = Plm[i, l + 1, m_idx]
-                previous = l == m ? zero(T) : Plm[i, l, m_idx]
-                beta = l == m ? zero(T) :
-                    sqrt(T((2l + 1) * (l * l - m * m)) / T(2l - 1))
-                dtheta[i, l + 1, m_idx] =
-                    (T(l) * xi * current - beta * previous) / s
-                over_sin[i, l + 1, m_idx] = current / s
             end
         end
     end
@@ -504,7 +670,7 @@ end
 """Latitude contraction for the two tangential Fourier components."""
 @kernel function vector_analysis_kernel!(Sout, Tout, Ftheta, Fphi,
                                           dtheta, over_sin, weights, scales,
-                                          x, cphi, lcap, mmax, mres,
+                                          sint, cphi, lcap, mmax, mres,
                                           robert_form)
     l_idx, m_idx = @index(Global, NTuple)
     if l_idx <= lcap + 1 && m_idx <= mmax + 1
@@ -514,7 +680,7 @@ end
             Svalue = zero(eltype(Sout))
             Tvalue = zero(eltype(Tout))
             @inbounds for i in 1:length(weights)
-                s = sqrt(max(zero(eltype(x)), one(eltype(x)) - x[i] * x[i]))
+                s = sint[i]
                 Ft = Ftheta[i, m_idx]
                 Fp = Fphi[i, m_idx]
                 if robert_form && !iszero(s)
@@ -539,7 +705,7 @@ end
 
 """Vector Legendre synthesis into vendor-IFFT Fourier bins."""
 @kernel function vector_synthesis_kernel!(Ftheta, Fphi, Sin, Tin,
-                                           dtheta, over_sin, scales, x,
+                                           dtheta, over_sin, scales, sint,
                                            inv_scale, nlon, lmax, mmax,
                                            mres, real_output, robert_form)
     i, m_idx = @index(Global, NTuple)
@@ -559,7 +725,7 @@ end
                 gp += term * S + d * Tv
             end
             if robert_form
-                s = sqrt(max(zero(eltype(x)), one(eltype(x)) - x[i] * x[i]))
+                s = sint[i]
                 gt *= s
                 gp *= s
             end
@@ -581,7 +747,7 @@ end
 """Analyze one stored vector order without expanding to a dense spectrum."""
 @kernel function vector_mode_analysis_kernel!(Sout, Tout, Ftheta, Fphi,
                                                dtheta, over_sin, weights,
-                                               scales, x, cphi, physical_m,
+                                               scales, sint, cphi, physical_m,
                                                lcap, robert_form)
     q_idx = @index(Global)
     l = physical_m + q_idx - 1
@@ -596,7 +762,7 @@ end
             Svalue = zero(eltype(Sout))
             Tvalue = zero(eltype(Tout))
             @inbounds for i in 1:length(weights)
-                s = sqrt(max(zero(eltype(x)), one(eltype(x)) - x[i] * x[i]))
+                s = sint[i]
                 Ft = Ftheta[i]
                 Fp = Fphi[i]
                 if robert_form && !iszero(s)
@@ -619,7 +785,7 @@ end
 
 """Synthesize one stored vector order directly into latitude vectors."""
 @kernel function vector_mode_synthesis_kernel!(Vtheta, Vphi, Sin, Tin,
-                                                dtheta, over_sin, scales, x,
+                                                dtheta, over_sin, scales, sint,
                                                 inv_scale, physical_m, lcap,
                                                 robert_form)
     i = @index(Global)
@@ -637,7 +803,7 @@ end
             gp += term * S + d * Tvalue
         end
         if robert_form
-            s = sqrt(max(zero(eltype(x)), one(eltype(x)) - x[i] * x[i]))
+            s = sint[i]
             gt *= s
             gp *= s
         end
@@ -649,7 +815,7 @@ end
 """Latitude contraction for vector fields in a trailing batch dimension."""
 @kernel function vector_batch_analysis_kernel!(Sout, Tout, Ftheta, Fphi,
                                                 dtheta, over_sin, weights,
-                                                scales, x, cphi, lmax, mmax,
+                                                scales, sint, cphi, lmax, mmax,
                                                 mres, robert_form)
     l_idx, m_idx, batch_idx = @index(Global, NTuple)
     if l_idx <= lmax + 1 && m_idx <= mmax + 1 &&
@@ -660,7 +826,7 @@ end
             Svalue = zero(eltype(Sout))
             Tvalue = zero(eltype(Tout))
             @inbounds for i in 1:length(weights)
-                s = sqrt(max(zero(eltype(x)), one(eltype(x)) - x[i] * x[i]))
+                s = sint[i]
                 Ft = Ftheta[i, m_idx, batch_idx]
                 Fp = Fphi[i, m_idx, batch_idx]
                 if robert_form && !iszero(s)
@@ -685,7 +851,7 @@ end
 
 """Vector synthesis with independent fields in the trailing batch dimension."""
 @kernel function vector_batch_synthesis_kernel!(Ftheta, Fphi, Sin, Tin,
-                                                 dtheta, over_sin, scales, x,
+                                                 dtheta, over_sin, scales, sint,
                                                  inv_scale, nlon, lmax, mmax,
                                                  mres, real_output, robert_form)
     i, m_idx, batch_idx = @index(Global, NTuple)
@@ -705,7 +871,7 @@ end
                 gp += term * S + d * Tvalue
             end
             if robert_form
-                s = sqrt(max(zero(eltype(x)), one(eltype(x)) - x[i] * x[i]))
+                s = sint[i]
                 gt *= s
                 gp *= s
             end
@@ -847,7 +1013,7 @@ end
 """MPI-pencil vector analysis for an owned contiguous Fourier-order band."""
 @kernel function distributed_vector_analysis_kernel!(Sout, Tout, Ftheta,
                                                        Fphi, dtheta, over_sin,
-                                                       weights, scales, x, cphi,
+                                                       weights, scales, sint, cphi,
                                                        first_m, lmax, mmax,
                                                        mres, robert_form)
     l_idx, local_m_idx, batch_idx = @index(Global, NTuple)
@@ -859,7 +1025,7 @@ end
             Svalue = zero(eltype(Sout))
             Tvalue = zero(eltype(Tout))
             @inbounds for i in 1:length(weights)
-                s = sqrt(max(zero(eltype(x)), one(eltype(x)) - x[i] * x[i]))
+                s = sint[i]
                 Ft = Ftheta[i, local_m_idx, batch_idx]
                 Fp = Fphi[i, local_m_idx, batch_idx]
                 if robert_form && !iszero(s)
@@ -884,7 +1050,7 @@ end
 
 """MPI-pencil vector synthesis for an owned contiguous Fourier-order band."""
 @kernel function distributed_vector_synthesis_kernel!(Ftheta, Fphi, Sin, Tin,
-                                                        dtheta, over_sin, scales, x,
+                                                        dtheta, over_sin, scales, sint,
                                                         inv_scale, first_m,
                                                         lmax, mmax, mres,
                                                         robert_form)
@@ -906,7 +1072,7 @@ end
                 gp += term * S + d * Tvalue
             end
             if robert_form
-                s = sqrt(max(zero(eltype(x)), one(eltype(x)) - x[i] * x[i]))
+                s = sint[i]
                 gt *= s
                 gp *= s
             end
@@ -1152,10 +1318,16 @@ end
     end
 end
 
-"""Evaluate a dense non-negative-m real spectrum at one or more longitudes."""
+"""
+Evaluate a dense non-negative-m real spectrum at one or more longitudes.
+
+Like the other local evaluators, it multiplies by `phi_scale`, the
+`SHTnsKit._evaluator_phi_scale` factor (1 under `:dft`, 1/2π under `:quad`)
+that makes a point value match the grid `synthesis` writes.
+"""
 @kernel function local_scalar_kernel!(output, coefficients, Plm, scales,
                                       phi0, phi_step, lmax, mmax, mres,
-                                      lcap, mcap)
+                                      lcap, mcap, phi_scale)
     j = @index(Global)
     if j <= length(output)
         phi = phi0 + (j - 1) * phi_step
@@ -1171,13 +1343,14 @@ end
                 value += m == 0 ? real(wave) : 2real(wave)
             end
         end
-        output[j] = value
+        output[j] = phi_scale * value
     end
 end
 
 """Evaluate SHTns LM_cplx storage at one or more longitudes."""
 @kernel function local_complex_kernel!(output, coefficients, Plm, scales,
-                                       phi0, phi_step, lmax, mmax, lcap)
+                                       phi0, phi_step, lmax, mmax, lcap,
+                                       phi_scale)
     j = @index(Global)
     if j <= length(output)
         phi = phi0 + (j - 1) * phi_step
@@ -1192,7 +1365,7 @@ end
             end
             value += radial * cis(m * phi)
         end
-        output[j] = value
+        output[j] = phi_scale * value
     end
 end
 
@@ -1205,7 +1378,7 @@ spectra on the device.
                                    Plm, dtheta, over_sin, scales,
                                    phi0, phi_step, lmax, mmax, mres,
                                    lcap, mcap, has_q, has_s, has_t,
-                                   robert_form, sinth)
+                                   robert_form, sinth, phi_scale)
     j = @index(Global)
     if j <= length(Vr)
         phi = phi0 + (j - 1) * phi_step
@@ -1247,9 +1420,9 @@ spectra on the device.
                 end
             end
         end
-        Vr[j] = vr
-        Vt[j] = robert_form ? sinth * vt : vt
-        Vp[j] = robert_form ? sinth * vp : vp
+        Vr[j] = phi_scale * vr
+        Vt[j] = phi_scale * (robert_form ? sinth * vt : vt)
+        Vp[j] = phi_scale * (robert_form ? sinth * vp : vp)
     end
 end
 

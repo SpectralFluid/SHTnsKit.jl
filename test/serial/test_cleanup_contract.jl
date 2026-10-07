@@ -72,9 +72,18 @@ using SHTnsKit
         @test !occursin("AD testing failed", workflow)
         @test !occursin("Performance optimization test failed", workflow)
 
+        # SHTNSKIT_PHI_SCALE overrides cfg.phi_scale, so exporting it for the
+        # test run turned every :quad check into a second :dft check.
+        @test !occursin("SHTNSKIT_PHI_SCALE", workflow)
         @test occursin("test/parallel/test_mpi_audit_fixes.jl", workflow)
         @test occursin("test/parallel/test_mpi_ad_tangent_spaces.jl", workflow)
+        @test occursin("test/parallel/test_mpi_ad_public_api.jl", workflow)
         @test occursin("test/parallel/test_mpi_plan_preflight.jl", workflow)
         @test occursin("test/parallel/test_mpi_transpose_operand_preflight.jl", workflow)
+        # GPU parity needs hardware runners; the CPU-backend reference does not.
+        @test occursin("test/gpu/host/runtests.jl", workflow)
+        # SH_mul_mx takes packed vectors; a matrix argument hid behind a catch.
+        @test !occursin(raw"SH_mul_mx($cfg, $mx, $alm", workflow)
+        @test !occursin("Matrix operator: not available", workflow)
     end
 end

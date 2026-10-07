@@ -26,6 +26,19 @@ distributed spatial field. Its adjoint maps a distributed spatial cotangent
 `f̄_local` to a replicated `Ālm` — an Allreduce across ranks sums per-rank
 contributions, which matches the adjoint of the implicit "broadcast Alm"
 operation on the forward side.
+
+SPMD contract for reverse mode
+------------------------------
+The pullbacks below run collectives (the Allreduce above, and the collective
+validation of replicated cotangents), so every rank must run every pullback.
+Zygote never runs the pullback of an output that a rank's loss does not use: a
+ChainRules pullback is skipped for a `nothing` cotangent, and pruned reverse
+statements are not executed at all. A loss like `rank == 0 ? sum(abs2, y) : 0.0`
+therefore leaves the ranks that did use `y` blocked in the first collective; no
+rule here can detect that, because the skipping rank never enters it. Each
+rank's loss must use its local block of every distributed output (zero weight
+is fine) and must be identical on every rank for replicated outputs.
+docs/src/distributed.md states the same contract for users.
 ================================================================================
 =#
 
@@ -173,12 +186,27 @@ function _replicated_coeff_cotangent(cfg::SHTnsKit.SHTConfig, ȳ, comm;
             fill!(root_value, zero(eltype(root_value)))
         end
         MPI.Bcast!(root_value, comm; root=0)
-        same = Alm̄ == root_value
+        # `==` is false for NaN, so a NaN cotangent that every rank shares
+        # would be rejected as rank-varying; treat matching NaNs as equal.
+        same = all(((a, b),) -> a == b || isequal(a, b), zip(Alm̄, root_value))
         MPI.Allreduce(same, &, comm) || throw(ArgumentError(
             "the cotangent of replicated distributed-analysis output must be identical on every rank; rank-varying partial cotangents are unsupported",
         ))
     end
     return Alm̄
+end
+
+"""
+The cotangent a PencilArray output actually received.
+
+A loss that reads `parent(y)` (or `y.data`) returns a structural tangent of the
+PencilArray whose `data` field holds the rank-local block; Zygote marks a field
+the loss never touched `nothing`.
+"""
+function _structural_pencil_data(ȳ)
+    (ȳ isa ChainRulesCore.Tangent || ȳ isa NamedTuple) || return ȳ
+    data = hasproperty(ȳ, :data) ? ChainRulesCore.unthunk(getproperty(ȳ, :data)) : nothing
+    return data === nothing ? ChainRulesCore.ZeroTangent() : data
 end
 
 @inline _cotangent_eltype_code(::Type{Float32}) = 1
@@ -187,11 +215,15 @@ end
 @inline _cotangent_eltype_code(::Type{ComplexF64}) = 4
 @inline _cotangent_eltype_code(::Type) = 0
 
-"""Collectively validate and materialize one rank-local spatial cotangent."""
+"""
+Collectively validate and materialize the rank-local block of a cotangent for a
+distributed output laid out like `prototype` (a spatial field, or a spectral
+pencil).
+"""
 function _local_spatial_cotangent(ȳ, prototype::PencilArray, comm;
                                    zero_eltype::Type,
                                    operation::Symbol)
-    ȳ = ChainRulesCore.unthunk(ȳ)
+    ȳ = _structural_pencil_data(ChainRulesCore.unthunk(ȳ))
     is_zero = ȳ isa ChainRulesCore.AbstractZero
     is_pencil = ȳ isa PencilArray
     local_flags = UInt32(0)
@@ -304,28 +336,28 @@ function _local_spatial_cotangent(ȳ, prototype::PencilArray, comm;
     return is_zero ? zeros(zero_eltype, size(parent(prototype))) : materialized
 end
 
-"""Collectively unpack a two-component spatial cotangent."""
-function _cotangent_pair(ȳ, comm, operation::Symbol)
+"""Collectively unpack the `n` component cotangents of a tuple-valued transform."""
+function _cotangent_components(ȳ, n::Int, comm, operation::Symbol)
     ȳ = ChainRulesCore.unthunk(ȳ)
-    if ȳ isa ChainRulesCore.AbstractZero
-        first_component = ȳ
-        second_component = ȳ
-        local_ok = true
-    else
-        local_ok = true
-        first_component = second_component = ChainRulesCore.ZeroTangent()
+    components = ntuple(_ -> ChainRulesCore.ZeroTangent(), n)
+    local_ok = true
+    if !(ȳ isa ChainRulesCore.AbstractZero)
         try
-            first_component = ChainRulesCore.unthunk(ȳ[1])
-            second_component = ChainRulesCore.unthunk(ȳ[2])
+            components = ntuple(n) do k
+                component = ChainRulesCore.unthunk(ȳ[k])
+                component === nothing ? ChainRulesCore.ZeroTangent() : component
+            end
         catch
             local_ok = false
         end
     end
     MPI.Allreduce(local_ok, &, comm) || throw(ArgumentError(
-        "$operation cotangent must contain two spatial components",
+        "$operation cotangent must contain $n components",
     ))
-    return first_component, second_component
+    return components
 end
+
+_cotangent_pair(ȳ, comm, operation::Symbol) = _cotangent_components(ȳ, 2, comm, operation)
 
 function _require_ad_communicator_match(spectral::PencilArray,
                                         spatial::PencilArray)
@@ -356,70 +388,184 @@ function _scatter_spectral_tangent(primal::PencilArray, dense::AbstractMatrix)
     return PencilArray(PencilArrays.pencil(primal), local_parent)
 end
 
+"""Wrap a rank-local spatial adjoint block in the primal's pencil."""
+_spatial_tangent(primal::PencilArray, values::AbstractMatrix) =
+    PencilArray(PencilArrays.pencil(primal), ProjectTo(parent(primal))(values))
+
+"""This rank's θ rows and φ window within a distributed spatial layout."""
+function _spatial_geometry(prototype::PencilArray, cfg::SHTnsKit.SHTConfig)
+    θ_globals = collect(globalindices(prototype, 1))
+    φ_globals = collect(globalindices(prototype, 2))
+    φ_is_local, φ_window = _phi_window(φ_globals, length(φ_globals), cfg.nlon)
+    return θ_globals, φ_is_local, φ_window
+end
+
+"""
+Widen a rank-local spatial cotangent block to the full longitude width.
+
+The forward inverse FFT runs over all of φ before the rank's window is cut
+out, so the adjoint zero-pads that window back; FFT linearity makes the sum
+over ranks of the padded windows the transform of the full field.
+"""
+function _zero_padded_phi(values::AbstractMatrix, nθ_local::Int, nlon::Int,
+                          φ_is_local::Bool, φ_window)
+    full = zeros(float(eltype(values)), nθ_local, nlon)
+    if φ_is_local
+        full .= values
+    else
+        @views full[:, φ_window] .= values
+    end
+    return full
+end
+
+"""Zero the cotangent of degrees a truncated (`ltr < lmax`) synthesis ignores."""
+function _truncate_degrees!(Ā::AbstractMatrix, ltr::Integer)
+    ltr + 1 < size(Ā, 1) && fill!(view(Ā, (ltr + 2):size(Ā, 1), :), zero(eltype(Ā)))
+    return Ā
+end
+
+"""
+Replicated coefficient cotangent of a distributed scalar synthesis.
+
+The adjoint of synthesis is `_adjoint_synthesis` (no quadrature weights or
+cphi; those belong to analysis), applied to this rank's θ slab of the
+cotangent and summed across ranks. Using `dist_analysis` instead would inject
+the Gauss weights `w[θ]·cphi`.
+"""
+function _synthesis_coefficient_cotangent(cfg::SHTnsKit.SHTConfig, ȳ,
+                                          prototype_θφ::PencilArray, comm;
+                                          real_output::Bool, zero_eltype::Type,
+                                          operation::Symbol)
+    θ_globals, φ_is_local, φ_window = _spatial_geometry(prototype_θφ, cfg)
+    ȳ_loc = _local_spatial_cotangent(ȳ, prototype_θφ, comm; zero_eltype, operation)
+    f̄_full = _zero_padded_phi(ȳ_loc, length(θ_globals), cfg.nlon,
+                               φ_is_local, φ_window)
+    Ā_partial = SHTnsKit._adjoint_synthesis(cfg, f̄_full; θ_globals, real_output)
+    return MPI.Allreduce(Ā_partial, +, comm)
+end
+
+"""
+Replicated `(S̄, T̄)` cotangents of a distributed vector synthesis.
+
+As in the scalar case, `_adjoint_synthesis_sphtor` carries none of the
+`w[θ]·scaleφ/(l(l+1))` weights of vector analysis.
+"""
+function _synthesis_sphtor_coefficient_cotangents(cfg::SHTnsKit.SHTConfig, ȳ,
+                                                  prototype_θφ::PencilArray, comm;
+                                                  real_output::Bool, zero_eltypes,
+                                                  operation::Symbol)
+    V̄t, V̄p = _cotangent_pair(ȳ, comm, operation)
+    θ_globals, φ_is_local, φ_window = _spatial_geometry(prototype_θφ, cfg)
+    nθ_local = length(θ_globals)
+    V̄t_loc = _local_spatial_cotangent(V̄t, prototype_θφ, comm;
+                                      zero_eltype=zero_eltypes[1], operation)
+    V̄p_loc = _local_spatial_cotangent(V̄p, prototype_θφ, comm;
+                                      zero_eltype=zero_eltypes[2], operation)
+    S̄, T̄ = SHTnsKit._adjoint_synthesis_sphtor(
+        cfg,
+        _zero_padded_phi(V̄t_loc, nθ_local, cfg.nlon, φ_is_local, φ_window),
+        _zero_padded_phi(V̄p_loc, nθ_local, cfg.nlon, φ_is_local, φ_window);
+        θ_globals, real_output,
+    )
+    # One Allreduce over the stacked pair, copied back into the matrices the
+    # adjoint allocated: `combined[1:n]` would allocate two more full-size
+    # arrays, and a reshaped view of `combined` is not a buffer a downstream
+    # distributed pullback can hand to `MPI.Allreduce!`.
+    n = length(S̄)
+    combined = MPI.Allreduce!(vcat(vec(S̄), vec(T̄)), +, comm)
+    copyto!(S̄, 1, combined, 1, n)
+    copyto!(T̄, 1, combined, n + 1, length(combined) - n)
+    return S̄, T̄
+end
+
+"""
+Dense coefficient cotangent of an m-distributed spectral output.
+
+Each rank holds the derivative of the loss with respect to its own block —
+from a per-rank partial loss, or from a replicated loss whose distributed
+reductions (such as the spectral-pencil energies below) return block-local
+derivatives — so the dense cotangent is the sum of the blocks placed at their
+global `(l, m)` indices.
+"""
+function _distributed_coeff_cotangent(cfg::SHTnsKit.SHTConfig, ȳ,
+                                      output::PencilArray, comm;
+                                      operation::Symbol)
+    block = _local_spatial_cotangent(ȳ, output, comm;
+                                     zero_eltype=ComplexF64, operation)
+    dense = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+    placed = PencilArrays.global_view(PencilArray(PencilArrays.pencil(output), block))
+    for index in CartesianIndices(placed)
+        dense[index] = placed[index]
+    end
+    return MPI.Allreduce!(dense, +, comm)
+end
+
+"""
+Dense coefficient cotangents for the outputs of an analysis: summed blocks for
+spectral PencilArrays, verified replicas for the dense `return_pencil=false`
+results.
+"""
+function _analysis_coeff_cotangents(cfg::SHTnsKit.SHTConfig, ȳ, outputs::Tuple,
+                                    comm, operation::Symbol)
+    components = _cotangent_components(ȳ, length(outputs), comm, operation)
+    return map(components, outputs) do component, output
+        output isa PencilArray ?
+            _distributed_coeff_cotangent(cfg, component, output, comm; operation) :
+            _replicated_coeff_cotangent(cfg, component, comm; operation)
+    end
+end
+
 # ----- dist_analysis rrule ---------------------------------------------------
 
 function ChainRulesCore.rrule(::typeof(SHTnsKit.dist_analysis),
                               cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
                               use_tables=cfg.use_plm_tables,
                               use_rfft::Bool=false,
-                              use_packed_storage::Bool=false)
-    comm = communicator(fθφ)
-    _require_host_pencil(:dist_analysis_pullback, fθφ, comm)
+                              use_packed_storage::Bool=false,
+                              comm=communicator(fθφ))
+    known_comm = communicator(fθφ)
+    _require_host_pencil(:dist_analysis_pullback, fθφ, known_comm)
     y = SHTnsKit.dist_analysis(cfg, fθφ;
-                               use_tables, use_rfft, use_packed_storage)
-    θ_globals = collect(globalindices(fθφ, 1))
-    φ_globals = collect(globalindices(fθφ, 2))
-    nlon_local = length(φ_globals)
-    φ_is_local, φ_window = _phi_window(φ_globals, nlon_local, cfg.nlon)
-    project_f_parent = ProjectTo(parent(fθφ))
+                               use_tables, use_rfft, use_packed_storage, comm)
+    θ_globals, _, φ_window = _spatial_geometry(fθφ, cfg)
 
     function dist_analysis_pullback(ȳ)
         Alm̄ = _replicated_coeff_cotangent(
-            cfg, ȳ, comm; packed=use_packed_storage,
+            cfg, ȳ, known_comm; packed=use_packed_storage,
             operation=:dist_analysis_pullback)
-        f̄_parent = _local_adjoint_analysis(cfg, Alm̄, θ_globals, φ_window)
-        # Wrap in a PencilArray sharing fθφ's pencil so downstream grads stay distributed.
-        f̄ = PencilArray(PencilArrays.pencil(fθφ), project_f_parent(f̄_parent))
-        return NoTangent(), NoTangent(), f̄
+        f̄ = _local_adjoint_analysis(cfg, Alm̄, θ_globals, φ_window)
+        # Wrap in fθφ's pencil so downstream gradients stay distributed.
+        return NoTangent(), NoTangent(), _spatial_tangent(fθφ, f̄)
     end
     return y, dist_analysis_pullback
 end
 
 # ----- dist_synthesis rrule --------------------------------------------------
+# `Aminus` (explicit negative orders of a complex synthesis) is a keyword, so
+# it receives no tangent; the output is linear in `Alm` and `Aminus`
+# separately, so the `Alm` cotangent is unaffected by it.
 
 function ChainRulesCore.rrule(::typeof(SHTnsKit.dist_synthesis),
                               cfg::SHTnsKit.SHTConfig, Alm::PencilArray;
                               prototype_θφ::PencilArray,
                               real_output::Bool=true,
-                              use_rfft::Bool=false)
-    comm = communicator(prototype_θφ)
-    _require_host_pencil(:dist_synthesis_pullback, Alm, comm)
-    _require_host_pencil(:dist_synthesis_pullback, prototype_θφ, comm)
+                              use_rfft::Bool=false,
+                              Aminus=nothing,
+                              ltr::Integer=cfg.lmax,
+                              comm=communicator(prototype_θφ))
+    known_comm = communicator(prototype_θφ)
+    _require_host_pencil(:dist_synthesis_pullback, Alm, known_comm)
+    _require_host_pencil(:dist_synthesis_pullback, prototype_θφ, known_comm)
     _require_ad_communicator_match(Alm, prototype_θφ)
-    y = SHTnsKit.dist_synthesis(cfg, Alm; prototype_θφ, real_output, use_rfft)
-    θ_globals = collect(globalindices(prototype_θφ, 1))
-    φ_globals = collect(globalindices(prototype_θφ, 2))
-    nlon_local = length(φ_globals)
-    φ_is_local, φ_window = _phi_window(φ_globals, nlon_local, cfg.nlon)
+    y = SHTnsKit.dist_synthesis(cfg, Alm; prototype_θφ, real_output, use_rfft,
+                                Aminus, ltr, comm)
 
     function dist_synthesis_pencil_pullback(ȳ)
-        nθ_local = length(θ_globals)
-        ȳ_loc = _local_spatial_cotangent(
-            ȳ, prototype_θφ, comm;
-            zero_eltype=eltype(y),
-            operation=:dist_synthesis_pullback,
-        )
-        f̄_full = zeros(float(eltype(ȳ_loc)), nθ_local, cfg.nlon)
-        if φ_is_local
-            f̄_full .= ȳ_loc
-        else
-            @views f̄_full[:, φ_window] .= ȳ_loc
-        end
-        Āpartial = SHTnsKit._adjoint_synthesis(
-            cfg, f̄_full; θ_globals=θ_globals, real_output=real_output)
-        Ādense = MPI.Allreduce(Āpartial, +, comm)
-        Ā = _scatter_spectral_tangent(Alm, Ādense)
-        return NoTangent(), NoTangent(), Ā
+        Ā = _synthesis_coefficient_cotangent(
+            cfg, ȳ, prototype_θφ, known_comm; real_output,
+            zero_eltype=eltype(y), operation=:dist_synthesis_pullback)
+        _truncate_degrees!(Ā, ltr)
+        return NoTangent(), NoTangent(), _scatter_spectral_tangent(Alm, Ā)
     end
     return y, dist_synthesis_pencil_pullback
 end
@@ -428,42 +574,20 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.dist_synthesis),
                               cfg::SHTnsKit.SHTConfig, Alm::AbstractMatrix;
                               prototype_θφ::PencilArray,
                               real_output::Bool=true,
-                              use_rfft::Bool=false)
-    comm = communicator(prototype_θφ)
-    _require_host_pencil(:dist_synthesis_pullback, prototype_θφ, comm)
-    y = SHTnsKit.dist_synthesis(cfg, Alm; prototype_θφ, real_output, use_rfft)
+                              use_rfft::Bool=false,
+                              Aminus=nothing,
+                              comm=communicator(prototype_θφ))
+    known_comm = communicator(prototype_θφ)
+    _require_host_pencil(:dist_synthesis_pullback, prototype_θφ, known_comm)
+    y = SHTnsKit.dist_synthesis(cfg, Alm; prototype_θφ, real_output, use_rfft,
+                                Aminus, comm)
     project_Alm = ProjectTo(Alm)
-    θ_globals = collect(globalindices(prototype_θφ, 1))
-    φ_globals = collect(globalindices(prototype_θφ, 2))
-    nlon_local = length(φ_globals)
-    φ_is_local, φ_window = _phi_window(φ_globals, nlon_local, cfg.nlon)
 
     function dist_synthesis_pullback(ȳ)
-        # Adjoint of synthesis is `_adjoint_synthesis` (NO quadrature weights /
-        # cphi — those belong to analysis), applied on this rank's θ slab over a
-        # FULL-nlon-width cotangent, then Allreduce-summed across ranks to build
-        # the replicated Ālm. Using `dist_analysis` here would wrongly inject the
-        # Gauss weights `w[θ]·cphi`. The forward ifft is over the full φ width and
-        # only then sliced, so we zero-pad the local φ window back to full nlon;
-        # FFT linearity makes Σ_ranks fft(padded window) = fft(full field).
-        nθ_local = length(θ_globals)
-        ȳ_loc = _local_spatial_cotangent(
-            ȳ, prototype_θφ, comm;
-            zero_eltype=eltype(y),
-            operation=:dist_synthesis_pullback,
-        )
-        ET = float(eltype(ȳ_loc))  # real for real_output, complex otherwise
-        f̄_full = zeros(ET, nθ_local, cfg.nlon)
-        if φ_is_local
-            f̄_full .= ȳ_loc
-        else
-            @views f̄_full[:, φ_window] .= ȳ_loc
-        end
-        Ālm_partial = SHTnsKit._adjoint_synthesis(cfg, f̄_full;
-                                                  θ_globals=θ_globals,
-                                                  real_output=real_output)
-        Ālm = project_Alm(MPI.Allreduce(Ālm_partial, +, comm))
-        return NoTangent(), NoTangent(), Ālm
+        Ā = _synthesis_coefficient_cotangent(
+            cfg, ȳ, prototype_θφ, known_comm; real_output,
+            zero_eltype=eltype(y), operation=:dist_synthesis_pullback)
+        return NoTangent(), NoTangent(), project_Alm(Ā)
     end
     return y, dist_synthesis_pullback
 end
@@ -481,90 +605,48 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.dist_analysis_sphtor),
     _require_host_pencil(:dist_analysis_sphtor_pullback, Vtθφ, comm)
     _require_host_pencil(:dist_analysis_sphtor_pullback, Vpθφ, comm)
     y = SHTnsKit.dist_analysis_sphtor(cfg, Vtθφ, Vpθφ; kwargs...)
-    θ_globals = collect(globalindices(Vtθφ, 1))
-    φ_globals = collect(globalindices(Vtθφ, 2))
-    nlon_local = length(φ_globals)
-    φ_is_local, φ_window = _phi_window(φ_globals, nlon_local, cfg.nlon)
-    project_Vt_parent = ProjectTo(parent(Vtθφ))
-    project_Vp_parent = ProjectTo(parent(Vpθφ))
+    θ_globals, _, φ_window = _spatial_geometry(Vtθφ, cfg)
 
     function dist_analysis_sphtor_pullback(ȳ)
         # Unthunk each component and materialise only after the host-storage
         # guard. This preserves CPU AD without making a hidden vendor→host copy.
-        Slm̄, Tlm̄ = _cotangent_pair(
-            ȳ, comm, :dist_analysis_sphtor_pullback,
-        )
-        S̄in = _replicated_coeff_cotangent(
-            cfg, Slm̄, comm; operation=:dist_analysis_sphtor_pullback)
-        T̄in = _replicated_coeff_cotangent(
-            cfg, Tlm̄, comm; operation=:dist_analysis_sphtor_pullback)
-        V̄t_parent, V̄p_parent = SHTnsKit._adjoint_analysis_sphtor(
-            cfg, S̄in, T̄in;
-            θ_globals=θ_globals, φ_window=φ_window)
-        V̄t = PencilArray(PencilArrays.pencil(Vtθφ), project_Vt_parent(V̄t_parent))
-        V̄p = PencilArray(PencilArrays.pencil(Vpθφ), project_Vp_parent(V̄p_parent))
-        return NoTangent(), NoTangent(), V̄t, V̄p
+        S̄, T̄ = _analysis_coeff_cotangents(
+            cfg, ȳ, y, comm, :dist_analysis_sphtor_pullback)
+        V̄t, V̄p = SHTnsKit._adjoint_analysis_sphtor(
+            cfg, S̄, T̄; θ_globals, φ_window)
+        return NoTangent(), NoTangent(),
+               _spatial_tangent(Vtθφ, V̄t), _spatial_tangent(Vpθφ, V̄p)
     end
     return y, dist_analysis_sphtor_pullback
 end
 
 # ----- dist_synthesis_sphtor rrule ------------------------------------------
-# Adjoint: analogous to scalar. dist_analysis_sphtor on the spatial cotangents
-# performs the per-rank analysis + Allreduce to produce replicated (Ālm_S, Ālm_T).
 
 function ChainRulesCore.rrule(::typeof(SHTnsKit.dist_synthesis_sphtor),
                               cfg::SHTnsKit.SHTConfig,
                               Slm::PencilArray, Tlm::PencilArray;
                               prototype_θφ::PencilArray,
                               real_output::Bool=true,
-                              use_rfft::Bool=false)
-    comm = communicator(prototype_θφ)
-    _require_host_pencil(:dist_synthesis_sphtor_pullback, Slm, comm)
-    _require_host_pencil(:dist_synthesis_sphtor_pullback, Tlm, comm)
+                              use_rfft::Bool=false,
+                              comm=communicator(prototype_θφ))
+    known_comm = communicator(prototype_θφ)
+    _require_host_pencil(:dist_synthesis_sphtor_pullback, Slm, known_comm)
+    _require_host_pencil(:dist_synthesis_sphtor_pullback, Tlm, known_comm)
     _require_host_pencil(
-        :dist_synthesis_sphtor_pullback, prototype_θφ, comm,
+        :dist_synthesis_sphtor_pullback, prototype_θφ, known_comm,
     )
     _require_ad_communicator_match(Slm, prototype_θφ)
     _require_ad_communicator_match(Tlm, prototype_θφ)
     y = SHTnsKit.dist_synthesis_sphtor(
-        cfg, Slm, Tlm; prototype_θφ, real_output, use_rfft)
-    θ_globals = collect(globalindices(prototype_θφ, 1))
-    φ_globals = collect(globalindices(prototype_θφ, 2))
-    nlon_local = length(φ_globals)
-    φ_is_local, φ_window = _phi_window(φ_globals, nlon_local, cfg.nlon)
+        cfg, Slm, Tlm; prototype_θφ, real_output, use_rfft, comm)
 
     function dist_synthesis_sphtor_pencil_pullback(ȳ)
-        V̄t, V̄p = _cotangent_pair(
-            ȳ, comm, :dist_synthesis_sphtor_pullback,
-        )
-        nθ_local = length(θ_globals)
-        V̄t_loc = _local_spatial_cotangent(
-            V̄t, prototype_θφ, comm; zero_eltype=eltype(y[1]),
-            operation=:dist_synthesis_sphtor_pullback,
-        )
-        V̄p_loc = _local_spatial_cotangent(
-            V̄p, prototype_θφ, comm; zero_eltype=eltype(y[2]),
-            operation=:dist_synthesis_sphtor_pullback,
-        )
-        V̄t_full = zeros(float(eltype(V̄t_loc)), nθ_local, cfg.nlon)
-        V̄p_full = zeros(float(eltype(V̄p_loc)), nθ_local, cfg.nlon)
-        if φ_is_local
-            V̄t_full .= V̄t_loc
-            V̄p_full .= V̄p_loc
-        else
-            @views V̄t_full[:, φ_window] .= V̄t_loc
-            @views V̄p_full[:, φ_window] .= V̄p_loc
-        end
-        S̄partial, T̄partial = SHTnsKit._adjoint_synthesis_sphtor(
-            cfg, V̄t_full, V̄p_full;
-            θ_globals=θ_globals, real_output=real_output)
-        n = length(S̄partial)
-        combined = MPI.Allreduce!(vcat(vec(S̄partial), vec(T̄partial)), +, comm)
-        copyto!(S̄partial, 1, combined, 1, n)
-        copyto!(T̄partial, 1, combined, n + 1, length(combined) - n)
-        S̄ = _scatter_spectral_tangent(Slm, S̄partial)
-        T̄ = _scatter_spectral_tangent(Tlm, T̄partial)
-        return NoTangent(), NoTangent(), S̄, T̄
+        S̄, T̄ = _synthesis_sphtor_coefficient_cotangents(
+            cfg, ȳ, prototype_θφ, known_comm; real_output,
+            zero_eltypes=(eltype(y[1]), eltype(y[2])),
+            operation=:dist_synthesis_sphtor_pullback)
+        return NoTangent(), NoTangent(),
+               _scatter_spectral_tangent(Slm, S̄), _scatter_spectral_tangent(Tlm, T̄)
     end
     return y, dist_synthesis_sphtor_pencil_pullback
 end
@@ -585,60 +667,291 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.dist_synthesis_sphtor),
                                         use_rfft=use_rfft)
     project_Slm = ProjectTo(Slm)
     project_Tlm = ProjectTo(Tlm)
-    θ_globals = collect(globalindices(prototype_θφ, 1))
-    φ_globals = collect(globalindices(prototype_θφ, 2))
-    nlon_local = length(φ_globals)
-    φ_is_local, φ_window = _phi_window(φ_globals, nlon_local, cfg.nlon)
 
     function dist_synthesis_sphtor_pullback(ȳ)
-        # Unthunk each component (a Tangent tuple of thunks would otherwise
-        # slip through), while making malformed tuples a collective error.
-        V̄t, V̄p = _cotangent_pair(
-            ȳ, comm, :dist_synthesis_sphtor_pullback,
-        )
-        # Adjoint of vector synthesis is `_adjoint_synthesis_sphtor` (no quadrature
-        # weights), applied per-rank on the local θ slab over a full-nlon-width
-        # (zero-padded) cotangent, then Allreduce-summed. Previously this called
-        # `dist_analysis_sphtor`, which injects Gauss weights `w[θ]·scaleφ/(l(l+1))`
-        # that the synthesis adjoint must NOT carry.
-        # Zero spatial cotangents likewise: materialise before touching eltype.
-        V̄t_loc = _local_spatial_cotangent(
-            V̄t, prototype_θφ, comm; zero_eltype=eltype(y[1]),
-            operation=:dist_synthesis_sphtor_pullback,
-        )
-        V̄p_loc = _local_spatial_cotangent(
-            V̄p, prototype_θφ, comm; zero_eltype=eltype(y[2]),
-            operation=:dist_synthesis_sphtor_pullback,
-        )
-        nθ_local = length(θ_globals)
-        ETt = float(eltype(V̄t_loc)); ETp = float(eltype(V̄p_loc))
-        V̄t_full = zeros(ETt, nθ_local, cfg.nlon)
-        V̄p_full = zeros(ETp, nθ_local, cfg.nlon)
-        if φ_is_local
-            V̄t_full .= V̄t_loc
-            V̄p_full .= V̄p_loc
-        else
-            @views V̄t_full[:, φ_window] .= V̄t_loc
-            @views V̄p_full[:, φ_window] .= V̄p_loc
-        end
-        S̄p, T̄p = SHTnsKit._adjoint_synthesis_sphtor(cfg, V̄t_full, V̄p_full;
-                                                    θ_globals=θ_globals,
-                                                    real_output=real_output)
-        # One batched Allreduce over stacked (S̄,T̄) instead of two round-trips.
-        n = length(S̄p)
-        combined = MPI.Allreduce!(vcat(vec(S̄p), vec(T̄p)), +, comm)
-        # Scatter back into the matrices `_adjoint_synthesis_sphtor` already
-        # allocated. `combined[1:n]` would allocate two more full-size arrays on
-        # top of the vcat (~12 MB per backward pass at lmax=511), and returning
-        # `reshape(view(combined, …))` avoids that but hands back a ReshapedArray
-        # rather than a Matrix — a downstream distributed pullback that feeds the
-        # tangent straight to `MPI.Allreduce!` then fails buffer conversion.
-        # copyto! reuses S̄p/T̄p, so this is both allocation-free and an Array.
-        copyto!(S̄p, 1, combined, 1, n)
-        copyto!(T̄p, 1, combined, n + 1, length(combined) - n)
-        return NoTangent(), NoTangent(), project_Slm(S̄p), project_Tlm(T̄p)
+        S̄, T̄ = _synthesis_sphtor_coefficient_cotangents(
+            cfg, ȳ, prototype_θφ, comm; real_output,
+            zero_eltypes=(eltype(y[1]), eltype(y[2])),
+            operation=:dist_synthesis_sphtor_pullback)
+        return NoTangent(), NoTangent(), project_Slm(S̄), project_Tlm(T̄)
     end
     return y, dist_synthesis_sphtor_pullback
+end
+
+# ----- public transforms on PencilArrays -------------------------------------
+# `analysis`, `synthesis` and their vector/QST forms dispatch PencilArray
+# arguments to the distributed kernels, but SHTnsKitAdvancedADExt's rules take
+# untyped arrays: without these more specific methods a PencilArray reached the
+# serial adjoint (a MethodError, or rank-local blocks treated as the whole
+# grid). Each rule runs the public primal, so validation and results are
+# unchanged, accepts all of its keywords, and reuses the adjoints above.
+#
+# Cotangents of distributed outputs hold each rank's derivative for its own
+# block and are summed across ranks; cotangents of replicated outputs
+# (`return_pencil=false`) must be identical on every rank. Gradients with
+# respect to keyword arguments (`prototype_θφ`, `Aminus`) are not returned.
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.analysis), cfg::SHTnsKit.SHTConfig,
+                              fθφ::PencilArray; use_rfft::Bool=false,
+                              return_pencil::Bool=true)
+    comm = communicator(fθφ)
+    _require_host_pencil(:analysis_pullback, fθφ, comm)
+    y = SHTnsKit.analysis(cfg, fθφ; use_rfft, return_pencil)
+    θ_globals, _, φ_window = _spatial_geometry(fθφ, cfg)
+
+    function analysis_pencil_pullback(ȳ)
+        Alm̄ = only(_analysis_coeff_cotangents(
+            cfg, (ȳ,), (y,), comm, :analysis_pullback))
+        f̄ = _local_adjoint_analysis(cfg, Alm̄, θ_globals, φ_window)
+        return NoTangent(), NoTangent(), _spatial_tangent(fθφ, f̄)
+    end
+    return y, analysis_pencil_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.synthesis), cfg::SHTnsKit.SHTConfig,
+                              Alm::PencilArray; prototype_θφ::PencilArray,
+                              real_output::Bool=true, use_rfft::Bool=false,
+                              comm=communicator(prototype_θφ))
+    known_comm = communicator(prototype_θφ)
+    _require_host_pencil(:synthesis_pullback, Alm, known_comm)
+    _require_host_pencil(:synthesis_pullback, prototype_θφ, known_comm)
+    _require_ad_communicator_match(Alm, prototype_θφ)
+    y = SHTnsKit.synthesis(cfg, Alm; prototype_θφ, real_output, use_rfft, comm)
+
+    function synthesis_pencil_pullback(ȳ)
+        Ā = _synthesis_coefficient_cotangent(
+            cfg, ȳ, prototype_θφ, known_comm; real_output,
+            zero_eltype=eltype(y), operation=:synthesis_pullback)
+        return NoTangent(), NoTangent(), _scatter_spectral_tangent(Alm, Ā)
+    end
+    return y, synthesis_pencil_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.analysis_sphtor),
+                              cfg::SHTnsKit.SHTConfig,
+                              Vtθφ::PencilArray, Vpθφ::PencilArray;
+                              use_tables=cfg.use_plm_tables,
+                              use_rfft::Bool=false, return_pencil::Bool=true,
+                              comm=communicator(Vtθφ))
+    known_comm = communicator(Vtθφ)
+    _require_host_pencil(:analysis_sphtor_pullback, Vtθφ, known_comm)
+    _require_host_pencil(:analysis_sphtor_pullback, Vpθφ, known_comm)
+    y = SHTnsKit.analysis_sphtor(cfg, Vtθφ, Vpθφ;
+                                 use_tables, use_rfft, return_pencil, comm)
+    θ_globals, _, φ_window = _spatial_geometry(Vtθφ, cfg)
+
+    function analysis_sphtor_pencil_pullback(ȳ)
+        S̄, T̄ = _analysis_coeff_cotangents(
+            cfg, ȳ, y, known_comm, :analysis_sphtor_pullback)
+        V̄t, V̄p = SHTnsKit._adjoint_analysis_sphtor(
+            cfg, S̄, T̄; θ_globals, φ_window)
+        return NoTangent(), NoTangent(),
+               _spatial_tangent(Vtθφ, V̄t), _spatial_tangent(Vpθφ, V̄p)
+    end
+    return y, analysis_sphtor_pencil_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.synthesis_sphtor),
+                              cfg::SHTnsKit.SHTConfig,
+                              Slm::PencilArray, Tlm::PencilArray;
+                              prototype_θφ::PencilArray,
+                              real_output::Bool=true, use_rfft::Bool=false,
+                              comm=communicator(prototype_θφ))
+    known_comm = communicator(prototype_θφ)
+    for value in (Slm, Tlm, prototype_θφ)
+        _require_host_pencil(:synthesis_sphtor_pullback, value, known_comm)
+    end
+    _require_ad_communicator_match(Slm, prototype_θφ)
+    _require_ad_communicator_match(Tlm, prototype_θφ)
+    y = SHTnsKit.synthesis_sphtor(cfg, Slm, Tlm;
+                                  prototype_θφ, real_output, use_rfft, comm)
+
+    function synthesis_sphtor_pencil_pullback(ȳ)
+        S̄, T̄ = _synthesis_sphtor_coefficient_cotangents(
+            cfg, ȳ, prototype_θφ, known_comm; real_output,
+            zero_eltypes=(eltype(y[1]), eltype(y[2])),
+            operation=:synthesis_sphtor_pullback)
+        return NoTangent(), NoTangent(),
+               _scatter_spectral_tangent(Slm, S̄), _scatter_spectral_tangent(Tlm, T̄)
+    end
+    return y, synthesis_sphtor_pencil_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.analysis_qst), cfg::SHTnsKit.SHTConfig,
+                              Vrθφ::PencilArray, Vtθφ::PencilArray,
+                              Vpθφ::PencilArray; use_rfft::Bool=false,
+                              return_pencil::Bool=true)
+    comm = communicator(Vrθφ)
+    for value in (Vrθφ, Vtθφ, Vpθφ)
+        _require_host_pencil(:analysis_qst_pullback, value, comm)
+    end
+    y = SHTnsKit.analysis_qst(cfg, Vrθφ, Vtθφ, Vpθφ; use_rfft, return_pencil)
+    θ_globals, _, φ_window = _spatial_geometry(Vrθφ, cfg)
+
+    function analysis_qst_pencil_pullback(ȳ)
+        Q̄, S̄, T̄ = _analysis_coeff_cotangents(
+            cfg, ȳ, y, comm, :analysis_qst_pullback)
+        V̄r = _local_adjoint_analysis(cfg, Q̄, θ_globals, φ_window)
+        V̄t, V̄p = SHTnsKit._adjoint_analysis_sphtor(
+            cfg, S̄, T̄; θ_globals, φ_window)
+        return NoTangent(), NoTangent(), _spatial_tangent(Vrθφ, V̄r),
+               _spatial_tangent(Vtθφ, V̄t), _spatial_tangent(Vpθφ, V̄p)
+    end
+    return y, analysis_qst_pencil_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.synthesis_qst), cfg::SHTnsKit.SHTConfig,
+                              Qlm::PencilArray, Slm::PencilArray, Tlm::PencilArray;
+                              prototype_θφ::PencilArray,
+                              real_output::Bool=true, use_rfft::Bool=false,
+                              comm=communicator(prototype_θφ))
+    known_comm = communicator(prototype_θφ)
+    for value in (Qlm, Slm, Tlm, prototype_θφ)
+        _require_host_pencil(:synthesis_qst_pullback, value, known_comm)
+    end
+    for value in (Qlm, Slm, Tlm)
+        _require_ad_communicator_match(value, prototype_θφ)
+    end
+    y = SHTnsKit.synthesis_qst(cfg, Qlm, Slm, Tlm;
+                               prototype_θφ, real_output, use_rfft, comm)
+
+    function synthesis_qst_pencil_pullback(ȳ)
+        V̄r, V̄t, V̄p = _cotangent_components(
+            ȳ, 3, known_comm, :synthesis_qst_pullback)
+        Q̄ = _synthesis_coefficient_cotangent(
+            cfg, V̄r, prototype_θφ, known_comm; real_output,
+            zero_eltype=eltype(y[1]), operation=:synthesis_qst_pullback)
+        S̄, T̄ = _synthesis_sphtor_coefficient_cotangents(
+            cfg, (V̄t, V̄p), prototype_θφ, known_comm; real_output,
+            zero_eltypes=(eltype(y[2]), eltype(y[3])),
+            operation=:synthesis_qst_pullback)
+        return NoTangent(), NoTangent(), _scatter_spectral_tangent(Qlm, Q̄),
+               _scatter_spectral_tangent(Slm, S̄), _scatter_spectral_tangent(Tlm, T̄)
+    end
+    return y, synthesis_qst_pencil_pullback
+end
+
+# ----- energy diagnostics of spectral PencilArrays ----------------------------
+# These sum each rank's block and Allreduce, so every rank gets the replicated
+# global value. Their pullbacks need no communication: each rank returns the
+# derivative for its own block, which `_distributed_coeff_cotangent` then sums.
+# Zygote cannot trace the Allreduce itself.
+
+"""
+Rank-local gradient block of a spectral-PencilArray energy. Entry `(l, m)` is
+`Ē · wₘ · metric(l, m) · (l(l+1))^power · A[l, m]` on the stored triangle
+(`l ≥ max(lmin, m)`, `m % mres == 0`) and zero elsewhere — the same weights as
+the primal sum.
+"""
+function _energy_gradient_block(cfg::SHTnsKit.SHTConfig, A::PencilArray, Ē;
+                                real_field::Bool, power::Int, lmin::Int)
+    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    values = parent(A)
+    block = zero(values)
+    gl_l = collect(Int, globalindices(A, 1))
+    gl_m = collect(Int, globalindices(A, 2))
+    @inbounds for (jj, gm) in enumerate(gl_m)
+        m = gm - 1
+        m % cfg.mres == 0 || continue
+        w = (real_field && m > 0) ? 2.0 : 1.0
+        for (ii, gl) in enumerate(gl_l)
+            l = gl - 1
+            l >= max(lmin, m) || continue
+            weight = w * SHTnsKit._convention_metric(scale_matrix, l, m) *
+                     (l * (l + 1))^power
+            block[ii, jj] = Ē * weight * values[ii, jj]
+        end
+    end
+    return PencilArray(PencilArrays.pencil(A), block)
+end
+
+"""
+The cotangent of a replicated scalar output (an energy), `0.0` for a zero
+tangent. Like `_replicated_coeff_cotangent`, it must be identical on every
+rank: blocks scaled by rank-varying cotangents would not form one gradient.
+"""
+function _replicated_scalar_cotangent(Ē, comm, operation::Symbol)
+    Ē = ChainRulesCore.unthunk(Ē)
+    value = Ē isa ChainRulesCore.AbstractZero ? 0.0 : Ē
+    local_ok = value isa Real
+    MPI.Allreduce(local_ok, &, comm) || throw(ArgumentError(
+        "$operation cotangent must be a real number",
+    ))
+    reference = Ref(Float64(value))
+    MPI.Bcast!(reference, comm; root=0)
+    same = Float64(value) == reference[] || isequal(Float64(value), reference[])
+    MPI.Allreduce(same, &, comm) || throw(ArgumentError(
+        "the cotangent of a replicated distributed energy must be identical on every rank; rank-varying partial cotangents are unsupported",
+    ))
+    return value
+end
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.energy_scalar), cfg::SHTnsKit.SHTConfig,
+                              Alm::PencilArray; real_field::Bool=true)
+    _require_host_pencil(:energy_scalar_pullback, Alm)
+    E = SHTnsKit.energy_scalar(cfg, Alm; real_field)
+    A0 = copy(Alm)
+    function energy_scalar_pencil_pullback(Ē)
+        Ē = _replicated_scalar_cotangent(Ē, communicator(A0), :energy_scalar_pullback)
+        iszero(Ē) && return NoTangent(), NoTangent(), ZeroTangent()
+        return NoTangent(), NoTangent(),
+               _energy_gradient_block(cfg, A0, Ē; real_field, power=0, lmin=0)
+    end
+    return E, energy_scalar_pencil_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.energy_vector), cfg::SHTnsKit.SHTConfig,
+                              Slm::PencilArray, Tlm::PencilArray;
+                              real_field::Bool=true)
+    _require_host_pencil(:energy_vector_pullback, Slm)
+    _require_host_pencil(:energy_vector_pullback, Tlm, communicator(Slm))
+    E = SHTnsKit.energy_vector(cfg, Slm, Tlm; real_field)
+    S0 = copy(Slm); T0 = copy(Tlm)
+    function energy_vector_pencil_pullback(Ē)
+        Ē = _replicated_scalar_cotangent(Ē, communicator(S0), :energy_vector_pullback)
+        iszero(Ē) && return NoTangent(), NoTangent(), ZeroTangent(), ZeroTangent()
+        return NoTangent(), NoTangent(),
+               _energy_gradient_block(cfg, S0, Ē; real_field, power=1, lmin=1),
+               _energy_gradient_block(cfg, T0, Ē; real_field, power=1, lmin=1)
+    end
+    return E, energy_vector_pencil_pullback
+end
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.enstrophy), cfg::SHTnsKit.SHTConfig,
+                              Tlm::PencilArray; real_field::Bool=true)
+    _require_host_pencil(:enstrophy_pullback, Tlm)
+    Z = SHTnsKit.enstrophy(cfg, Tlm; real_field)
+    T0 = copy(Tlm)
+    function enstrophy_pencil_pullback(Z̄)
+        Z̄ = _replicated_scalar_cotangent(Z̄, communicator(T0), :enstrophy_pullback)
+        iszero(Z̄) && return NoTangent(), NoTangent(), ZeroTangent()
+        return NoTangent(), NoTangent(),
+               _energy_gradient_block(cfg, T0, Z̄; real_field, power=2, lmin=1)
+    end
+    return Z, enstrophy_pencil_pullback
+end
+
+# ----- PencilArray methods without a distributed adjoint ----------------------
+# These have PencilArray methods, and SHTnsKitAdvancedADExt's untyped serial
+# rules used to capture them and run a serial adjoint on rank-local blocks.
+# Fail with a clear message instead.
+
+for transform in (:analysis_batch, :synthesis_batch, :analysis_packed,
+                  :synthesis_packed, :analysis_packed_cplx, :synthesis_packed_cplx)
+    @eval function ChainRulesCore.rrule(::typeof(SHTnsKit.$transform),
+                                        ::SHTnsKit.SHTConfig, ::PencilArray;
+                                        kwargs...)
+        throw(ArgumentError(string(
+            "reverse-mode AD through distributed `", $(QuoteNode(transform)),
+            "` is not supported; differentiate the per-field `analysis`/`synthesis` ",
+            "(or their sphtor/qst forms), which have distributed rules")))
+    end
+end
+
+function ChainRulesCore.rrule(::typeof(SHTnsKit.SH_mul_mx), ::SHTnsKit.SHTConfig,
+                              mx, ::PencilArray, Rlm)
+    throw(ArgumentError(
+        "reverse-mode AD through distributed `SH_mul_mx` is not supported"))
 end
 
 end # module

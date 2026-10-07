@@ -6,10 +6,13 @@
 #
 # Regression guard: the Qlm-gradients were previously WRONG. SH_Zrotate/SH_Yrotate
 # conjugated / mis-weighted the cotangent, and SH_Xrotate90 used non-inverse ZYZ
-# angles. The correct standard-inner-product adjoint of a packed rotation R is
+# angles. On real-field vectors the standard-inner-product adjoint of a packed
+# rotation R reduces to
 #   Q̄ = W · R⁻¹ · (W⁻¹ ȳ),   W = diag(wm),  wm = 2 for m>0, 1 for m=0
 # because the m>0 packed modes carry double weight in the physical field inner
-# product while Zygote/ChainRules use the unweighted packed inner product.
+# product. The packed rotation is only ℝ-linear, though, so for cotangents with
+# imaginary m=0 entries the rules use the exact adjoint
+# (`SHTnsKit._rotation_apply_real_adjoint`); the last testsets cover that case.
 # The angle (dα) gradients were already correct; they are checked here too.
 
 using Test
@@ -568,4 +571,75 @@ if _HAS_ZYGOTE_ROT
 end
 else
     @info "Skipping rotation-adjoint FD check (Zygote not available in this test context)"
+end
+
+@testset "Axis-rotation adjoints are exact off the real-field subspace" begin
+    # Packed real rotations are ℝ-linear, so `W·R⁻¹·W⁻¹` is the adjoint only for
+    # cotangents with real m=0 entries. `sum(abs2, R .- T)` with a complex target
+    # `T` produces imaginary m=0 cotangents, and the old shortcut was 30-50% off.
+    rng = MersenneTwister(7130)
+    dotre(a, b) = real(sum(conj.(a) .* b))
+    for convention in ((;), (norm=:schmidt, cs_phase=false, real_norm=true))
+        cfg = create_gauss_config(5, 7; nlon=13, convention...)
+        Q = randn(rng, ComplexF64, cfg.nlm)            # complex m=0 entries
+        cotangent = randn(rng, ComplexF64, cfg.nlm)
+        direction = randn(rng, ComplexF64, cfg.nlm)
+        epsilon = 1e-6
+        for (name, apply, arguments) in (
+            ("SH_Yrotate", SH_Yrotate, (0.81, similar(Q))),
+            ("SH_Yrotate90", SH_Yrotate90, (similar(Q),)),
+            ("SH_Xrotate90", SH_Xrotate90, (similar(Q),)),
+        )
+            loss(q) = dotre(cotangent, apply(cfg, q, arguments...))
+            fd = (loss(Q .+ epsilon .* direction) -
+                  loss(Q .- epsilon .* direction)) / (2epsilon)
+            _, pullback = ChainRulesCore.rrule(apply, cfg, Q, arguments...)
+            @testset "$name rrule $(isempty(convention) ? "canonical" : "configured")" begin
+                @test dotre(pullback(cotangent)[3], direction) ≈ fd rtol=1e-6 atol=1e-9
+                zero_result = pullback(ZeroTangent())
+                @test all(x -> x isa ChainRulesCore.AbstractZero, zero_result)
+            end
+            if _HAS_ZYGOTE_ROT
+                @testset "$name Zygote $(isempty(convention) ? "canonical" : "configured")" begin
+                    g = Zygote.gradient(loss, Q)[1]
+                    @test dotre(g, direction) ≈ fd rtol=1e-6 atol=1e-9
+                end
+            end
+        end
+    end
+end
+
+@testset "SH_mul_mx pullbacks keep their primal operands" begin
+    # Callers reuse buffers between the forward call and the pullback
+    # (`SH_mul_mx(cfg, mx, R, Q)` overwrites Q); the mx-gradient read the
+    # overwritten Q.
+    cfg = create_gauss_config(6, 8)
+    rng = MersenneTwister(7131)
+    mx = zeros(2cfg.nlm); mul_ct_matrix(cfg, mx)
+    Q = randn(rng, ComplexF64, cfg.nlm)
+    cotangent = randn(rng, ComplexF64, cfg.nlm)
+    _, pullback = ChainRulesCore.rrule(SH_mul_mx, cfg, mx, Q, similar(Q))
+    reference = pullback(cotangent)
+    Qsaved = copy(Q); mxsaved = copy(mx)
+    _, reused = ChainRulesCore.rrule(SH_mul_mx, cfg, mx, Q, similar(Q))
+    Q .= randn(rng, ComplexF64, cfg.nlm)     # overwrite both operand buffers
+    st_dt_matrix(cfg, mx)
+    result = reused(cotangent)
+    @test result[3] == reference[3]          # mx-gradient
+    @test result[4] == reference[4]          # Q-gradient
+    Q .= Qsaved; mx .= mxsaved
+
+    if _HAS_ZYGOTE_ROT
+        T = randn(rng, ComplexF64, cfg.nlm)
+        function ping_pong(m)
+            A = copy(Q); B = similar(Q)
+            B1 = SH_mul_mx(cfg, m, A, B)
+            A2 = SH_mul_mx(cfg, m, B1, A)    # overwrites the first call's input
+            return sum(abs2, A2 .- T)
+        end
+        h = randn(rng, length(mx)); epsilon = 1e-6
+        fd = (ping_pong(mx .+ epsilon .* h) - ping_pong(mx .- epsilon .* h)) / (2epsilon)
+        g = Zygote.gradient(ping_pong, mx)[1]
+        @test sum(g .* h) ≈ fd rtol=1e-6 atol=1e-9
+    end
 end

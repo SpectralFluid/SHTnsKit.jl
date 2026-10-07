@@ -87,7 +87,8 @@ The key operators implemented are:
 - cos(θ) multiplication: couples Y_l^m to Y_{l±1}^m
 - sin(θ) ∂/∂θ derivative: couples Y_l^m to Y_{l±1}^m with different coefficients
 
-SHTns-compatible functions provided:
+SHTns-style functions (SHTns names and packed LM order; the operator layout
+differs from SHTns, see "Differences from SHTns" in docs/src/norms.md):
 - `mul_ct_matrix(cfg, mx)`: fill `mx` (length 2*nlm) with coefficients for cos(θ) operator
 - `st_dt_matrix(cfg, mx)`: fill `mx` (length 2*nlm) with coefficients for sin(θ) ∂/∂θ operator
 - `SH_mul_mx(cfg, mx, Qlm, Rlm)`: apply a tridiagonal operator that couples (l,m) to l±1 at fixed m
@@ -99,11 +100,7 @@ For each packed index `lm` (SHTns LM order, m≥0), we store two coupling coeffi
 Out-of-range neighbors (l<m or l>lmax) are automatically ignored.
 """
 
-"""
-    mul_ct_matrix(cfg::SHTConfig, mx::AbstractVector{<:Real})
-
-Fill `mx` with coupling coefficients for cosθ operator: cosθ Y_l^m = a_l^m Y_{l-1}^m + b_l^m Y_{l+1}^m.
-"""
+"""Fill `mx` with the cosθ (`derivative=false`) or sinθ ∂θ couplings."""
 function _operator_matrix!(cfg::SHTConfig, mx::AbstractVector{<:Real},
                            derivative::Bool)
     # Validate coefficient matrix size (2 coefficients per (l,m) mode)
@@ -167,6 +164,16 @@ function _gpu_operator_metadata(cfg::SHTConfig, ::Type{T}) where {T<:Real}
     return (; li, mi, down_ratios, up_ratios, lower, upper)
 end
 
+"""
+    mul_ct_matrix(cfg::SHTConfig, mx::AbstractVector{<:Real})
+
+Fill `mx` with coupling coefficients for cosθ operator: cosθ Y_l^m = a_l^m Y_{l-1}^m + b_l^m Y_{l+1}^m.
+
+`mx[2lm+1]` and `mx[2lm+2]`, with `lm` the 0-based packed index of `(l, m)`, hold
+the couplings of `Y_l^m` to `Y_{l-1}^m` and `Y_{l+1}^m`: the layout
+[`SH_mul_mx`](@ref) expects. cosθ is symmetric, so this is also the array SHTns's
+`mul_ct_matrix` produces.
+"""
 mul_ct_matrix(::CPU, cfg::SHTConfig, mx::AbstractVector{<:Real}) =
     _operator_matrix!(cfg, mx, false)
 mul_ct_matrix(cfg::SHTConfig, mx::AbstractVector{<:Real}) =
@@ -177,6 +184,11 @@ mul_ct_matrix(cfg::SHTConfig, mx::AbstractVector{<:Real}) =
 
 Fill `mx` with coupling coefficients for sinθ ∂_θ operator:
 sinθ ∂_θ Y_l^m = l b_l^m Y_{l+1}^m - (l+1) a_l^m Y_{l-1}^m.
+
+Same layout as [`mul_ct_matrix`](@ref): each entry pair holds how `Y_l^m` couples
+to its neighbours. SHTns stores, for each `(l, m)`, what it receives from its
+neighbours instead, which differs for this non-symmetric operator; see
+"Differences from SHTns" in the normalization guide for the conversion.
 """
 st_dt_matrix(::CPU, cfg::SHTConfig, mx::AbstractVector{<:Real}) =
     _operator_matrix!(cfg, mx, true)
@@ -188,6 +200,9 @@ st_dt_matrix(cfg::SHTConfig, mx::AbstractVector{<:Real}) =
 
 Apply a nearest-neighbor-in-l operator represented by `mx` to `Qlm` and write to `Rlm`.
 Both `Qlm` and `Rlm` are length `cfg.nlm` packed vectors (m≥0, SHTns LM order).
+`mx` uses the layout of [`mul_ct_matrix`](@ref) and [`st_dt_matrix`](@ref), which
+for non-symmetric operators differs from SHTns's (see "Differences from SHTns"
+in the normalization guide).
 
 !!! warning
     `Rlm` must not alias `Qlm`. Each output couples the l-neighbors of `Qlm`, and

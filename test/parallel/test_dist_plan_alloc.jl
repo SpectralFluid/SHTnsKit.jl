@@ -198,6 +198,42 @@ end
     @test a < 65536
 end
 
+@testset "pencil rotations reject orders an mmax < lmax layout cannot hold" begin
+    # The serial engine refuses order-mixing rotations when mmax < lmax; the
+    # pencil Y/X/Euler rotations silently dropped the |m| > mmax components
+    # (9-27% of the energy at lmax=8, mmax=5).
+    cfg = create_gauss_config(8, 10; mmax=5)
+    spen = Pencil((cfg.lmax + 1, cfg.mmax + 1), comm)
+    ranges = PencilArrays.range_local(spen)
+    rng = MersenneTwister(31)
+    Qlm = randn(rng, ComplexF64, cfg.nlm)
+    MPI.Bcast!(Qlm, 0, comm)
+    local_block = zeros(ComplexF64, PencilArrays.size_local(spen)...)
+    for (i, ig) in enumerate(ranges[1]), (j, jg) in enumerate(ranges[2])
+        l, m = ig - 1, jg - 1
+        m <= l && (local_block[i, j] = Qlm[SHTnsKit.LM_index(cfg.lmax, 1, l, m) + 1])
+    end
+    A = PencilArray(spen, local_block)
+    R = PencilArray(spen, zeros(ComplexF64, PencilArrays.size_local(spen)...))
+
+    @test_throws ArgumentError SHTnsKit.dist_SH_Yrotate(cfg, A, 0.7, R)
+    @test_throws ArgumentError SHTnsKit.dist_SH_Yrotate90(cfg, A, R)
+    @test_throws ArgumentError SHTnsKit.dist_SH_Xrotate90(cfg, A, R)
+    @test_throws ArgumentError SHTnsKit.dist_SH_rotate_euler(cfg, A, 0.1, 0.7, 0.2, R)
+
+    # A half-turn keeps every |m| and stays available, matching the serial engine.
+    SHTnsKit.dist_SH_Yrotate(cfg, A, Float64(π), R)
+    expected = similar(Qlm)
+    SHTnsKit.SH_Yrotate(cfg, Qlm, Float64(π), expected)
+    err = 0.0
+    for (i, ig) in enumerate(ranges[1]), (j, jg) in enumerate(ranges[2])
+        l, m = ig - 1, jg - 1
+        m <= l && (err = max(err, abs(parent(R)[i, j] -
+                                      expected[SHTnsKit.LM_index(cfg.lmax, 1, l, m) + 1])))
+    end
+    @test MPI.Allreduce(err, max, comm) < 1e-12
+end
+
 @testset "DistAnalysisPlan φ-decomposed (fallback layout)" begin
     lmax = 16; nlat = 20; nlon = 48
     cfg = create_gauss_config(lmax, nlat; nlon=nlon)

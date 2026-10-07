@@ -105,4 +105,35 @@ using SHTnsKit
         @test cfg.allow_padding == false
         @test get_nlat_padded(cfg) == cfg.nlat
     end
+
+    @testset "use_rfft into padded views and strided scratch" begin
+        # The real-FFT plans assume a column-contiguous output, so a padded
+        # `spatial_view` or a strided `fft_scratch` raised "FFTW plan applied
+        # to wrong-strides output".
+        cfg = create_gauss_config(8, 10; nlon=17)
+        set_allow_padding!(cfg)
+        @test get_nlat_padded(cfg) > cfg.nlat
+        alm = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+        alm[1, 1] = 0.7
+        alm[3, 2] = 0.4 - 0.1im
+        field = synthesis(cfg, alm)
+        bins = cfg.nlon ÷ 2 + 1
+
+        padded = allocate_padded_spatial(cfg)
+        @test synthesis!(cfg, spatial_view(cfg, padded), alm; use_rfft=true) ≈ field
+        coefficients = similar(alm)
+        @test analysis!(cfg, coefficients, spatial_view(cfg, padded); use_rfft=true) ≈ alm
+
+        scratch = view(zeros(ComplexF64, cfg.nlat + 3, bins), 1:cfg.nlat, :)
+        @test analysis(cfg, field; fft_scratch=scratch, use_rfft=true) ≈ alm
+        @test synthesis(cfg, alm; fft_scratch=scratch, use_rfft=true) ≈ field
+
+        batch = allocate_padded_spatial_batch(cfg, 2)
+        batch_view = spatial_view(cfg, batch)
+        synthesis_batch!(cfg, batch_view, cat(alm, 2alm; dims=3); use_rfft=true)
+        @test batch_view ≈ cat(field, 2field; dims=3)
+        batch_coefficients = zeros(ComplexF64, size(alm)..., 2)
+        analysis_batch!(cfg, batch_coefficients, batch_view; use_rfft=true)
+        @test batch_coefficients ≈ cat(alm, 2alm; dims=3)
+    end
 end

@@ -54,32 +54,35 @@ using Random
         # under :quad. The direct evaluators applied no factor at all, so under
         # :quad every one of them disagreed with the grid it claims to sample by
         # exactly 2π.
-        for mode in (:dft, :quad)
-            cfg = create_gauss_config(6, 8)
-            cfg.phi_scale = mode
-            rng = MersenneTwister(5150)
-            A = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
-            for m in 0:cfg.mmax, l in m:cfg.lmax
-                A[l+1, m+1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+        withenv("SHTNSKIT_PHI_SCALE" => nothing) do  # the variable overrides cfg.phi_scale
+            for mode in (:dft, :quad)
+                cfg = create_gauss_config(6, 8)
+                cfg.phi_scale = mode
+                @test SHTnsKit.phi_inv_scale(cfg) ≈ (mode === :quad ? cfg.nlon / 2π : cfg.nlon)
+                rng = MersenneTwister(5150)
+                A = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+                for m in 0:cfg.mmax, l in m:cfg.lmax
+                    A[l+1, m+1] = m == 0 ? randn(rng) : complex(randn(rng), randn(rng))
+                end
+                packed = SHTnsKit.pack_lm(cfg, A)
+                zero_packed = zeros(ComplexF64, cfg.nlm)
+
+                f = synthesis(cfg, A)
+                Vr, Vt, Vp = synthesis_qst(cfg, A, zero(A), zero(A))
+                i, j = 2, 3
+
+                @test synthesis_point(cfg, A, cfg.x[i], cfg.φ[j]) ≈ f[i, j] rtol=1e-10
+                @test SH_to_lat(cfg, packed, cfg.x[i]) ≈ f[i, :] rtol=1e-10
+                @test SHqst_to_lat(cfg, packed, zero_packed, zero_packed, cfg.x[i])[1] ≈
+                      Vr[i, :] rtol=1e-10
+                @test SHTnsKit.SHqst_to_point(cfg, packed, zero_packed, zero_packed,
+                                              cfg.x[i], cfg.φ[j])[1] ≈ Vr[i, j] rtol=1e-10
+
+                # axisymmetric pair
+                a0 = zeros(ComplexF64, cfg.lmax + 1); a0[3] = 0.7
+                am = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1); am[3, 1] = 0.7
+                @test synthesis_axisym(cfg, a0) ≈ synthesis(cfg, am)[:, 1] rtol=1e-10
             end
-            packed = SHTnsKit.pack_lm(cfg, A)
-            zero_packed = zeros(ComplexF64, cfg.nlm)
-
-            f = synthesis(cfg, A)
-            Vr, Vt, Vp = synthesis_qst(cfg, A, zero(A), zero(A))
-            i, j = 2, 3
-
-            @test synthesis_point(cfg, A, cfg.x[i], cfg.φ[j]) ≈ f[i, j] rtol=1e-10
-            @test SH_to_lat(cfg, packed, cfg.x[i]) ≈ f[i, :] rtol=1e-10
-            @test SHqst_to_lat(cfg, packed, zero_packed, zero_packed, cfg.x[i])[1] ≈
-                  Vr[i, :] rtol=1e-10
-            @test SHTnsKit.SHqst_to_point(cfg, packed, zero_packed, zero_packed,
-                                          cfg.x[i], cfg.φ[j])[1] ≈ Vr[i, j] rtol=1e-10
-
-            # axisymmetric pair
-            a0 = zeros(ComplexF64, cfg.lmax + 1); a0[3] = 0.7
-            am = zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1); am[3, 1] = 0.7
-            @test synthesis_axisym(cfg, a0) ≈ synthesis(cfg, am)[:, 1] rtol=1e-10
         end
     end
 
@@ -88,26 +91,29 @@ using Random
         # by it silently widens every result to Float64, breaking the element
         # type these functions promise their caller (and the Dual types AD needs
         # to see through). Narrow the scale at the boundary instead.
-        for mode in (:dft, :quad), T in (Float32, Float64)
-            cfg = create_gauss_config(4, 6; nlon=9)
-            cfg.phi_scale = mode
-            CT = Complex{T}
-            A = zeros(CT, cfg.lmax + 1, cfg.mmax + 1)
-            A[2, 1] = CT(0.6); A[3, 2] = CT(0.4, 0.2)
-            packed = SHTnsKit.pack_lm(cfg, A)
-            zpack = zeros(CT, cfg.nlm)
-            x = T(cfg.x[2]); φ = T(cfg.φ[3])
+        withenv("SHTNSKIT_PHI_SCALE" => nothing) do  # the variable overrides cfg.phi_scale
+            for mode in (:dft, :quad), T in (Float32, Float64)
+                cfg = create_gauss_config(4, 6; nlon=9)
+                cfg.phi_scale = mode
+                @test SHTnsKit.phi_inv_scale(cfg) ≈ (mode === :quad ? cfg.nlon / 2π : cfg.nlon)
+                CT = Complex{T}
+                A = zeros(CT, cfg.lmax + 1, cfg.mmax + 1)
+                A[2, 1] = CT(0.6); A[3, 2] = CT(0.4, 0.2)
+                packed = SHTnsKit.pack_lm(cfg, A)
+                zpack = zeros(CT, cfg.nlm)
+                x = T(cfg.x[2]); φ = T(cfg.φ[3])
 
-            @test synthesis_point(cfg, A, x, φ) isa T
-            @test eltype(SH_to_lat(cfg, packed, x)) === T
-            @test eltype(SH_to_lat_cplx(cfg, zeros(CT, SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)), x)) === CT
-            @test all(v -> v isa T, SHTnsKit.SHqst_to_point(cfg, packed, zpack, zpack, x, φ))
-            @test all(v -> v isa T, SHTnsKit.SH_to_grad_point(cfg, packed, zpack, x, φ))
-            @test all(V -> eltype(V) === T, SHqst_to_lat(cfg, packed, zpack, zpack, x))
-            @test eltype(synthesis_axisym(cfg, A[:, 1])) === T
-            @test eltype(SHTnsKit.synthesis_axisym_l(cfg, A[:, 1], cfg.lmax)) === T
-            @test SHTnsKit.synthesis_point_cplx(
-                cfg, zeros(CT, SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)), x, φ) isa CT
+                @test synthesis_point(cfg, A, x, φ) isa T
+                @test eltype(SH_to_lat(cfg, packed, x)) === T
+                @test eltype(SH_to_lat_cplx(cfg, zeros(CT, SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)), x)) === CT
+                @test all(v -> v isa T, SHTnsKit.SHqst_to_point(cfg, packed, zpack, zpack, x, φ))
+                @test all(v -> v isa T, SHTnsKit.SH_to_grad_point(cfg, packed, zpack, x, φ))
+                @test all(V -> eltype(V) === T, SHqst_to_lat(cfg, packed, zpack, zpack, x))
+                @test eltype(synthesis_axisym(cfg, A[:, 1])) === T
+                @test eltype(SHTnsKit.synthesis_axisym_l(cfg, A[:, 1], cfg.lmax)) === T
+                @test SHTnsKit.synthesis_point_cplx(
+                    cfg, zeros(CT, SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)), x, φ) isa CT
+            end
         end
     end
 

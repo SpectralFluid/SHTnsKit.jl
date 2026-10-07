@@ -64,13 +64,15 @@ using .HostTransferInventory
     @test !occursin("Matrix{ComplexF64}(A)", parallel_ad_source)
     @test occursin("_require_host_pencil", parallel_ad_source)
     @test occursin("BackendUnavailableError", parallel_ad_source)
+    # The rules forward the caller's `comm` keyword to the primal and guard
+    # with the prototype's communicator, bound as `known_comm`.
     scalar_synthesis_guard = findfirst(
-        r"_require_host_pencil\(:dist_synthesis_pullback,\s*prototype_θφ,\s*comm\)",
+        r"_require_host_pencil\(:dist_synthesis_pullback,\s*prototype_θφ,\s*(?:known_)?comm\)",
         parallel_ad_source,
     )
     scalar_synthesis_forward = findfirst("y = SHTnsKit.dist_synthesis(", parallel_ad_source)
     vector_synthesis_guard = findfirst(
-        r"_require_host_pencil\(\s*:dist_synthesis_sphtor_pullback,\s*prototype_θφ,\s*comm,?\s*\)",
+        r"_require_host_pencil\(\s*:dist_synthesis_sphtor_pullback,\s*prototype_θφ,\s*(?:known_)?comm,?\s*\)",
         parallel_ad_source,
     )
     vector_synthesis_forward = findfirst(
