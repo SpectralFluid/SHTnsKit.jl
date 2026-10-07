@@ -38,7 +38,7 @@ jobs:
           } 2>&1 | tee logs/cuda-parity.log
       - name: Archive CUDA parity log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cuda-parity-log
           path: logs/cuda-parity.log
@@ -72,7 +72,7 @@ jobs:
           } 2>&1 | tee logs/amdgpu-parity.log
       - name: Archive AMDGPU parity log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: amdgpu-parity-log
           path: logs/amdgpu-parity.log
@@ -116,7 +116,7 @@ jobs:
           } 2>&1 | tee logs/mpi-cuda-parity.log
       - name: Archive MPI/CUDA parity log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mpi-cuda-parity-log
           path: logs/mpi-cuda-parity.log
@@ -161,7 +161,7 @@ jobs:
           } 2>&1 | tee logs/mpi-amdgpu-parity.log
       - name: Archive MPI/AMDGPU parity log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mpi-amdgpu-parity-log
           path: logs/mpi-amdgpu-parity.log
