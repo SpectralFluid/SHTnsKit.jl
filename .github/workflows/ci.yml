@@ -352,6 +352,7 @@ jobs:
     permissions:
       actions: write # needed to allow julia-actions/cache to proactively delete old caches that it has created
       contents: write
+      pages: write
       statuses: write
 
     steps:
@@ -377,11 +378,6 @@ jobs:
           
       - uses: julia-actions/julia-buildpkg@v1
       
-      - uses: julia-actions/julia-docdeploy@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
-          
       - name: Run doctests
         shell: julia --project=docs --color=yes {0}
         run: |
@@ -389,3 +385,13 @@ jobs:
           using SHTnsKit
           DocMeta.setdocmeta!(SHTnsKit, :DocTestSetup, :(using SHTnsKit); recursive=true)
           doctest(SHTnsKit)
+
+      - uses: julia-actions/julia-docdeploy@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushes made with GITHUB_TOKEN do not start a branch-based Pages build.
+      - name: Publish the updated gh-pages branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api --method POST "repos/$GITHUB_REPOSITORY/pages/builds" --silent
