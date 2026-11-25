@@ -1,8 +1,7 @@
 # Package Architecture
 
-SHTnsKit.jl is a pure-Julia spherical harmonic transform library structured as
-a core module with ten conditional extensions. This page maps the main source files
-to its role so contributors and power users can navigate the codebase quickly.
+The core module implements CPU transforms. Optional Julia package extensions
+add GPU backends, MPI, automatic differentiation, and SIMD kernels.
 
 ## Directory layout
 
@@ -40,7 +39,7 @@ Every file is included from `SHTnsKit.jl` in dependency order.
 | `transforms.jl` | Point evaluation (`synthesis_point`), packed-storage transforms, latitude-band and single-mode (`_l`, `_ml`) variants |
 | `sphtor_transforms.jl` | Spheroidal/toroidal (tangential 2D) vector transforms: `analysis_sphtor`, `synthesis_sphtor`, gradient synthesis |
 | `qst_transforms.jl` | Three-component QST vector transforms: `analysis_qst`, `synthesis_qst` |
-| `plan.jl` | [`SHTPlan`](@ref) — reusable FFT plans and scratch buffers for zero-allocation repeated transforms |
+| `plan.jl` | [`SHTPlan`](@ref) and its in-place transforms reuse FFT plans and scratch buffers |
 | `batch_transforms.jl` | Batch (multi-field) scalar, vector, and QST transforms with a third field-index dimension |
 
 ### Utilities
@@ -84,6 +83,7 @@ manual registration is required.
 |:---|:---|:---|
 | `SHTnsKitGPUExt` | CUDA, GPUArrays, GPUArraysCore, KernelAbstractions | NVIDIA GPU transforms |
 | `SHTnsKitAMDGPUExt` | AMDGPU, GPUArrays, GPUArraysCore, KernelAbstractions | AMD GPU transforms |
+| `SHTnsKitMetalExt` | Metal, KernelAbstractions | Single-precision transforms on Apple GPUs |
 | `SHTnsKitParallelExt` | MPI, PencilArrays, PencilFFTs | MPI-distributed transforms and plans |
 | `SHTnsKitParallelCUDAExt` | MPI, PencilArrays, PencilFFTs, CUDA, GPUArrays, GPUArraysCore, KernelAbstractions | GPU-backed distributed transforms (NVIDIA) |
 | `SHTnsKitParallelAMDGPUExt` | MPI, PencilArrays, PencilFFTs, AMDGPU, GPUArrays, GPUArraysCore, KernelAbstractions | GPU-backed distributed transforms (AMD) |
@@ -108,25 +108,21 @@ The parallel extension is split across several files for maintainability:
 | `ParallelLocal.jl` | Distributed point and latitude-circle evaluation |
 | `ParallelDispatch.jl` | Dispatch logic for distributed paths |
 
-GPU extensions share common device code through `GPUCommon.jl` and a vendor
-firewall in `ParallelGPUVendorFirewall.jl`.
+The CUDA, AMDGPU, and Metal extensions share kernels and cache helpers in
+`GPUCommon.jl`. Distributed GPU code uses `ParallelGPUVendorFirewall.jl` to
+dispatch to CUDA or AMDGPU.
 
-### How fallbacks work
+### How device dispatch works
 
-Every extension-provided function has a stub in `src/SHTnsKit.jl` that raises
-an informative error when the required packages are not loaded:
-
-```julia
-gpu_analysis(args...; kwargs...) = error("GPU extension not loaded. ...")
-```
-
-When the extension loads, Julia's method dispatch replaces these stubs with
-real implementations whose typed signatures are more specific than the
-fallbacks.
+The core implements `analysis` and `synthesis` for CPU arrays. Each GPU
+extension registers an adapter and adds methods for its own array types.
+Passing a device array selects that backend. With host inputs and several
+functional backends, pass a device array as the `prototype` to a typed
+`GPU()` call to select one. [GPU Acceleration](gpu.md)
 
 ## Transform pipeline
 
-All transforms follow the same two-phase pattern:
+Full-grid scalar transforms combine a longitude FFT with a latitude transform.
 
 **Analysis (spatial to spectral):**
 1. FFT along longitude: `f(theta, phi)` becomes Fourier modes `F_m(theta)`
@@ -143,10 +139,9 @@ recurrence.
 
 ## Configuration lifecycle
 
-`SHTConfig` is managed by Julia's garbage collector. `destroy_config` is a
-no-op retained for API symmetry. Configurations are lightweight value-like
-objects that hold grid nodes, quadrature weights, normalization tables, and
-optional precomputed Legendre tables.
+`SHTConfig` is mutable and holds grid nodes, quadrature weights, normalization
+factors, and optional Legendre tables. Precomputed tables can dominate memory
+at high degree. Julia's garbage collector manages their lifetime.
 
 Plans (`SHTPlan`, distributed plan types) hold mutable workspace including FFT
 plans and scratch buffers. Create one plan per simultaneously executing task.

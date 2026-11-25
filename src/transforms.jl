@@ -484,27 +484,27 @@ end
     return nothing
 end
 
-# Ordinary coordinates are evaluated in the coefficient-owned floating-point
-# precision.  A non-AbstractFloat coordinate (for example a ForwardDiff Dual)
-# retains its own arithmetic type so the existing coordinate-AD behavior is not
-# erased, while Dual coefficient types continue to use the plain coordinate
-# type for the Legendre recurrence.
-@inline function _local_basis_type(::Type{RT}, coordinates::Real...) where {RT}
-    coordinate_types = map(value -> typeof(float(value)), coordinates)
-    if RT <: AbstractFloat && all(T -> T <: AbstractFloat, coordinate_types)
-        return RT
+# Return the basis, real output, and complex accumulation types. Keep the
+# supplied coordinate precision through the Legendre recurrence and phase.
+# For AD, only coordinate derivatives need to enter the basis.
+@inline function _local_eval_types(::Type{CT}, coordinates::Real...) where {CT<:Complex}
+    RT = real(CT)
+    coord = promote_type(map(x -> typeof(float(x)), coordinates)...)
+    AT = promote_type(RT, coord)
+    if RT <: AbstractFloat && coord <: AbstractFloat
+        return AT, RT, Complex{AT}
     end
-    return promote_type(coordinate_types...)
+    return coord, AT, Complex{AT}
 end
 
-# Local values follow the coefficient precision for ordinary floating-point
-# coordinates.  When the basis itself carries coordinate AD information, the
-# accumulator must also carry that type or assignment/final conversion would
-# erase the derivative.  Coefficient Duals remain represented by `RT` here and
-# therefore keep their existing linear propagation with an ordinary basis.
-@inline function _local_accumulator_types(::Type{CT}, ::Type{PT}) where {CT<:Complex,PT<:Real}
-    AT = promote_type(typeof(real(zero(CT))), PT)
-    return AT, Complex{AT}
+# Local evaluation rounds each normalized coefficient to its storage precision
+# before accumulating, just as convert_alm_norm! does.
+@inline _scale_local_coefficient(a, scale) = oftype(a, scale * a)
+
+@inline function _local_coefficient(alm, scales, l, m, index=CartesianIndex(l+1, m+1))
+    a = @inbounds alm[index]
+    scales === nothing && return a
+    return @inbounds _scale_local_coefficient(a, scales[l+1, m+1])
 end
 
 function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::Real, phi::Real)
@@ -515,23 +515,18 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
     size(Qlm, 1) == lmax + 1 || throw(DimensionMismatch("Qlm first dim must be lmax+1"))
     size(Qlm, 2) == mmax + 1 || throw(DimensionMismatch("Qlm second dim must be mmax+1"))
     _validate_local_coordinates(cost, phi, :synthesis_point)
-    Qlm_int = _internal_coefficients(Qlm, cfg)
+    scales = _coefficient_scale_matrix_to_canonical(cfg)
 
-    # The coefficient precision owns local-evaluation precision. This keeps
-    # Float32 evaluations in Float32 while preserving Dual coefficient types.
-    CT = eltype(Qlm_int)
-    RT = typeof(real(zero(CT)))
-    PT = _local_basis_type(RT, cost, phi)
-    AT, ACT = _local_accumulator_types(CT, PT)
+    PT, OT, ACT = _local_eval_types(eltype(Qlm), cost, phi)
     x = convert(PT, cost)
     ph = convert(PT, phi)
-    result = zero(AT)
+    result = zero(real(ACT))
     P = Vector{PT}(undef, lmax + 1)
 
     # m = 0 contribution (no conjugate partner)
     Plm_norm_row!(P, x, lmax, 0)  # P̄ already orthonormal-normalized
     @inbounds for l in 0:lmax
-        result += real(Qlm_int[l+1, 1]) * P[l+1]
+        result += real(_local_coefficient(Qlm, scales, l, 0)) * P[l+1]
     end
 
     # m > 0 contributions: add both +m and -m via 2*real(...)
@@ -541,7 +536,7 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
         phase = cis(convert(PT, m) * ph)  # e^(imφ)
         gm = zero(ACT)
         @inbounds for l in m:lmax
-            gm += Qlm_int[l+1, m+1] * P[l+1]
+            gm += _local_coefficient(Qlm, scales, l, m) * P[l+1]
         end
         result += 2 * real(gm * phase)
     end
@@ -549,7 +544,7 @@ function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::R
     # Same φ convention factor the grid `synthesis` carries (1 under :dft;
     # 1/2π under :quad), so a point evaluation matches the grid it samples.
     sφ = _evaluator_phi_scale(cfg, typeof(result))
-    return sφ == 1 ? result : result * sφ
+    return OT(sφ == 1 ? result : result * sφ)
 end
 
 function synthesis_point(::CPU, cfg::SHTConfig,

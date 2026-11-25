@@ -32,10 +32,11 @@ function SHTnsKit.dist_SH_to_lat(cfg::SHTnsKit.SHTConfig, Alm_pencil::PencilArra
     count, lcap, mcap = _collective_local_options(
         comm, cfg, cost, zero(cost), nphi, ltr, mtr, :dist_SH_to_lat)
     CT = eltype(Alm_pencil)
-    RT = typeof(real(zero(CT)))
-    x = RT(cost)
-    P = Vector{RT}(undef, cfg.lmax + 1)
-    values = zeros(CT, count)
+    PT = _pencil_local_work_type(comm, CT, cost)
+    ACT = Complex{PT}
+    x = PT(cost)
+    P = Vector{PT}(undef, cfg.lmax + 1)
+    values = zeros(ACT, count)
     local_l = collect(Int, globalindices(Alm_pencil, 1))
     local_m = collect(Int, globalindices(Alm_pencil, 2))
     data = parent(Alm_pencil)
@@ -43,21 +44,21 @@ function SHTnsKit.dist_SH_to_lat(cfg::SHTnsKit.SHTConfig, Alm_pencil::PencilArra
         m = mindex - 1
         (m <= mcap && m % cfg.mres == 0) || continue
         SHTnsKit.Plm_norm_row!(P, x, cfg.lmax, m)
-        mode = zero(CT)
+        mode = zero(ACT)
         @inbounds for (ilocal, lindex) in pairs(local_l)
             l = lindex - 1
             (m <= l <= lcap) || continue
-            scale = RT(SHTnsKit.coefficient_scale_to_canonical(cfg, l, m))
-            mode += P[l + 1] * scale * data[ilocal, jlocal]
+            scale = SHTnsKit.coefficient_scale_to_canonical(cfg, l, m)
+            mode += P[l + 1] * SHTnsKit._scale_local_coefficient(data[ilocal, jlocal], scale)
         end
         @inbounds for j in 1:count
-            values[j] += mode * cis(RT(2pi * m * (j - 1) / count))
+            values[j] += mode * cis(PT(2pi * m * (j - 1) / count))
         end
     end
-    sphi_scale = SHTnsKit._evaluator_phi_scale(cfg, CT)
+    sphi_scale = SHTnsKit._evaluator_phi_scale(cfg, ACT)
     sphi_scale == 1 || (values .*= sphi_scale)
     MPI.Allreduce!(values, +, comm)
-    return values
+    return convert(Vector{CT}, values)
 end
 
 """
@@ -236,10 +237,6 @@ function _validate_local_spectral_pencils!(cfg, values::Tuple,
     for value in Base.tail(values)
         _validate_identical_pencil_layout!(reference, value, operation; comm)
     end
-    reference_code = _scalar_precision_code(eltype(reference))
-    local_flags = any(value -> _scalar_precision_code(eltype(value)) != reference_code,
-                      Base.tail(values)) ? UInt32(0x0004) : UInt32(0)
-    _collective_validation_error(comm, local_flags, operation)
     return comm
 end
 
@@ -255,6 +252,13 @@ function _collective_local_options(comm, cfg, cost, phi, nphi, ltr, mtr,
     return count, lcap, mcap
 end
 
+function _pencil_local_work_type(comm, ::Type{CT}, coordinates...) where {CT}
+    # Equal coordinate values may arrive as different types on different ranks.
+    # Agree on the type of the partial sums before the MPI reduction.
+    PT, _, _ = SHTnsKit._local_eval_types(CT, coordinates...)
+    return MPI.Allreduce(PT !== Float32, |, comm) ? Float64 : Float32
+end
+
 function _pencil_local_qst(cfg, Q::PencilArray, S::PencilArray,
                            Tlm::PencilArray, cost::Real, phi::Real;
                            nphi::Integer=1, ltr::Integer=cfg.lmax,
@@ -267,44 +271,50 @@ function _pencil_local_qst(cfg, Q::PencilArray, S::PencilArray,
     count, lcap, mcap = _collective_local_options(
         comm, cfg, cost, phi, nphi, ltr, mtr, operation,
     )
-    CT = eltype(Q)
-    RT = typeof(real(zero(CT)))
-    x = RT(cost)
-    P = Vector{RT}(undef, cfg.lmax + 1)
+    # Each component's element type has already been checked across ranks.
+    CT = promote_type(map(eltype, active)...)
+    RT = real(CT)
+    PT = _pencil_local_work_type(comm, CT, cost, phi)
+    ACT = Complex{PT}
+    x = PT(cost)
+    P = Vector{PT}(undef, cfg.lmax + 1)
     dtheta = similar(P)
     over_sin = similar(P)
-    scratch = Vector{RT}(undef, cfg.lmax + 2)
-    Vr = zeros(RT, count); Vt = zeros(RT, count); Vp = zeros(RT, count)
+    scratch = Vector{PT}(undef, cfg.lmax + 2)
+    Vr = zeros(PT, count); Vt = zeros(PT, count); Vp = zeros(PT, count)
     local_l = collect(Int, globalindices(Q, 1))
     local_m = collect(Int, globalindices(Q, 2))
     Qdata = parent(Q); Sdata = parent(S); Tdata = parent(Tlm)
-    imagunit = complex(zero(RT), one(RT))
+    imagunit = complex(zero(PT), one(PT))
     for (jlocal, mindex) in pairs(local_m)
         m = mindex - 1
         (m <= mcap && m % cfg.mres == 0) || continue
         SHTnsKit.Plm_norm_dPdtheta_over_sinth_row!(
             P, dtheta, over_sin, x, cfg.lmax, m, scratch,
         )
-        qmode = zero(CT); stheta = zero(CT); sphi = zero(CT)
-        ttheta = zero(CT); tphi = zero(CT)
+        qmode = zero(ACT); stheta = zero(ACT); sphi = zero(ACT)
+        ttheta = zero(ACT); tphi = zero(ACT)
         @inbounds for (ilocal, lindex) in pairs(local_l)
             l = lindex - 1
             (m <= l <= lcap) || continue
-            scale = RT(SHTnsKit.coefficient_scale_to_canonical(cfg, l, m))
-            has_q && (qmode += P[l + 1] * scale * Qdata[ilocal, jlocal])
+            scale = SHTnsKit.coefficient_scale_to_canonical(cfg, l, m)
+            if has_q
+                coefficient = SHTnsKit._scale_local_coefficient(Qdata[ilocal, jlocal], scale)
+                qmode += P[l + 1] * coefficient
+            end
             if has_s
-                coefficient = scale * Sdata[ilocal, jlocal]
+                coefficient = SHTnsKit._scale_local_coefficient(Sdata[ilocal, jlocal], scale)
                 stheta += dtheta[l + 1] * coefficient
                 sphi += imagunit * m * over_sin[l + 1] * coefficient
             end
             if has_t
-                coefficient = scale * Tdata[ilocal, jlocal]
+                coefficient = SHTnsKit._scale_local_coefficient(Tdata[ilocal, jlocal], scale)
                 ttheta -= imagunit * m * over_sin[l + 1] * coefficient
                 tphi += dtheta[l + 1] * coefficient
             end
         end
         @inbounds for j in 1:count
-            phase = cis(RT(m) * (RT(phi) + RT(2pi * (j - 1) / count)))
+            phase = cis(PT(m) * (PT(phi) + PT(2pi * (j - 1) / count)))
             factor = m == 0 ? one(RT) : RT(2)
             Vr[j] += factor * real(qmode * phase)
             Vt[j] += factor * real((stheta + ttheta) * phase)
@@ -312,13 +322,13 @@ function _pencil_local_qst(cfg, Q::PencilArray, S::PencilArray,
         end
     end
     if cfg.robert_form
-        sinth = sqrt(max(zero(RT), one(RT) - x*x))
+        sinth = SHTnsKit._sin_from_cos(x)
         Vt .*= sinth
         Vp .*= sinth
     end
     # Same φ convention factor the serial evaluators apply (1 under :dft;
     # 1/2π under :quad), so a PencilArray input agrees with the dense one.
-    sphi_scale = RT(SHTnsKit._evaluator_phi_scale(cfg))
+    sphi_scale = SHTnsKit._evaluator_phi_scale(cfg, PT)
     if sphi_scale != 1
         Vr .*= sphi_scale; Vt .*= sphi_scale; Vp .*= sphi_scale
     end
@@ -326,9 +336,12 @@ function _pencil_local_qst(cfg, Q::PencilArray, S::PencilArray,
     _record_local_payload!(length(combined))
     MPI.Allreduce!(combined, +, comm)
     # A latitude sweep stays vector-valued even when it samples one longitude.
-    return point_output ? (combined[1], combined[2], combined[3]) :
-        (combined[1:count], combined[(count + 1):(2count)],
-         combined[(2count + 1):(3count)])
+    if point_output
+        return RT(combined[1]), RT(combined[2]), RT(combined[3])
+    end
+    return ntuple(3) do k
+        convert(Vector{RT}, view(combined, (k-1)*count+1:k*count))
+    end
 end
 
 function SHTnsKit.synthesis_point(cfg::SHTnsKit.SHTConfig,
@@ -405,34 +418,36 @@ function _pencil_local_complex(cfg, coefficients::PencilArray,
         comm, cfg, cost, phi, nphi, ltr, cfg.mmax, operation,
     )
     CT = eltype(coefficients)
-    RT = typeof(real(zero(CT)))
-    P = Vector{RT}(undef, cfg.lmax + 1)
-    output = zeros(CT, count)
+    PT = _pencil_local_work_type(comm, CT, cost, phi)
+    ACT = Complex{PT}
+    x = PT(cost)
+    P = Vector{PT}(undef, cfg.lmax + 1)
+    output = zeros(ACT, count)
     global_rows = collect(Int, globalindices(coefficients, 1))
     local_by_global = Dict(global_index => local_index
                            for (local_index, global_index) in pairs(global_rows))
     data = parent(coefficients)
     for m in -cfg.mmax:cfg.mmax
         am = abs(m)
-        SHTnsKit.Plm_norm_row!(P, RT(cost), cfg.lmax, am)
-        radial = zero(CT)
+        SHTnsKit.Plm_norm_row!(P, x, cfg.lmax, am)
+        radial = zero(ACT)
         @inbounds for l in am:lcap
             global_index = SHTnsKit.LM_cplx_index(cfg.lmax, cfg.mmax, l, m) + 1
             local_index = get(local_by_global, global_index, 0)
             iszero(local_index) && continue
-            scale = RT(SHTnsKit.coefficient_scale_to_canonical(cfg, l, am))
-            radial += P[l + 1] * scale * data[local_index, 1]
+            scale = SHTnsKit.coefficient_scale_to_canonical(cfg, l, am)
+            radial += P[l + 1] * SHTnsKit._scale_local_coefficient(data[local_index, 1], scale)
         end
         @inbounds for j in 1:count
-            angle = RT(phi) + RT(2pi * (j - 1) / count)
-            output[j] += radial * cis(RT(m) * angle)
+            angle = PT(phi) + PT(2pi * (j - 1) / count)
+            output[j] += radial * cis(PT(m) * angle)
         end
     end
-    sphi_scale = SHTnsKit._evaluator_phi_scale(cfg, CT)
+    sphi_scale = SHTnsKit._evaluator_phi_scale(cfg, ACT)
     sphi_scale == 1 || (output .*= sphi_scale)
     _record_local_payload!(length(output))
     MPI.Allreduce!(output, +, comm)
-    return point_output ? output[1] : output
+    return point_output ? CT(output[1]) : convert(Vector{CT}, output)
 end
 
 SHTnsKit.synthesis_point_cplx(cfg::SHTnsKit.SHTConfig,

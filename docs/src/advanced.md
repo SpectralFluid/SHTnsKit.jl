@@ -25,7 +25,8 @@ nothing
 ```
 
 Use [`LM_index`](@ref), `cfg.li`, and `cfg.mi` to map packed modes. The
-`*_packed_cplx` family stores both signs of `m` for complex fields.
+`*_packed_cplx` family stores both signs of `m` for complex fields and
+requires `mres == 1`.
 
 ## Selective transforms
 
@@ -39,6 +40,11 @@ families instead of materializing a full unrelated result:
 - `synthesis_point`, `synthesis_point_cplx`, `SH_to_lat`, and `SHqst_to_point`
 
 All use the convention stored in `cfg`.
+
+For local point and latitude evaluations with `Float32` or `Float64` inputs,
+the coordinates retain their precision and the result follows the coefficient
+precision. Mixing `ComplexF32` and `ComplexF64` spectra in a QST or gradient
+evaluation gives `Float64` components on CPU, CUDA, and AMDGPU.
 
 ## Vector operators
 
@@ -79,8 +85,14 @@ alm[4, 2] = 0.5 + 0.25im
 energy = energy_scalar(cfg, alm)
 spectrum = energy_scalar_l_spectrum(cfg, alm)
 @assert sum(spectrum) ≈ energy
+@assert grid_energy_scalar(cfg, synthesis(cfg, alm)) ≈ energy
 (energy=energy, active_degrees=count(!iszero, spectrum))
 ```
+
+With `robert_form=true`, pass the weighted components returned by
+`synthesis_sphtor` directly to `grid_energy_vector`. It accounts for the
+`sin(θ)` weighting when computing physical energy. If the spectrum includes
+`m=1`, this requires a grid with zero pole weights or no pole samples.
 
 ## Rotations
 
@@ -122,6 +134,8 @@ field = zeros(cfg.nlat, cfg.nlon)
 gradient = fdgrad_scalar_energy(cfg, field)
 ```
 
-Zygote wrappers include `zgrad_scalar_energy`, `zgrad_vector_energy`,
-`zgrad_enstrophy_Tlm`, and rotation-angle gradients. See their docstrings for
-supported storage and return shapes.
+Zygote wrappers include `zgrad_scalar_energy`, `zgrad_vector_energy`, and
+`zgrad_enstrophy_Tlm`. For real packed coefficients and `mres == 1`,
+`zgrad_rotation_angles_real` differentiates half the squared norm of the
+rotated coefficients with respect to the three Euler angles, using the
+normalization and phase in `cfg`.

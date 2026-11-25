@@ -845,7 +845,7 @@ the primal sum.
 """
 function _energy_gradient_block(cfg::SHTnsKit.SHTConfig, A::PencilArray, Ē;
                                 real_field::Bool, power::Int, lmin::Int)
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     values = parent(A)
     block = zero(values)
     gl_l = collect(Int, globalindices(A, 1))
@@ -857,7 +857,7 @@ function _energy_gradient_block(cfg::SHTnsKit.SHTConfig, A::PencilArray, Ē;
         for (ii, gl) in enumerate(gl_l)
             l = gl - 1
             l >= max(lmin, m) || continue
-            weight = w * SHTnsKit._convention_metric(scale_matrix, l, m) *
+            weight = w * SHTnsKit._mode_power_scale(scaling, l, m) *
                      (l * (l + 1))^power
             block[ii, jj] = Ē * weight * values[ii, jj]
         end

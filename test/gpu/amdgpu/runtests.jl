@@ -3,7 +3,7 @@ using SHTnsKit
 using AMDGPU
 using GPUArrays
 using GPUArraysCore
-using KernelAbstractions
+import KernelAbstractions
 
 include("../wrapper_reference.jl")
 
@@ -582,6 +582,7 @@ end
             pole_orders=(false, true),
         )
         run_gpu_vector_batch_parity(AMDGPUVectorAdapter())
+        GPUWrapperReference.run_gpu_qst_regressions(SHTnsKit, ROCArray, AMDGPU.AnyROCArray)
         run_shared_legendre_precision_reference(
             extension.GPUCommon, ROCBackend(); place=ROCArray,
         )

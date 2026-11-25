@@ -12,7 +12,10 @@ Pkg.add(["MPI", "PencilArrays", "PencilFFTs"])
 ```
 
 MPI.jl can use its bundled MPI or a system installation. Configure the MPI.jl
-backend first, then use its matching launcher.
+backend first, then use its matching launcher. On Unix, `MPI.install_mpiexecjl()`
+installs a project-aware launcher that you can call as
+`mpiexecjl --project=. -n 2 julia --project=. roundtrip_mpi.jl`.
+[MPI.jl launcher guide](https://juliaparallel.org/MPI.jl/stable/usage/#Julia-wrapper-for-mpiexec)
 
 ## Scalar roundtrip
 
@@ -89,6 +92,15 @@ dist_synthesis!(plan, spatial, spectral)
 Use `dist_analysis_sphtor` / `dist_synthesis_sphtor` for tangential vectors and
 the `dist_*_qst` family for three-component fields. Their planned counterparts
 follow the same output-before-input convention as serial in-place transforms.
+
+Point and latitude evaluation on CPU-backed spectral pencils is collective.
+Use the same point coordinates or latitude-circle options on every rank.
+Each component must have a consistent element type across ranks. QST and
+gradient evaluations promote the precision of the supplied components, so
+combining `ComplexF32` and `ComplexF64` spectra returns `Float64` components.
+
+CUDA and ROCm support transforms on GPU-backed pencils with GPU-aware MPI.
+Apple Metal supports the single-GPU workflows in [GPU Acceleration](gpu.md).
 
 ## Practical rules
 

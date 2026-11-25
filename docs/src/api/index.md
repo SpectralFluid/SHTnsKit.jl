@@ -1,8 +1,8 @@
 # API Reference
 
 This page is generated from the docstrings of the public `SHTnsKit` module.
-Optional extension methods appear when their dependencies are loaded in the
-calling environment.
+Optional methods become available in your Julia session when you load the
+packages that activate their extension.
 
 ## Calling conventions
 
@@ -23,23 +23,22 @@ and numerical changes.
 
 ## Extension activation
 
-| Extension | Load these packages |
-|---|---|
-| CUDA | `CUDA`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
-| AMDGPU | `AMDGPU`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
-| MPI | `MPI`, `PencilArrays`, `PencilFFTs` |
-| MPI + CUDA | `MPI`, `PencilArrays`, `PencilFFTs`, `CUDA`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
-| MPI + AMDGPU | `MPI`, `PencilArrays`, `PencilFFTs`, `AMDGPU`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
-| MPI + AD | `ChainRulesCore`, `MPI`, `PencilArrays`, `PencilFFTs` |
-| LoopVectorization | `LoopVectorization` |
-| ForwardDiff | `ForwardDiff` |
-| Zygote | `Zygote` |
-| Advanced AD | `ChainRulesCore` |
+```@eval
+using Markdown, TOML, SHTnsKit
+extensions = TOML.parsefile(joinpath(pkgdir(SHTnsKit), "Project.toml"))["extensions"]
+rows = ["| Extension | Trigger packages |", "|:---|:---|"]
+for name in sort!(collect(keys(extensions)))
+    triggers = extensions[name]
+    packages = triggers isa String ? [triggers] : triggers
+    push!(rows, "| `$name` | " * join(("`$pkg`" for pkg in packages), ", ") * " |")
+end
+Markdown.parse(join(rows, "\n"))
+```
 
-Hardware-specific types such as the CUDA extension's `CuFFTPlan` live in their
-extension module and are documented in [GPU Acceleration](../gpu.md). See
-[Package Architecture](../architecture.md) for the full extension map and
-shared helper files.
+Metal loads KernelAbstractions as a dependency, so `using SHTnsKit, Metal`
+activates its extension. For setup and supported operations see
+[GPU Acceleration](../gpu.md). [Package Architecture](../architecture.md)
+describes each extension's role.
 
 ## Public API
 

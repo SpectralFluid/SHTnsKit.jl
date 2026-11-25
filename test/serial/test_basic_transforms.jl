@@ -20,6 +20,23 @@ using SHTnsKit
     (_thread_alloc_slack() = Threads.nthreads() > 1 ? 4_096 * Threads.nthreads() : 0)
 
 @testset "Basic Scalar Transforms" begin
+    @testset "Analysis preserves overlapping input until the FFT completes" begin
+        cfg = create_gauss_config(2, 4; nlon=5)
+        field = complex.(reshape(collect(1.0:20.0), 4, 5))
+        expected = analysis(cfg, field)
+        for shared_scratch in (false, true)
+            input = copy(field)
+            output = @view input[1:3, 1:3]
+            analysis!(cfg, output, input; fft_scratch=shared_scratch ? input : nothing)
+            @test output ≈ expected
+        end
+        real_field = real.(field)
+        scratch = zeros(ComplexF64, 4, 3)
+        output = @view scratch[1:3, :]
+        analysis!(cfg, output, real_field; use_rfft=true, fft_scratch=scratch)
+        @test output ≈ expected
+    end
+
     @testset "Real coefficient matrices" begin
         for T in (Float32, Float64, Int), norm in (:orthonormal, :schmidt)
             T === Int && norm !== :orthonormal && continue

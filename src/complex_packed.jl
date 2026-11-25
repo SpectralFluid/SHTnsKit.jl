@@ -258,11 +258,8 @@ function synthesis_point_cplx(cfg::SHTConfig, alm::AbstractVector{<:Complex}, co
     length(alm) == expected || throw(DimensionMismatch("alm length mismatch"))
     cfg.mres == 1 || throw(ArgumentError("synthesis_point_cplx supports mres==1 only; got mres=$(cfg.mres)"))
     _validate_local_coordinates(cost, phi, :synthesis_point_cplx)
-    alm_int = _internal_coefficients(alm, cfg)
-    CT = eltype(alm_int)
-    RT = typeof(real(zero(CT)))
-    PT = _local_basis_type(RT, cost, phi)
-    _, ACT = _local_accumulator_types(CT, PT)
+    scales = _coefficient_scale_matrix_to_canonical(cfg)
+    PT, OT, ACT = _local_eval_types(eltype(alm), cost, phi)
     x = convert(PT, cost)
     ph = convert(PT, phi)
     lmax, mmax = cfg.lmax, cfg.mmax
@@ -275,11 +272,11 @@ function synthesis_point_cplx(cfg::SHTConfig, alm::AbstractVector{<:Complex}, co
         gp = zero(ACT); gn = zero(ACT)
         @inbounds for l in am:lmax
             Pl = P[l+1]
-            ap = alm_int[LM_cplx_index(lmax, mmax, l, am) + 1]
-            gp += Pl * ap
+            pos = LM_cplx_index(lmax, mmax, l, am) + 1
+            gp += Pl * _local_coefficient(alm, scales, l, am, pos)
             if am > 0
-                an = alm_int[LM_cplx_index(lmax, mmax, l, -am) + 1]
-                gn += Pl * an
+                neg = LM_cplx_index(lmax, mmax, l, -am) + 1
+                gn += Pl * _local_coefficient(alm, scales, l, am, neg)
             end
         end
         acc += gp * cis(convert(PT, am) * ph)
@@ -288,7 +285,7 @@ function synthesis_point_cplx(cfg::SHTConfig, alm::AbstractVector{<:Complex}, co
     # Same φ convention factor `synthesis_packed_cplx` carries (1 under :dft;
     # 1/2π under :quad), so a point evaluation matches the grid it samples.
     sφ = _evaluator_phi_scale(cfg, typeof(acc))
-    return sφ == 1 ? acc : acc * sφ
+    return Complex{OT}(sφ == 1 ? acc : acc * sφ)
 end
 
 

@@ -33,6 +33,33 @@ function _planned_sphtor_min_allocations(plan, Slm, Tlm, Vt, Vp)
 end
 
 @testset "SHTPlan" begin
+    @testset "Resolution changes respect plan capacity" begin
+        for use_rfft in (false, true)
+            cfg = create_gauss_config(3, 8; mmax=2)
+            plan = SHTPlan(cfg; use_rfft)
+            cfg.lmax = 4
+            S = fill(1.0 + 0im, 5, 3)
+            T = copy(S)
+            Vt = ones(cfg.nlat, cfg.nlon)
+            Vp = copy(Vt)
+            @test_throws ArgumentError analysis!(plan, S, Vt)
+            @test_throws ArgumentError synthesis!(plan, Vt, S)
+            @test_throws ArgumentError analysis_sphtor!(plan, S, T, Vt, Vp)
+            @test_throws ArgumentError synthesis_sphtor!(plan, Vt, Vp, S, T)
+            @test all(A -> all(isone, A), (S, T, Vt, Vp))
+
+            fill!(S, 0)
+            S[end, 1] = 1
+            synthesis!(SHTPlan(cfg; use_rfft), Vt, S)
+            @test analysis(cfg, Vt) ≈ S
+            cfg.lmax = 2
+            small = S[1:3, :]
+            small[3, 1] = 1
+            synthesis!(plan, Vt, small)
+            @test analysis(cfg, Vt) ≈ small
+        end
+    end
+
     @testset "Planned rfft scalar matches complex plan" begin
         for (lmax, nlon) in ((6, 13), (8, 20), (12, 25))
             cfg = create_gauss_config(lmax, lmax + 2; nlon=nlon)

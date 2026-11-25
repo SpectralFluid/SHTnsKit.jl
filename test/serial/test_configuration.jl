@@ -359,10 +359,12 @@ using SHTnsKit
         # transforms index it as (lmax+1, mmax+1) under `@inbounds` — a live
         # out-of-bounds read. lmax/mmax/mres now rebuild the spectral layout;
         # the fields that cannot be made consistent are rejected outright.
-        cfg = create_gauss_config(6, 8)
+        cfg = create_gauss_config(6, 11)
         prepare_plm_tables!(cfg)
         @test SHTnsKit.has_fused_scalar_tables(cfg)
 
+        @test_throws ArgumentError (cfg.lmax = cfg.nlat)
+        @test cfg.lmax == 6 && SHTnsKit.has_fused_scalar_tables(cfg)
         cfg.lmax = 10
         @test size(cfg.Nlm) == (cfg.lmax + 1, cfg.mmax + 1)
         @test cfg.nlm == SHTnsKit.nlm_calc(cfg.lmax, cfg.mmax, cfg.mres)
@@ -393,7 +395,7 @@ using SHTnsKit
 
         # nlon bounds the resolvable orders. mmax = 30 on nlon = 18 was accepted
         # and the next synthesis wrote Fourier column 31 of 18 under @inbounds.
-        c = create_gauss_config(8, 10)                 # nlon = 18
+        c = create_gauss_config(8, 41)                 # nlon = 18
         c.lmax = 40
         @test_throws ArgumentError (c.mmax = 30)
         @test c.mmax == 8 && size(c.Nlm) == (41, 9)
@@ -421,6 +423,7 @@ using SHTnsKit
             SHTnsKit.SHTConfig(; base..., kw...)
         end
         @test mk() isa SHTnsKit.SHTConfig                       # the valid case still builds
+        @test_throws ArgumentError mk(nlat=lmax)
         @test_throws ArgumentError mk(nlon=8)                    # nlon < 2*mmax+1
         @test_throws ArgumentError mk(mres=0)
         @test_throws ArgumentError mk(nspat=1)                   # nspat != nlat*nlon

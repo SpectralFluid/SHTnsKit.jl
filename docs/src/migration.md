@@ -26,7 +26,8 @@ gpu_coefficients = analysis(GPU(), cfg, device_field)
 ```
 
 Ordinary `analysis(cfg, array)` and `synthesis(cfg, array)` calls infer CPU,
-CUDA, AMDGPU, or distributed execution from the array type.
+CUDA, AMDGPU, Metal, or distributed execution from the array type. The
+single-GPU capabilities of each backend are listed in [GPU Acceleration](gpu.md).
 
 ## Normalization and phase
 

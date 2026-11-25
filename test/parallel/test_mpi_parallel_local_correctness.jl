@@ -39,6 +39,41 @@ end
     spectral_dims = (lmax + 1, mmax + 1)
     pen_m = Pencil(spectral_dims, comm)
 
+    @testset "Mixed spectra and wide coordinates" begin
+        Q = zeros(ComplexF32, spectral_dims)
+        Q[2, 2] = 0.3f0 - 0.5f0im
+        S = ComplexF64.(Q)
+        S[2, 1] = 0.4
+        q, s = SHTnsKit.pack_lm(cfg, Q), SHTnsKit.pack_lm(cfg, S)
+        qp, sp = scatter_spectral(pen_m, Q), scatter_spectral(pen_m, S)
+        x, phi = 1 - 1e-8, 2.0^25 + 0.25
+        point = synthesis_point(cfg, qp, x, phi)
+        @test point isa Float32 && !iszero(point)
+        @test point ≈ synthesis_point(cfg, Q, x, phi) rtol=4eps(Float32)
+        for (actual, expected) in (
+            (SHqst_to_point(cfg, qp, sp, qp, x, phi), SHqst_to_point(cfg, q, s, q, x, phi)),
+            (SHqst_to_lat(cfg, qp, sp, qp, x; nphi=3), SHqst_to_lat(cfg, q, s, q, x; nphi=3)),
+            (SH_to_grad_point(cfg, qp, sp, x, phi), SH_to_grad_point(cfg, q, s, x, phi)),
+        ), (out, ref) in zip(actual, expected)
+            @test eltype(out) === Float64
+            @test out ≈ ref rtol=1e-12
+        end
+
+        z = zeros(ComplexF32, nlm_cplx_calc(lmax, mmax, 1))
+        z[LM_cplx_index(lmax, mmax, 1, 1) + 1] = Q[2, 2]
+        zp = scatter_column(z)
+        @test synthesis_point_cplx(cfg, zp, x, phi) ≈ synthesis_point_cplx(cfg, z, x, phi) rtol=4eps(Float32)
+        @test SHTnsKit.dist_SH_to_lat(cfg, qp, x; nphi=3, real_output=false) ≈
+              SH_to_lat_cplx(cfg, z, x; nphi=3) rtol=4eps(Float32)
+        if nprocs > 1
+            local_phi = rank == 0 ? 0f0 : 0.0
+            @test synthesis_point(cfg, qp, 0.5f0, local_phi) ≈
+                  synthesis_point(cfg, Q, 0.5f0, 0.0) rtol=4eps(Float32)
+            varying = rank == 0 ? qp : sp
+            @test_throws ArgumentError SHqst_to_point(cfg, qp, varying, sp, x, phi)
+        end
+    end
+
     @testset "one-longitude latitude outputs ($phi_scale)" for phi_scale in (:dft, :quad)
         withenv("SHTNSKIT_PHI_SCALE" => nothing) do  # the variable overrides cfg.phi_scale
             eval_cfg = deepcopy(cfg)

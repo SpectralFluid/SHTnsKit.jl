@@ -3,9 +3,11 @@
 # and shared transform kernels are loaded directly from ext/.
 module GPUWrapperReference
 
-using Test, SHTnsKit, KernelAbstractions
+using Test, SHTnsKit
+import KernelAbstractions
 include("../../ext/GPUCommon.jl")
 include("test_mres.jl")
+include("test_qst_regressions.jl")
 
 module HostVendor
     using KernelAbstractions
@@ -71,18 +73,22 @@ function wrapper_module(vendor)
         "_scalar_analysis_direct!", "_scalar_synthesis_direct!",
         "_batch_analysis_direct!", "_batch_synthesis_direct!",
         "_vector_analysis_direct!", "_vector_synthesis_direct!",
+        "_batch_analysis", "_batch_synthesis", "_vector_batch_analysis",
         "_vector_batch_synthesis", "_rotation_blocks",
         "_local_tables", "_local_precision", "_validate_local_arrays",
         "_local_scalar", "_local_qst", "_lcap", "_mode_synthesis",
         "_coefficient_scales", "_safe_required_memory",
     ]))
-    # The public axisymmetric wrappers are defined as sandbox-local functions:
+    # Public wrappers are defined as sandbox-local functions:
     # the sandbox evaluates the extension's `using` lines but not its
     # `import SHTnsKit: ...` lines, so no SHTnsKit method is added.
     union!(functions, [Symbol("_with_", prefix, "_workspace"),
                        Symbol("_with_", prefix, "_vector_workspace"),
                        Symbol("_require_", prefix),
                        :synthesis_axisym, :synthesis_axisym_l,
+                       :analysis_qst_batch, :synthesis_qst_batch, :synthesis_qst_batch_cplx,
+                       :synthesis_point, :synthesis_point_cplx, :SHqst_to_point, :SH_to_grad_point,
+                       :SH_to_lat, :SH_to_lat_cplx, :SHqst_to_lat,
                        :estimate_memory_usage, :_legendre_table_bytes])
     typeprefix = vendor === :AMDGPU ? "AMDGPU" : "CUDA"
     structs = Set(Symbol.(typeprefix .* [
@@ -107,7 +113,7 @@ function wrapper_module(vendor)
             name in structs && Core.eval(sandbox, expr)
         elseif expr.head === :const
             expr.args[1].args[1] in constants && Core.eval(sandbox, expr)
-        elseif expr.head === :function && function_name(expr) in functions
+        elseif expr.head in (:function, :(=)) && function_name(expr) in functions
             Core.eval(sandbox, expr)
         elseif expr.head === :macrocall &&
                expr.args[1] in (Symbol("@inline"), GlobalRef(Core, Symbol("@doc"))) &&
@@ -122,6 +128,9 @@ end
 @testset "GPU wrapper host reference" begin
     rocm = wrapper_module(:AMDGPU)
     cuda = wrapper_module(:CUDA)
+    for wrapper in (rocm, cuda)
+        run_gpu_qst_regressions(wrapper, identity, Array)
+    end
     @testset "Order stride through production wrappers" begin
         for (wrapper, prefix) in ((rocm, "amdgpu"), (cuda, "cuda"))
             scalar_analysis! = getproperty(wrapper, Symbol("_", prefix, "_scalar_analysis_direct!"))

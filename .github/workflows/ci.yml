@@ -42,6 +42,22 @@ jobs:
       - name: Run CPU parity runner
         run: julia --project=. test/parity/runtests_cpu.jl
 
+  metal-parity:
+    name: Apple Metal transform parity
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+          arch: aarch64
+      - uses: julia-actions/cache@v3
+      - name: Instantiate the Metal test environment
+        run: julia --project=test/gpu/metal -e 'using Pkg; Pkg.develop(path=pwd()); Pkg.instantiate()'
+      - name: Compare Apple GPU transforms with the CPU reference
+        run: julia --project=test/gpu/metal test/gpu/metal/runtests.jl
+
   gpu-host-reference:
     name: GPU wrappers and kernels on the CPU backend
     runs-on: ubuntu-latest
@@ -223,6 +239,7 @@ jobs:
           mpiexec -n 2 julia --project=. test/parallel/test_mpi_transpose_operand_preflight.jl
           mpiexec -n 2 julia --project=. test/parallel/test_mpi_comm_cleanup.jl
           mpiexec -n 4 julia --project=. test/parallel/test_mpi_2d_alignment.jl
+          mpiexec -n 4 julia --project=. test/parallel/test_mpi_integration.jl
           mpiexec -n 2 julia --project=. test/parallel/test_mpi_ad_tangent_spaces.jl
           mpiexec -n 2 julia --project=. test/parallel/test_mpi_ad_public_api.jl
           mpiexec -n 8 julia --project=. test/parallel/test_mpi_audit_fixes.jl

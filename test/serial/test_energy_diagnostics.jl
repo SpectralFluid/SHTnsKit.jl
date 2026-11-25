@@ -8,6 +8,58 @@ using SHTnsKit
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
 @testset "Energy Diagnostics" begin
+    @testset "Energies of the synthesized field" begin
+        cfg = create_gauss_config(3, 6; norm=:schmidt, real_norm=true, cs_phase=false)
+        cfg.phi_scale = :quad
+        Q = zeros(ComplexF64, 4, 4)
+        Q[1, 1] = 1
+        Q[3, 2] = 0.4im
+        S, T = zero(Q), zero(Q)
+        S[2, 1] = 1
+        T[3, 2] = 0.4 - 0.3im
+        q, s, t = (SHTnsKit.pack_lm(cfg, a) for a in (Q, S, T))
+        E = grid_energy_scalar(cfg, synthesis(cfg, Q))
+        @test energy_scalar(cfg, Q) ≈ E
+        @test energy_scalar_packed(cfg, q) ≈ E
+        @test sum(energy_scalar_lm(cfg, Q)) ≈ E
+        @test sum(energy_scalar_m_spectrum(cfg, Q)) ≈ E
+        @test real(sum(conj.(q) .* grad_energy_scalar_packed(cfg, q))) ≈ 2 * E
+        @test SHTnsKit.pack_lm(cfg, grad_energy_scalar_alm(cfg, Q)) ≈ grad_energy_scalar_packed(cfg, q)
+        Z = grid_enstrophy(cfg, vorticity_grid(cfg, T))
+        @test enstrophy(cfg, T) ≈ Z
+        @test sum(enstrophy_l_spectrum(cfg, T)) ≈ Z
+        @test real(sum(conj.(T) .* grad_enstrophy_Tlm(cfg, T))) ≈ 2 * Z
+
+        for robert in (false, true)
+            cfg.robert_form = robert
+            vt, vp = synthesis_sphtor(cfg, S, T)
+            K = grid_energy_vector(cfg, vt, vp)
+            @test energy_vector(cfg, S, T) ≈ K
+            @test energy_vector_packed(cfg, s, t) ≈ K
+            @test sum(energy_vector_l_spectrum(cfg, S, T)) ≈ K
+            gs, gt = grad_energy_vector_Slm_Tlm(cfg, S, T)
+            @test real(sum(conj.(S) .* gs) + sum(conj.(T) .* gt)) ≈ 2 * K
+            gps, gpt = grad_energy_vector_packed(cfg, s, t)
+            @test SHTnsKit.pack_lm(cfg, gs) ≈ gps
+            @test SHTnsKit.pack_lm(cfg, gt) ≈ gpt
+            gvt, gvp = grad_grid_energy_vector_fields(cfg, vt, vp)
+            @test sum(vt .* gvt + vp .* gvp) ≈ 2 * K
+        end
+    end
+
+    @testset "Robert energy at the poles" begin
+        cfg = create_regular_config(2, 6; include_poles=true, use_dh_weights=true, robert_form=true)
+        S = zeros(ComplexF64, 3, 3)
+        S[2, 2] = 1
+        T = zero(S)
+        @test grid_energy_vector(cfg, synthesis_sphtor(cfg, S, T)...) ≈ energy_vector(cfg, S, T)
+
+        cfg = create_regular_config(2, 6; include_poles=true, robert_form=true)
+        vt, vp = synthesis_sphtor(cfg, S, T)
+        @test_throws ArgumentError grid_energy_vector(cfg, vt, vp)
+        @test_throws ArgumentError grad_grid_energy_vector_fields(cfg, vt, vp)
+    end
+
     @testset "Convention metrics use the cached scale matrix" begin
         lmax = 8
         alm = zeros(ComplexF64, lmax + 1, lmax + 1)

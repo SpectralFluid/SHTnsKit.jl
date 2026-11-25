@@ -73,32 +73,45 @@ Key assumptions:
 # the symmetric m<0 modes in energy calculations.
 # Inline weight: avoids allocating a vector on every energy/gradient call.
 @inline _wm(m::Integer, real_field::Bool) = (real_field && m > 0) ? 2.0 : 1.0
-@inline _diagnostic_scale_matrix(cfg) = _coefficient_scale_matrix_to_canonical(cfg)
-@inline _convention_metric(::Nothing, l::Integer, m::Integer) = 1.0
-@inline _convention_metric(M::AbstractMatrix, l::Integer, m::Integer) =
-    @inbounds abs2(M[Int(l) + 1, Int(m) + 1])
+# Parseval uses the squared amplitude of the harmonic in the synthesized field.
+@inline _diagnostic_scaling(cfg) = (spatial_power=abs2(_evaluator_phi_scale(cfg)),
+                                    to_canonical=_coefficient_scale_matrix_to_canonical(cfg))
+
+@inline function _mode_power_scale(scaling, l, m)
+    scales = scaling.to_canonical
+    scales === nothing && return scaling.spatial_power
+    return @inbounds scaling.spatial_power * abs2(scales[l + 1, m + 1])
+end
+
+function _vector_energy_weights(cfg)
+    cfg.robert_form || return cfg.w
+    _validate_robert_analysis(cfg)
+    return map(cfg.w, cfg.x) do weight, x
+        sin_squared = max(0.0, 1 - x*x)
+        iszero(sin_squared) ? 0.0 : weight / sin_squared
+    end
+end
 
 """
     energy_scalar(cfg, alm; real_field=true) -> Float64
 
 Compute the total energy of a scalar field from its spherical harmonic coefficients.
 
-For a scalar field f(θ,φ) = Σ a_lm Y_l^m(θ,φ), the energy is defined as:
-E = (1/2) ∫ |f|² dΩ = (1/2) Σ |a_lm|²
-
-This represents the L² norm of the field, which is conserved under orthonormal
-spherical harmonic transforms (Parseval's identity).
+The energy is E = (1/2) ∫ |f|² dΩ for the field returned by `synthesis`.
+Parseval's identity gives (1/2) Σ |a_lm|² in the orthonormal basis. The
+calculation includes the configured coefficient normalization and longitude
+scaling. For fixed coefficients, `:quad` scales energy by 1/(2π)² relative to `:dft`.
 """
 function energy_scalar(cfg::SHTConfig, alm::AbstractMatrix; real_field::Bool=true)
     # The accumulation loop is `@inbounds`; without this a too-small matrix
     # silently returned a wrong number instead of raising, unlike every sibling.
     validate_spectral_dimensions(alm, cfg, "alm")
     lmax, mmax = cfg.lmax, cfg.mmax
-    scale_matrix = _diagnostic_scale_matrix(cfg)
+    scaling = _diagnostic_scaling(cfg)
     # Type-stable accumulator (stays inferrable for Float32 / ForwardDiff.Dual inputs).
     E = zero(promote_type(Float64, real(float(eltype(alm)))))
     @inbounds for m in 0:cfg.mres:mmax, l in m:lmax
-        E += _wm(m, real_field) * _convention_metric(scale_matrix, l, m) * abs2(alm[l+1, m+1])
+        E += _wm(m, real_field) * _mode_power_scale(scaling, l, m) * abs2(alm[l+1, m+1])
     end
     return 0.5 * E
 end
@@ -106,7 +119,8 @@ end
 """
     energy_vector(cfg, Slm, Tlm; real_field=true) -> Float64
 
-Compute the total kinetic energy of a vector field from spheroidal/toroidal coefficients.
+Compute the total kinetic energy of a vector field from spheroidal/toroidal
+coefficients, with the same normalization and longitude scaling as `energy_scalar`.
 
 For a vector field V = ∇×(T Y_l^m êᵣ) + ∇ₕ(S Y_l^m), the kinetic energy is:
 KE = (1/2) ∫ |V|² dΩ = (1/2) Σ [l(l+1)|S_lm|² + l(l+1)|T_lm|²]
@@ -114,11 +128,11 @@ KE = (1/2) ∫ |V|² dΩ = (1/2) Σ [l(l+1)|S_lm|² + l(l+1)|T_lm|²]
 function energy_vector(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatrix; real_field::Bool=true)
     validate_spectral_pair_dimensions(Slm, Tlm, cfg, ("Slm", "Tlm"))
     lmax, mmax = cfg.lmax, cfg.mmax
-    scale_matrix = _diagnostic_scale_matrix(cfg)
+    scaling = _diagnostic_scaling(cfg)
     E = zero(promote_type(Float64, real(float(eltype(Slm))), real(float(eltype(Tlm)))))
     @inbounds for m in 0:cfg.mres:mmax, l in max(1,m):lmax  # Vector fields start at l=1
         ll1 = l * (l + 1)
-        E += _wm(m, real_field) * _convention_metric(scale_matrix, l, m) * ll1 *
+        E += _wm(m, real_field) * _mode_power_scale(scaling, l, m) * ll1 *
              (abs2(Slm[l+1, m+1]) + abs2(Tlm[l+1, m+1]))
     end
     return 0.5 * E
@@ -145,10 +159,13 @@ end
     grid_energy_vector(cfg, Vt, Vp) -> Float64
 
 Compute kinetic energy of a vector field from its θ and φ components.
+With `robert_form=true`, supply the sin(θ)-weighted components returned by
+`synthesis_sphtor`. Recovering physical energy requires a pole-free grid or
+zero pole weights when order one is represented.
 """
 function grid_energy_vector(cfg::SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatrix)
     nlat, nlon = cfg.nlat, cfg.nlon
-    wlat = cfg.w
+    wlat = _vector_energy_weights(cfg)
     
     E = 0.0
     for j in 1:nlon, i in 1:nlat
@@ -165,11 +182,11 @@ Returns ∂E/∂a_lm for use in optimization problems.
 """
 function grad_energy_scalar_alm(cfg::SHTConfig, alm::AbstractMatrix; real_field::Bool=true)
     lmax, mmax = cfg.lmax, cfg.mmax
-    scale_matrix = _diagnostic_scale_matrix(cfg)
+    scaling = _diagnostic_scaling(cfg)
     # Use zeros to ensure l < m positions are properly initialized to zero
     grad = zeros(eltype(alm), size(alm))
     for m in 0:cfg.mres:mmax, l in m:lmax
-        grad[l+1, m+1] = _wm(m, real_field) * _convention_metric(scale_matrix, l, m) *
+        grad[l+1, m+1] = _wm(m, real_field) * _mode_power_scale(scaling, l, m) *
                          alm[l+1, m+1]
     end
     return grad
@@ -182,12 +199,12 @@ Compute energy from packed spectral coefficients (1D vector format).
 """
 function energy_scalar_packed(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}; real_field::Bool=true)
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm length must be nlm=$(cfg.nlm)"))
-    scale_matrix = _diagnostic_scale_matrix(cfg)
+    scaling = _diagnostic_scaling(cfg)
     E = zero(promote_type(Float64, real(float(eltype(Qlm)))))
     @inbounds for k in eachindex(Qlm)
         m = cfg.mi[k]
         l = cfg.li[k]
-        E += _wm(m, real_field) * _convention_metric(scale_matrix, l, m) * abs2(Qlm[k])
+        E += _wm(m, real_field) * _mode_power_scale(scaling, l, m) * abs2(Qlm[k])
     end
     return 0.5 * E
 end
@@ -199,12 +216,12 @@ Compute energy gradient for packed coefficients format.
 """
 function grad_energy_scalar_packed(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}; real_field::Bool=true)
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm length must be nlm=$(cfg.nlm)"))
-    scale_matrix = _diagnostic_scale_matrix(cfg)
+    scaling = _diagnostic_scaling(cfg)
     grad = similar(Qlm)
     @inbounds for k in eachindex(Qlm)
         m = cfg.mi[k]
         l = cfg.li[k]
-        grad[k] = _wm(m, real_field) * _convention_metric(scale_matrix, l, m) * Qlm[k]
+        grad[k] = _wm(m, real_field) * _mode_power_scale(scaling, l, m) * Qlm[k]
     end
     return grad
 end
@@ -216,14 +233,14 @@ Compute gradients of vector field kinetic energy with respect to S and T coeffic
 """
 function grad_energy_vector_Slm_Tlm(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatrix; real_field::Bool=true)
     lmax, mmax = cfg.lmax, cfg.mmax
-    scale_matrix = _diagnostic_scale_matrix(cfg)
+    scaling = _diagnostic_scaling(cfg)
     grad_S, grad_T = allocate_spectral_pair(Slm, Tlm)
     fill!(grad_S, zero(eltype(grad_S)))
     fill!(grad_T, zero(eltype(grad_T)))
 
     for m in 0:cfg.mres:mmax, l in max(1,m):lmax
         ll1 = l * (l + 1)
-        w = _wm(m, real_field) * _convention_metric(scale_matrix, l, m) * ll1
+        w = _wm(m, real_field) * _mode_power_scale(scaling, l, m) * ll1
         grad_S[l+1, m+1] = w * Slm[l+1, m+1]
         grad_T[l+1, m+1] = w * Tlm[l+1, m+1]
     end
@@ -254,7 +271,7 @@ Compute gradients of grid-based vector energy with respect to vector components.
 """
 function grad_grid_energy_vector_fields(cfg::SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatrix)
     nlat, nlon = cfg.nlat, cfg.nlon
-    wlat = cfg.w
+    wlat = _vector_energy_weights(cfg)
     scale = (2π / nlon)
     
     grad_Vt, grad_Vp = allocate_spatial_pair(Vt, Vp)
@@ -278,13 +295,13 @@ function energy_vector_packed(cfg::SHTConfig, Spacked::AbstractVector{<:Complex}
 
     length(Spacked) == cfg.nlm || throw(DimensionMismatch("Spacked length must be nlm=$(cfg.nlm)"))
     length(Tpacked) == cfg.nlm || throw(DimensionMismatch("Tpacked length must be nlm=$(cfg.nlm)"))
-    scale_matrix = _diagnostic_scale_matrix(cfg)
+    scaling = _diagnostic_scaling(cfg)
     E = zero(promote_type(Float64, real(float(eltype(Spacked))), real(float(eltype(Tpacked)))))
     @inbounds for k in eachindex(Spacked)
         l = cfg.li[k]; m = cfg.mi[k]
         if l >= 1
             ll1 = l * (l + 1)
-            E += _wm(m, real_field) * _convention_metric(scale_matrix, l, m) * ll1 *
+            E += _wm(m, real_field) * _mode_power_scale(scaling, l, m) * ll1 *
                  (abs2(Spacked[k]) + abs2(Tpacked[k]))
         end
     end
@@ -303,7 +320,7 @@ function grad_energy_vector_packed(cfg::SHTConfig,
     
     length(Spacked) == cfg.nlm || throw(DimensionMismatch("Spacked length must be nlm=$(cfg.nlm)"))
     length(Tpacked) == cfg.nlm || throw(DimensionMismatch("Tpacked length must be nlm=$(cfg.nlm)"))
-    scale_matrix = _diagnostic_scale_matrix(cfg)
+    scaling = _diagnostic_scaling(cfg)
     grad_S = similar(Spacked)
     grad_T = similar(Tpacked)
     fill!(grad_S, zero(eltype(grad_S)))
@@ -311,7 +328,7 @@ function grad_energy_vector_packed(cfg::SHTConfig,
     @inbounds for k in eachindex(Spacked)
         l = cfg.li[k]; m = cfg.mi[k]
         if l >= 1
-            w = _wm(m, real_field) * _convention_metric(scale_matrix, l, m) * (l * (l + 1))
+            w = _wm(m, real_field) * _mode_power_scale(scaling, l, m) * (l * (l + 1))
             grad_S[k] = w * Spacked[k]
             grad_T[k] = w * Tpacked[k]
         end

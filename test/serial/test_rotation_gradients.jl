@@ -29,6 +29,35 @@ catch
     false
 end
 
+if _HAS_ZYGOTE_ROT
+    @testset "Packed rotation loss uses the configured basis" begin
+        cfg = create_gauss_config(1, 3; real_norm=true)
+        q = zeros(ComplexF64, cfg.nlm)
+        q[LM_index(1, 1, 1, 0) + 1] = 1
+        @test abs(zgrad_rotation_angles_real(cfg, q, 0.0, π/4, 0.0)[2]) < 1e-14
+
+        # With the ordinary packed norm, mixing zonal and nonzonal modes changes the loss.
+        cfg = create_gauss_config(4, 6; norm=:schmidt, cs_phase=false)
+        q = randn(MersenneTwister(957), ComplexF64, cfg.nlm)
+        q[cfg.mi .== 0] .= real.(q[cfg.mi .== 0])
+        angles = [0.25, 0.63, -0.42]
+        function loss(angles)
+            r = SHTRotation(cfg.lmax, cfg.mmax; α=angles[1], β=angles[2], γ=angles[3],
+                            norm=cfg.norm, real_norm=cfg.real_norm, cs_phase=cfg.cs_phase)
+            return sum(abs2, shtns_rotation_apply_real(r, q, similar(q))) / 2
+        end
+        gradients = zgrad_rotation_angles_real(cfg, q, angles...)
+        for i in eachindex(angles)
+            step = zeros(3)
+            step[i] = 1e-6
+            fd = (loss(angles + step) - loss(angles - step)) / (2 * step[i])
+            @test gradients[i] ≈ fd atol=2e-8 rtol=1e-7
+        end
+        cfg.mres = 2
+        @test_throws ArgumentError zgrad_rotation_angles_real(cfg, zeros(ComplexF64, cfg.nlm), angles...)
+    end
+end
+
 @testset "Axis-rotation pullbacks preserve primal coefficients" begin
     function check_saved_rotation(make_pullback)
         for apply in (SH_Zrotate, SH_Yrotate), mres in (1, 2),

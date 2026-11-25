@@ -279,6 +279,26 @@ using Random
         @test isapprox(Vp_lat, Vp_ref[i, :]; rtol=1e-9, atol=1e-11)
     end
 
+    @testset "Vector evaluations normalize mixed-precision inputs without copying spectra" begin
+        lmax = 47
+        cfg = create_gauss_config(lmax, lmax + 2; norm=:schmidt, real_norm=true, cs_phase=false)
+        canonical = create_gauss_config(lmax, lmax + 2)
+        rng = MersenneTwister(47)
+        inputs = map(T -> randn(rng, T, cfg.nlm), (ComplexF32, ComplexF64, ComplexF32))
+        internal = map(inputs) do a
+            SHTnsKit.convert_alm_norm!(similar(a), a, cfg; to_internal=true)
+        end
+        for evaluate in (
+            (c, q, s, t) -> SHqst_to_point(c, q, s, t, 0.3, 0.7),
+            (c, q, s, t) -> SH_to_grad_point(c, q, s, 0.3, 0.7),
+            (c, q, s, t) -> SHqst_to_lat(c, q, s, t, 0.3; nphi=8, ltr=5),
+        )
+            @test evaluate(cfg, inputs...) == evaluate(canonical, internal...)
+            # Warmed scratch and outputs fit below even the smallest input spectrum.
+            @test @allocated(evaluate(cfg, inputs...)) < sizeof(first(inputs)) ÷ 2
+        end
+    end
+
     @testset "configured coefficient conventions are honored" begin
         lmax = 4
         nlat = lmax + 2

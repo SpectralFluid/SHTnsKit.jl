@@ -440,7 +440,7 @@ with an MPI-aware heuristic that favours balanced 2D decompositions.
 suggest_pencil_grid
 
 # GPU extension fallbacks
-const _GPU_NOT_LOADED_MSG = "GPU extension not loaded. Install and load CUDA.jl or AMDGPU.jl with GPUArrays and KernelAbstractions"
+const _GPU_NOT_LOADED_MSG = "No loaded GPU extension implements this entry point for the supplied arguments. For portable transforms, load CUDA.jl, AMDGPU.jl, or Metal.jl and call analysis or synthesis."
 gpu_analysis(args...; kwargs...) = error(_GPU_NOT_LOADED_MSG)
 gpu_synthesis(args...; kwargs...) = error(_GPU_NOT_LOADED_MSG)
 gpu_analysis_safe(args...; kwargs...) = error(_GPU_NOT_LOADED_MSG)

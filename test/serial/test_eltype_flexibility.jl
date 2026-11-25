@@ -199,7 +199,7 @@ end
                   collect(_central_difference(reference, c)) atol=2e-8 rtol=2e-8
         end
 
-        # Ordinary mixed coordinates remain coefficient-owned, and coefficient
+        # Wider coordinates preserve the coefficient result type, and coefficient
         # Duals still use an ordinary basis and retain linearity.
         cfg32 = _local_config(:gauss, Float32)
         Q32 = _local_external(cfg32, first(_local_canonical_modes(cfg32, Float32)))

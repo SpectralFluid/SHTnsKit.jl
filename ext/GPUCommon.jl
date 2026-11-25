@@ -478,7 +478,7 @@ vector kernels likewise take `sin θ` computed from the exact node rather than
 """
 function scalar_host_tables(cfg::SHTnsKit.SHTConfig, ::Type{T}) where {T<:AbstractFloat}
     nodes = Float64.(cfg.x)
-    sint = T.(sqrt.(max.(0.0, 1 .- nodes .^ 2)))
+    sint = T.(SHTnsKit._sin_from_cos.(nodes))
     return nodes, T.(cfg.w), coefficient_scales(cfg, T), sint
 end
 
@@ -510,6 +510,19 @@ function vector_host_tables(cfg::SHTnsKit.SHTConfig,
     return nodes, weights, scales, Float64.(cfg.Nlm), sint
 end
 
+function qst_batch_precision(q, s, t)
+    size(q) == size(s) == size(t) ||
+        throw(DimensionMismatch("all three QST batch components must have the same shape"))
+    return real(float(promote_type(eltype(q), eltype(s), eltype(t))))
+end
+
+function local_coordinates(::Type{T}, cost, phi, nphi) where {T}
+    basis, _, _ = SHTnsKit._local_eval_types(Complex{T}, cost, phi)
+    # Device arithmetic supports Float32 and Float64.
+    PT = basis === Float32 ? Float32 : Float64
+    return PT(cost), PT(phi), nphi == 1 ? zero(PT) : PT(2pi / nphi)
+end
+
 # Preserve diagonal seeds that are smaller than the device format can store.
 # The recurrence uses a shared power-of-two exponent for its two mantissas;
 # only table writes restore the physical magnitude. Int32 selects the native
@@ -526,7 +539,7 @@ end
 end
 
 @inline function _legendre_table_row!(Plm, xi::T, i, m, lmax) where {T}
-    sint = sqrt(max(zero(T), one(T) - xi * xi))
+    sint = SHTnsKit._sin_from_cos(xi)
     pmm = inv(sqrt(T(4) * T(pi)))
     exponent = Int32(0)
     @inbounds for k in 1:m
@@ -570,15 +583,21 @@ end
 """Store P̄ₗᵐ, dP̄ₗᵐ/dθ and P̄ₗᵐ/sinθ from a recurrence pair sharing `exponent`."""
 @inline function _store_vector_entry!(Plm, dtheta, over_sin, i, l, m,
                                       xi::T, s::T, current::T, previous::T,
-                                      exponent::Int32) where {T}
-    beta = l == m ? zero(T) : sqrt(T((2l + 1) * (l * l - m * m)) / T(2l - 1))
+                                      exponent::Int32, previous_d::T) where {T}
+    derivative = if l == 0
+        zero(T)
+    elseif m == 0
+        SHTnsKit._zonal_dtheta_step(l, xi, s, ldexp(previous, exponent), previous_d)
+    else
+        beta = l == m ? zero(T) : sqrt(T((2l + 1) * (l * l - m * m)) / T(2l - 1))
+        ldexp((T(l) * xi * current - beta * previous) / s, exponent)
+    end
     @inbounds begin
         Plm[i, l + 1, m + 1] = ldexp(current, exponent)
-        dtheta[i, l + 1, m + 1] =
-            ldexp((T(l) * xi * current - beta * previous) / s, exponent)
+        dtheta[i, l + 1, m + 1] = derivative
         over_sin[i, l + 1, m + 1] = ldexp(current / s, exponent)
     end
-    return nothing
+    return derivative
 end
 
 """
@@ -599,12 +618,12 @@ precision.
             exponent -= Int32(64)
         end
     end
-    _store_vector_entry!(Plm, dtheta, over_sin, i, m, m, xi, s, pmm, zero(T),
-                         exponent)
+    derivative = _store_vector_entry!(Plm, dtheta, over_sin, i, m, m, xi, s,
+                                      pmm, zero(T), exponent, zero(T))
     m < lmax || return nothing
     pm1m = sqrt(T(2m + 3)) * xi * pmm
-    _store_vector_entry!(Plm, dtheta, over_sin, i, m + 1, m, xi, s, pm1m, pmm,
-                         exponent)
+    derivative = _store_vector_entry!(Plm, dtheta, over_sin, i, m + 1, m, xi, s,
+                                      pm1m, pmm, exponent, derivative)
     previous2, previous1, exponent = _rescale_legendre_pair(pmm, pm1m, exponent)
     @inbounds for l in (m + 2):lmax
         tl = T(l)
@@ -615,8 +634,8 @@ precision.
                   (tl - one(T) + tm)) /
                  ((T(2) * tl - T(3)) * (tl - tm) * (tl + tm)))
         value = a * xi * previous1 - b * previous2
-        _store_vector_entry!(Plm, dtheta, over_sin, i, l, m, xi, s, value,
-                             previous1, exponent)
+        derivative = _store_vector_entry!(Plm, dtheta, over_sin, i, l, m, xi, s,
+                                          value, previous1, exponent, derivative)
         previous2, previous1, exponent =
             _rescale_legendre_pair(previous1, value, exponent)
     end
@@ -637,7 +656,7 @@ singular quotient and masks it afterwards.
         m = m_idx - 1
         xi = x[i]
         T = typeof(xi)
-        s = sqrt(max(zero(T), one(T) - xi * xi))
+        s = SHTnsKit._sin_from_cos(xi)
         if iszero(s)
             _legendre_table_row!(Plm, xi, i, m, lmax)
         else
@@ -1331,13 +1350,14 @@ that makes a point value match the grid `synthesis` writes.
     j = @index(Global)
     if j <= length(output)
         phi = phi0 + (j - 1) * phi_step
-        value = zero(eltype(output))
+        RT = eltype(Plm)
+        value = zero(RT)
         @inbounds for m in 0:mcap
             if m % mres == 0
-                radial = zero(eltype(coefficients))
+                radial = zero(Complex{RT})
                 for l in m:lcap
-                    radial += Plm[1, l + 1, m + 1] *
-                              scales[l + 1, m + 1] * coefficients[l + 1, m + 1]
+                    a = SHTnsKit._scale_local_coefficient(coefficients[l + 1, m + 1], scales[l + 1, m + 1])
+                    radial += Plm[1, l + 1, m + 1] * a
                 end
                 wave = radial * cis(m * phi)
                 value += m == 0 ? real(wave) : 2real(wave)
@@ -1354,14 +1374,15 @@ end
     j = @index(Global)
     if j <= length(output)
         phi = phi0 + (j - 1) * phi_step
-        value = zero(eltype(output))
+        CT = Complex{eltype(Plm)}
+        value = zero(CT)
         @inbounds for m in -mmax:mmax
             am = abs(m)
-            radial = zero(eltype(output))
+            radial = zero(CT)
             for l in am:lcap
                 index = _lm_cplx_device_index(l, m, mmax) + 1
-                radial += Plm[1, l + 1, am + 1] *
-                          scales[l + 1, am + 1] * coefficients[index]
+                a = SHTnsKit._scale_local_coefficient(coefficients[index], scales[l + 1, am + 1])
+                radial += Plm[1, l + 1, am + 1] * a
             end
             value += radial * cis(m * phi)
         end
@@ -1382,28 +1403,33 @@ spectra on the device.
     j = @index(Global)
     if j <= length(Vr)
         phi = phi0 + (j - 1) * phi_step
-        vr = zero(eltype(Vr))
-        vt = zero(eltype(Vt))
-        vp = zero(eltype(Vp))
-        imagunit = complex(zero(eltype(Vr)), one(eltype(Vr)))
+        RT = eltype(Plm)
+        vr = zero(RT)
+        vt = zero(RT)
+        vp = zero(RT)
+        CT = Complex{RT}
+        imagunit = CT(0, 1)
         @inbounds for m in 0:mcap
             if m % mres == 0
-                qmode = zero(eltype(Q))
-                smode_t = zero(eltype(S))
-                smode_p = zero(eltype(S))
-                tmode_t = zero(eltype(Tlm))
-                tmode_p = zero(eltype(Tlm))
+                qmode = zero(CT)
+                smode_t = zero(CT)
+                smode_p = zero(CT)
+                tmode_t = zero(CT)
+                tmode_p = zero(CT)
                 for l in m:lcap
                     index = _real_packed_device_index(l, m, lmax, mres) + 1
                     scale = scales[l + 1, m + 1]
-                    has_q && (qmode += Plm[1, l + 1, m + 1] * scale * Q[index])
+                    if has_q
+                        coefficient = SHTnsKit._scale_local_coefficient(Q[index], scale)
+                        qmode += Plm[1, l + 1, m + 1] * coefficient
+                    end
                     if has_s
-                        coefficient = scale * S[index]
+                        coefficient = SHTnsKit._scale_local_coefficient(S[index], scale)
                         smode_t += dtheta[1, l + 1, m + 1] * coefficient
                         smode_p += imagunit * m * over_sin[1, l + 1, m + 1] * coefficient
                     end
                     if has_t
-                        coefficient = scale * Tlm[index]
+                        coefficient = SHTnsKit._scale_local_coefficient(Tlm[index], scale)
                         tmode_t -= imagunit * m * over_sin[1, l + 1, m + 1] * coefficient
                         tmode_p += dtheta[1, l + 1, m + 1] * coefficient
                     end

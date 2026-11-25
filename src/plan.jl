@@ -136,6 +136,14 @@ struct SHTPlan{FP, IP, RP, IRP}
     use_rfft::Bool                # Flag: true = use real FFT optimization, false = complex FFT
 end
 
+@inline function _checked_plan_config(plan::SHTPlan)
+    cfg = plan.cfg
+    max_degree = length(plan.P) - 1
+    cfg.lmax <= max_degree || throw(ArgumentError(
+        "lmax=$(cfg.lmax) exceeds this plan's maximum degree $max_degree. Build a new SHTPlan for this resolution."))
+    return cfg
+end
+
 """
     SHTPlan(cfg::SHTConfig; use_rfft=false)
 
@@ -144,6 +152,7 @@ Create an optimized transform plan with pre-allocated buffers and FFT plans.
 This constructor performs the "planning" phase: it allocates all working memory
 and optimizes FFTW plans for the specific grid configuration. The resulting
 plan can then be reused for many transforms without additional allocations.
+For CPU transforms, build a new plan if you increase `cfg.lmax` beyond its planned degree.
 
 Parameters:
 - cfg: SHTConfig defining the grid and spectral resolution
@@ -203,7 +212,7 @@ In-place vector analysis. Accumulates Slm/Tlm into preallocated outputs.
 Uses a two-pass strategy over φ FFTs to avoid extra buffers.
 """
 function analysis_sphtor!(plan::SHTPlan, Slm_out::AbstractMatrix, Tlm_out::AbstractMatrix, Vt::AbstractMatrix, Vp::AbstractMatrix)
-    cfg = plan.cfg
+    cfg = _checked_plan_config(plan)
     nlat, nlon = cfg.nlat, cfg.nlon
     
     size(Vt,1)==nlat && size(Vt,2)==nlon || throw(DimensionMismatch("Vt dims"))
@@ -296,7 +305,7 @@ end
 In-place vector synthesis. Streams m→k without forming (θ×m) intermediates; inverse FFT Vt then Vp.
 """
 function synthesis_sphtor!(plan::SHTPlan, Vt_out::AbstractMatrix, Vp_out::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix; real_output::Bool=true)
-    cfg = plan.cfg
+    cfg = _checked_plan_config(plan)
     nlat, nlon = cfg.nlat, cfg.nlon
     
     size(Vt_out,1)==nlat && size(Vt_out,2)==nlon || throw(DimensionMismatch("Vt_out dims"))
@@ -411,7 +420,7 @@ In-place forward scalar SHT writing coefficients into `alm_out`.
 function analysis!(plan::SHTPlan, alm_out::AbstractMatrix, f::AbstractMatrix)
     _require_cpu_storage(:analysis!, alm_out)
     _require_cpu_storage(:analysis!, f)
-    cfg = plan.cfg
+    cfg = _checked_plan_config(plan)
     nlat, nlon = cfg.nlat, cfg.nlon
     size(f,1)==nlat || throw(DimensionMismatch("f first dim must be nlat"))
     size(f,2)==nlon || throw(DimensionMismatch("f second dim must be nlon"))
@@ -466,7 +475,7 @@ Streams m→k directly without building a (θ×m) intermediate.
 function synthesis!(plan::SHTPlan, f_out::AbstractMatrix, alm::AbstractMatrix; real_output::Bool=true)
     _require_cpu_storage(:synthesis!, f_out)
     _require_cpu_storage(:synthesis!, alm)
-    cfg = plan.cfg
+    cfg = _checked_plan_config(plan)
     nlat, nlon = cfg.nlat, cfg.nlon
 
     size(f_out,1)==nlat || throw(DimensionMismatch("f_out first dim must be nlat"))

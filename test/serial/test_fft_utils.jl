@@ -7,6 +7,25 @@ using SHTnsKit
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
 @testset "FFT Utilities" begin
+    @testset "Integer real FFT input" begin
+        for nlon in (5, 6)
+            cfg = create_gauss_config(2, 4; nlon)
+            f = [i*j for i in 1:4, j in 1:nlon]
+            expected = analysis(cfg, Float64.(f))
+            scratch = zeros(ComplexF64, 4, nlon ÷ 2 + 1)
+            @test analysis(cfg, f; use_rfft=true) ≈ expected
+            @test analysis(cfg, f; use_rfft=true, fft_scratch=scratch) ≈ expected
+            @test SHTnsKit._dft_phi(f, -1) ≈ SHTnsKit.fft_phi(Float64.(f))
+        end
+    end
+
+    @testset "FFT cache settings at process startup" begin
+        script = "using SHTnsKit; print(fft_plan_cache_enabled(), ' ', SHTnsKit.fft_plan_cache_max!(3))"
+        cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(dirname(Base.active_project())) -e $script`
+        @test read(addenv(cmd, "SHTNSKIT_FFT_PLAN_CACHE" => "0",
+                          "SHTNSKIT_CACHE_PENCILFFTS" => "1", "SHTNSKIT_FFT_PLAN_CACHE_MAX" => "3"), String) == "false 3"
+    end
+
     @testset "fft_phi/ifft_phi roundtrip" begin
         A = randn(8, 16)
         B = SHTnsKit.fft_phi(A)

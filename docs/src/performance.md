@@ -23,8 +23,9 @@ synthesis!(plan, recovered, coefficients)
 nothing
 ```
 
-Use `use_rfft=true` for real scalar input and output. A plan owns mutable
-workspace; create one per simultaneously executing task.
+Use `use_rfft=true` for real scalar input and output. A CPU plan owns mutable
+workspace, so use one per simultaneous transform. Build a new plan if you
+raise `cfg.lmax` above the degree used at construction.
 
 ## 2. Batch matching fields
 
@@ -68,6 +69,24 @@ For GPU timings, synchronize and include transfers only if production transfers
 on every iteration. For MPI, report the maximum elapsed time across ranks and
 construct plans outside the timed region.
 
+### Measure Metal buffer allocations
+
+With the device arrays and plan from [GPU Acceleration](gpu.md), warm up the
+same operation you want to measure. Metal.jl reports new GPU buffer bytes for
+the call separately from allocations on the Julia heap.
+
+```julia
+synthesis!(plan, recovered, coefficients)
+gpu_bytes = Metal.@allocated synthesis!(plan, recovered, coefficients)
+```
+
+On an Apple M5 with `lmax=63`, 72 latitudes, and 129 longitudes, repeated
+in-place scalar and tangential-vector synthesis each allocated zero new Metal
+buffer bytes with dense outputs. The plan retains its Fourier workspace
+between calls. For odd-length scalar batches with caller-owned scratch, use
+a full-width complex buffer and `use_rfft=false` to avoid allocating a
+temporary for the inverse.
+
 ## If more tuning is needed
 
 - Compare the default on-the-fly Legendre recurrence with
@@ -82,7 +101,7 @@ extra conversions, transfers, or gathers may make the application slower.
 
 ## Low-allocation serial recipe
 
-Preallocate FFT scratch and output buffers to avoid per-call allocations:
+Preallocate the FFT scratch and output arrays to reuse them across calls.
 
 ```@example performance-lowalloc
 using SHTnsKit
@@ -124,14 +143,16 @@ On fixed grids, precompute associated Legendre values for faster transforms:
 enable_plm_tables!(cfg)
 ```
 
-Tables trade memory for speed and produce identical results to on-the-fly
-recurrence. Use `disable_plm_tables!(cfg)` to free the memory.
+The CPU value and derivative tables together store
+`2 * cfg.nlat * (cfg.lmax + 1) * (cfg.mmax + 1)` values of type `Float64`.
+Call `disable_plm_tables!(cfg)` to release the configuration's references.
 
 ## Longitude FFT scaling
 
 The default `phi_scale` is `:dft`. The environment variable
 `SHTNSKIT_PHI_SCALE=dft|quad` is a low-level override. Use one setting
-consistently across every transform in an application.
+consistently across every transform in an application. See
+[Normalization and Phase](norms.md) for its effect on fields and diagnostics.
 
 ## LoopVectorization
 

@@ -4,7 +4,7 @@ using SHTnsKit
 using AMDGPU
 using GPUArrays
 using GPUArraysCore
-using KernelAbstractions
+import KernelAbstractions
 using PencilArrays
 using PencilFFTs
 

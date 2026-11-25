@@ -477,6 +477,31 @@ using ForwardDiff: Dual, value, partials
         return P
     end
 
+    @testset "Zonal angular derivatives near both poles" begin
+        lmax = 32
+        for T in (Float32, Float64), x in (prevfloat(one(T)), -prevfloat(one(T)),
+                                            one(T), -one(T), T(0.25))
+            # dP̄_l^0/dθ = √(l(l+1)) P̄_l^1, independently evaluated at order one.
+            reference = setprecision(256) do
+                order_one = _plm_norm_reference(lmax, 1, BigFloat(x))
+                [T(sqrt(BigFloat(l * (l + 1))) * order_one[l+1]) for l in 0:lmax]
+            end
+            P, d, over_sin = ntuple(_ -> zeros(T, lmax + 1), 3)
+            scratch = zeros(T, lmax + 2)
+            tol = T === Float32 ? 5e-5 : 5e-13
+            SHTnsKit.Plm_norm_and_dPdtheta_row!(P, d, x, lmax, 0, scratch)
+            @test all(isapprox.(d, reference; rtol=tol))
+            fill!(d, T(NaN))
+            SHTnsKit.Plm_norm_dPdtheta_over_sinth_row!(P, d, over_sin, x, lmax, 0, scratch)
+            @test all(isapprox.(d, reference; rtol=tol))
+            if abs(x) == 1
+                @test all(iszero, over_sin)
+            else
+                @test over_sin ≈ P ./ sqrt((one(T) - x) * (one(T) + x)) rtol=2eps(T)
+            end
+        end
+    end
+
     @testset "Plm_norm_row! keeps the sectoral seed in range at high lmax" begin
         setprecision(BigFloat, 256) do
             for (lmax, m, s) in ((2047, 1190, 0.5), (2500, 1500, 0.6),

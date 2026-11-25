@@ -1,5 +1,5 @@
 [audit]
-entry_count = 688
+entry_count = 691
 scanner = "deterministic non-overlapping spelling scanner; longer transfer spellings win"
 scope = "src/device_utils.jl and every ext/*.jl file"
 
@@ -1597,27 +1597,11 @@ snippet_sha256 = "4618484e807082dfbdc636642a7eac2dc6e31b44a287dc426a5ab64a5759cc
 token = "vector"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelLocal.jl|vector|4db118c51606825600722e1dbe87ba7b935614be5264570dd79123121e279ab7|1"
+key = "ext/ParallelLocal.jl|vector|82c9efff39baadce61b110417cacca36e4ebc5685684e48237205f97b232800a|1"
 path = "ext/ParallelLocal.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
-snippet_sha256 = "4db118c51606825600722e1dbe87ba7b935614be5264570dd79123121e279ab7"
-token = "vector"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelLocal.jl|vector|4db118c51606825600722e1dbe87ba7b935614be5264570dd79123121e279ab7|2"
-path = "ext/ParallelLocal.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 2
-snippet_sha256 = "4db118c51606825600722e1dbe87ba7b935614be5264570dd79123121e279ab7"
-token = "vector"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelLocal.jl|vector|4db118c51606825600722e1dbe87ba7b935614be5264570dd79123121e279ab7|3"
-path = "ext/ParallelLocal.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 3
-snippet_sha256 = "4db118c51606825600722e1dbe87ba7b935614be5264570dd79123121e279ab7"
+snippet_sha256 = "82c9efff39baadce61b110417cacca36e4ebc5685684e48237205f97b232800a"
 token = "vector"
 [[entry]]
 classification = "cpu_only"
@@ -1629,11 +1613,27 @@ snippet_sha256 = "a5c8409b5945370fbf75d301b3fa0dfc48028de636ae61641e7f8bd7c5d05f
 token = "vector"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelLocal.jl|vector|e2f31a0dd3c7c59451b7ad1a2c6f296af52485e752e3fd2bd1f3efd059990c01|1"
+key = "ext/ParallelLocal.jl|vector|b86bdee3d0e5cafd585260a61972c9a4ecf2f03dc611e1807093a0e077563065|1"
 path = "ext/ParallelLocal.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
-snippet_sha256 = "e2f31a0dd3c7c59451b7ad1a2c6f296af52485e752e3fd2bd1f3efd059990c01"
+snippet_sha256 = "b86bdee3d0e5cafd585260a61972c9a4ecf2f03dc611e1807093a0e077563065"
+token = "vector"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelLocal.jl|vector|b86bdee3d0e5cafd585260a61972c9a4ecf2f03dc611e1807093a0e077563065|2"
+path = "ext/ParallelLocal.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 2
+snippet_sha256 = "b86bdee3d0e5cafd585260a61972c9a4ecf2f03dc611e1807093a0e077563065"
+token = "vector"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelLocal.jl|vector|b86bdee3d0e5cafd585260a61972c9a4ecf2f03dc611e1807093a0e077563065|3"
+path = "ext/ParallelLocal.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 3
+snippet_sha256 = "b86bdee3d0e5cafd585260a61972c9a4ecf2f03dc611e1807093a0e077563065"
 token = "vector"
 [[entry]]
 classification = "cpu_only"
@@ -4708,6 +4708,38 @@ same_snippet_ordinal = 1
 snippet_sha256 = "b942add92c22db7eac41b54138d9861add04c30f72c832f6b94d7352e8807e47"
 token = "vector"
 [[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitMetalExt.jl|copy|6dd1d2577c82cb1a671f0d13b87531d489747012d7c48bc53f60daea0c49a44a|1"
+path = "ext/SHTnsKitMetalExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "6dd1d2577c82cb1a671f0d13b87531d489747012d7c48bc53f60daea0c49a44a"
+token = "copy"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitMetalExt.jl|copy|b5696e209ee408889fbcafc2a120d79a52d159473d1428408e05d0350f7b207b|1"
+path = "ext/SHTnsKitMetalExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "b5696e209ee408889fbcafc2a120d79a52d159473d1428408e05d0350f7b207b"
+token = "copy"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitMetalExt.jl|copy|ca03cf3c62586ca9f2e03b64df103146325b825e4d0555cb3b62358ace9524c0|1"
+path = "ext/SHTnsKitMetalExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "ca03cf3c62586ca9f2e03b64df103146325b825e4d0555cb3b62358ace9524c0"
+token = "copy"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitMetalExt.jl|host_view|ea1332f6328ca3d1e60ad73cd57fd379bb6e00f338a8ad706a10e6fbf2ac9f5c|1"
+path = "ext/SHTnsKitMetalExt.jl"
+reason = "the CPU initializes fresh shared Metal basis tables in place before publication"
+same_snippet_ordinal = 1
+snippet_sha256 = "ea1332f6328ca3d1e60ad73cd57fd379bb6e00f338a8ad706a10e6fbf2ac9f5c"
+token = "host_view"
+[[entry]]
 classification = "cpu_only"
 key = "ext/SHTnsKitParallelADExt.jl|collect|3a2a9278eadf7357231906b39d457393b19d783b5590f87a7be08868bd535638|1"
 path = "ext/SHTnsKitParallelADExt.jl"
@@ -5409,14 +5441,6 @@ key = "ext/SHTnsKitZygoteExt.jl|matrix|ea8335a96441744247067b762ff405f7bd8280d46
 path = "ext/SHTnsKitZygoteExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
 same_snippet_ordinal = 1
-snippet_sha256 = "ea8335a96441744247067b762ff405f7bd8280d46e3021c5fe4a409d66b81ca7"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/SHTnsKitZygoteExt.jl|matrix|ea8335a96441744247067b762ff405f7bd8280d46e3021c5fe4a409d66b81ca7|2"
-path = "ext/SHTnsKitZygoteExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 2
 snippet_sha256 = "ea8335a96441744247067b762ff405f7bd8280d46e3021c5fe4a409d66b81ca7"
 token = "matrix"
 [[entry]]

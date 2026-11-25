@@ -72,7 +72,7 @@ function _probe_gpu_adapters()
 end
 
 function _no_gpu_error(operation::Symbol, failures::AbstractVector=Pair{Symbol,Any}[])
-    detail = "no loaded GPU adapter is functional; load CUDA.jl or AMDGPU.jl and verify its runtime"
+    detail = "no loaded GPU adapter is functional; load CUDA.jl, AMDGPU.jl, or Metal.jl and verify its runtime"
     if !isempty(failures)
         causes = join(("$name: $(sprint(showerror, err))" for (name, err) in failures), "; ")
         detail *= "; functional probe failures: $causes"

@@ -129,57 +129,18 @@ end
 """
     zgrad_rotation_angles_real(cfg, Qlm, α, β, γ) -> (∂L/∂α, ∂L/∂β, ∂L/∂γ)
 
-Gradient of L = 0.5 || R ||^2 where R = rotation_apply_real(cfg, Qlm; α,β,γ) using Zygote.
-Assumes mres == 1.
+Gradient of half the squared Euclidean norm of the rotated packed coefficients
+with respect to the three Euler angles. The rotation uses `cfg.norm`,
+`cfg.cs_phase`, and `cfg.real_norm`, and requires `cfg.mres == 1`.
 """
 function SHTnsKit.zgrad_rotation_angles_real(cfg::SHTnsKit.SHTConfig, Qlm::AbstractVector, α::Real, β::Real, γ::Real)
-    lmax, mmax = cfg.lmax, cfg.mmax
-    # Forward rotate to get R (used as cotangent in loss 0.5||R||^2)
-    R = similar(Qlm)
-    r = SHTnsKit.SHTRotation(lmax, mmax; α=float(α), β=float(β), γ=float(γ))
-    SHTnsKit.shtns_rotation_apply_real(r, Qlm, R)
-    gα = 0.0; gβ = 0.0; gγ = 0.0
-    dbuf = Matrix{typeof(float(β))}(undef, 2lmax + 1, 2lmax + 1)
-    dwork = similar(dbuf); ddbuf = similar(dbuf)
-    for l in 0:lmax
-        mm = min(l, mmax)
-        n = 2l + 1
-        SHTnsKit._wigner_d_advance!(dbuf, dwork, l, float(β))
-        dl = view(dbuf, 1:n, 1:n)
-        ddl = SHTnsKit._wigner_d_deriv!(ddbuf, dl, l)
-        b = zeros(ComplexF64, n)   # zeros, NOT undef: only |mp| <= min(l,mmax) is filled below,
-                                   # and `dl * b` reads the whole 2l+1 range — with `undef` the
-                                   # l > mmax slots fed malloc garbage into the gradients.
-        # Build complex A_m' then b = e^{-i m' γ} A
-        for mp in -mm:mm
-            idxp = SHTnsKit.LM_index(lmax, 1, l, abs(mp)) + 1
-            if mp == 0
-                A = Qlm[idxp]
-            elseif mp > 0
-                A = Qlm[idxp]
-            else
-                A = (-1)^(-mp) * conj(Qlm[SHTnsKit.LM_index(lmax, 1, l, -mp) + 1])
-            end
-            b[mp + l + 1] = A * cis(-mp * float(γ))
-        end
-        c = dl * b
-        for m in 0:mm
-            idxp = SHTnsKit.LM_index(lmax, 1, l, m) + 1
-            Rm = c[m + l + 1] * cis(-m * float(α))
-            ȳ = R[idxp]
-            gα += real(conj(ȳ) * ((0 - 1im) * m * Rm))
-            # β gradient via d'(β)
-            sβ = zero(ComplexF64)
-            sγ = zero(ComplexF64)
-            for mp in -l:l
-                sβ += ddl[m + l + 1, mp + l + 1] * b[mp + l + 1]
-                sγ += dl[m + l + 1, mp + l + 1] * ((0 - 1im) * mp * b[mp + l + 1])
-            end
-            gβ += real(conj(ȳ) * (sβ * cis(-m * float(α))))
-            gγ += real(conj(ȳ) * (sγ * cis(-m * float(α))))
-        end
-    end
-    return gα, gβ, gγ
+    cfg.mres == 1 || throw(ArgumentError("real rotation angle gradients require mres=1"))
+    rotation = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax; α, β, γ, norm=cfg.norm,
+                                    cs_phase=cfg.cs_phase, real_norm=cfg.real_norm)
+    rotated, back = Zygote.pullback(SHTnsKit.shtns_rotation_apply_real, rotation, Qlm, similar(Qlm))
+    # The output cotangent of sum(abs2, rotated)/2 is rotated itself.
+    rotation_gradient = back(rotated)[1]
+    return rotation_gradient.α, rotation_gradient.β, rotation_gradient.γ
 end
 
 """

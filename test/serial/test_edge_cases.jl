@@ -135,7 +135,8 @@ using SHTnsKit
         @test cfg_copy.θ ≈ cfg.θ
 
         # Should be independent (modifying copy doesn't affect original)
-        cfg_copy.lmax = 999
+        cfg_copy.lmax = nlat - 1
+        @test cfg_copy.lmax == lmax + 1
         @test cfg.lmax == lmax
     end
 

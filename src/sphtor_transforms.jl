@@ -160,6 +160,9 @@ Transform spheroidal/toroidal coefficients to horizontal vector field components
 Returns colatitude (Vt) and azimuthal (Vp) components on the spatial grid.
 """
 Base.@constprop :aggressive function synthesis_sphtor(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatrix; real_output::Bool=true, use_rfft::Bool=false)
+    if on_device(Slm) isa GPU || on_device(Tlm) isa GPU
+        return synthesis_sphtor(GPU(), cfg, Slm, Tlm; real_output, use_rfft)
+    end
     # `real_output` and `use_rfft` choose different buffer shapes and return
     # element types, so dispatch through Val for literal keyword calls.
     return _synthesis_sphtor(cfg, Slm, Tlm, Val(real_output), Val(use_rfft))
@@ -247,6 +250,9 @@ nonzero-weight pole nodes. Use Gauss–Legendre, pole-free regular, or
 Driscoll–Healy grids; pole-inclusive Clenshaw–Curtis grids throw `ArgumentError`.
 """
 function analysis_sphtor(cfg::SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatrix; use_rfft::Bool=false)
+    if on_device(Vt) isa GPU || on_device(Vp) isa GPU
+        return analysis_sphtor(GPU(), cfg, Vt, Vp; use_rfft)
+    end
     nlat, nlon = cfg.nlat, cfg.nlon
     size(Vt,1) == nlat && size(Vt,2) == nlon || throw(DimensionMismatch("Vt dims"))
     size(Vp,1) == nlat && size(Vp,2) == nlon || throw(DimensionMismatch("Vp dims"))
@@ -629,6 +635,9 @@ end
 Complex version preserving complex values in output.
 """
 function synthesis_sphtor_cplx(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatrix)
+    if on_device(Slm) isa GPU || on_device(Tlm) isa GPU
+        return synthesis_sphtor_cplx(GPU(), cfg, Slm, Tlm)
+    end
     return _synthesis_sphtor(cfg, Slm, Tlm, Val(false), Val(false))
 end
 

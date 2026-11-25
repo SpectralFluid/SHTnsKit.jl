@@ -252,13 +252,7 @@ function SHTConfig(;
     # exported and was previously unchecked, so a hand-built configuration could
     # violate e.g. `nlon >= 2*mmax+1` and then silently synthesize an all-zero
     # field for any mode it could not resolve.
-    lmax >= 0 || throw(ArgumentError("lmax must be ≥ 0, got $lmax"))
-    mmax >= 0 || throw(ArgumentError("mmax must be ≥ 0, got $mmax"))
-    mmax <= lmax || throw(ArgumentError("mmax must be ≤ lmax, got mmax=$mmax, lmax=$lmax"))
-    mres >= 1 || throw(ArgumentError("mres must be ≥ 1, got $mres"))
-    nlat >= 1 || throw(ArgumentError("nlat must be ≥ 1, got $nlat"))
-    nlon >= 2*mmax + 1 || throw(ArgumentError(
-        "nlon must be ≥ 2*mmax+1 = $(2*mmax+1) to resolve every azimuthal order, got nlon=$nlon"))
+    _validate_spectral_layout(lmax, mmax, mres, nlat, nlon, grid_type)
     length(θ) == nlat || throw(DimensionMismatch("θ must have nlat=$nlat entries, got $(length(θ))"))
     length(x) == nlat || throw(DimensionMismatch("x must have nlat=$nlat entries, got $(length(x))"))
     length(w) == nlat || throw(DimensionMismatch("w must have nlat=$nlat entries, got $(length(w))"))
@@ -430,7 +424,7 @@ function Base.setproperty!(cfg::SHTConfig, name::Symbol, val)
             name === :lmax ? new_value : getfield(cfg, :lmax),
             name === :mmax ? new_value : getfield(cfg, :mmax),
             name === :mres ? new_value : getfield(cfg, :mres),
-            getfield(cfg, :nlon))
+            cfg.nlat, cfg.nlon, cfg.grid_type)
         setfield!(cfg, name, new_value)
         _rebuild_spectral_layout!(cfg)
         return val
@@ -449,16 +443,20 @@ function Base.setproperty!(cfg::SHTConfig, name::Symbol, val)
 end
 
 """
-    _validate_spectral_layout(lmax, mmax, mres, nlon)
+    _validate_spectral_layout(lmax, mmax, mres, nlat, nlon, grid_type)
 
-Throw `ArgumentError` unless `(lmax, mmax, mres)` is a layout the transforms can
-index safely on a grid with `nlon` longitudes.
+Check spectral truncation, longitude sampling and Gauss latitude resolution.
 """
-function _validate_spectral_layout(lmax::Int, mmax::Int, mres::Int, nlon::Int)
+function _validate_spectral_layout(lmax::Integer, mmax::Integer, mres::Integer,
+                                   nlat::Integer, nlon::Integer, grid_type::Symbol)
     lmax >= 0 || throw(ArgumentError("lmax must be ≥ 0, got $lmax"))
     mmax >= 0 || throw(ArgumentError("mmax must be ≥ 0, got $mmax"))
     mmax <= lmax || throw(ArgumentError("mmax must be ≤ lmax, got mmax=$mmax, lmax=$lmax"))
     mres >= 1 || throw(ArgumentError("mres must be ≥ 1, got $mres"))
+    nlat >= 1 || throw(ArgumentError("nlat must be ≥ 1, got $nlat"))
+    if grid_type === :gauss && lmax >= nlat
+        throw(ArgumentError("Gauss–Legendre quadrature requires nlat ≥ lmax+1, got nlat=$nlat and lmax=$lmax"))
+    end
     nlon >= 2*mmax + 1 || throw(ArgumentError(
         "nlon must be ≥ 2*mmax+1 = $(2*mmax+1) to resolve every azimuthal order, got nlon=$nlon"))
     return nothing
@@ -479,8 +477,6 @@ the on-the-fly path until `prepare_plm_tables!` is called again.
 """
 function _rebuild_spectral_layout!(cfg::SHTConfig)
     lmax = getfield(cfg, :lmax); mmax = getfield(cfg, :mmax); mres = getfield(cfg, :mres)
-    _validate_spectral_layout(lmax, mmax, mres, getfield(cfg, :nlon))
-
     setfield!(cfg, :nlm, nlm_calc(lmax, mmax, mres))
     li, mi = build_li_mi(lmax, mmax, mres)
     setfield!(cfg, :li, li)
@@ -600,7 +596,7 @@ end
         @inbounds for i in eachindex(cfg.x, cfg.w)
             if abs(cfg.x[i]) == 1 && !iszero(cfg.w[i])
                 throw(ArgumentError(
-                    "Robert-form vector analysis with m=1 is unsupported at nonzero-weight pole nodes; " *
+                    "Robert-form components with m=1 cannot be unweighted at nonzero-weight pole nodes; " *
                     "use a Gauss, pole-free regular, or Driscoll-Healy grid",
                 ))
             end
@@ -618,12 +614,7 @@ Create a Gauss–Legendre based SHT configuration. Constraints:
 """
 function create_gauss_config(lmax::Int, nlat::Int; mmax::Int=lmax, mres::Int=1, nlon::Int=_default_nlon(lmax), norm::Symbol=:orthonormal, cs_phase::Bool=true, real_norm::Bool=false, robert_form::Bool=false)
     # Validate input parameters to ensure mathematical accuracy requirements
-    lmax ≥ 0 || throw(ArgumentError("lmax must be ≥ 0"))
-    mmax ≥ 0 || throw(ArgumentError("mmax must be ≥ 0"))
-    mmax ≤ lmax || throw(ArgumentError("mmax must be ≤ lmax"))
-    mres ≥ 1 || throw(ArgumentError("mres must be ≥ 1"))
-    nlat ≥ lmax + 1 || throw(ArgumentError("nlat must be ≥ lmax+1 for Gauss–Legendre accuracy"))
-    nlon ≥ (2*mmax + 1) || throw(ArgumentError("nlon must be ≥ 2*mmax+1"))
+    _validate_spectral_layout(lmax, mmax, mres, nlat, nlon, :gauss)
 
     # Build the computational grid using Gauss-Legendre quadrature
     θ, φ, x, w = thetaphi_from_nodes(nlat, nlon)

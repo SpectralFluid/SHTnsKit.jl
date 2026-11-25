@@ -3,7 +3,7 @@
 # away from the public API while still allowing the MPI snippets to run under
 # their dedicated multi-process workflow.
 
-using Test
+using Test, TOML
 
 const EXAMPLES_GALLERY = normpath(joinpath(
     @__DIR__, "..", "..", "docs", "src", "examples", "index.md"
@@ -19,6 +19,13 @@ end
     makefile = read(joinpath(DOCS_ROOT, "make.jl"), String)
     grids = read(joinpath(DOCS_ROOT, "src", "grids.md"), String)
     gallery = read(EXAMPLES_GALLERY, String)
+
+    architecture = read(joinpath(DOCS_ROOT, "src", "architecture.md"), String)
+    extension_rows = eachmatch(r"^\| `(SHTnsKit\w+Ext)` \| ([^|]+) \|"m, architecture)
+    documented = Dict(row[1] => Set(strip.(split(row[2], ','))) for row in extension_rows)
+    extensions = TOML.parsefile(joinpath(DOCS_ROOT, "..", "Project.toml"))["extensions"]
+    @test documented == Dict(name => Set(triggers isa String ? [triggers] : triggers)
+                             for (name, triggers) in extensions)
 
     @test occursin("<picture>", grids)
     @test occursin("grid-patterns.svg", grids)

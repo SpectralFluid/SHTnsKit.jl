@@ -196,6 +196,9 @@ end
 
 const _INV_SQRT_4PI = 0.28209479177387814  # sqrt(1/(4π)) = orthonormal P̄_0^0
 
+# The factored form preserves the distance to either pole.
+@inline _sin_from_cos(x::T) where {T<:Real} = sqrt(max(zero(T), (one(T) - x) * (one(T) + x)))
+
 # Extended-range bounds for the sectoral seed, as in the device table builder in
 # ext/GPUCommon.jl. A scaled value `p` with exponent `e` stands for `p·2^e`, and
 # rescaling moves `p` between 2^-B and 2^B. Float64 rows stay unscaled until they
@@ -231,7 +234,7 @@ function Plm_norm_row!(P::AbstractVector{T}, x::T, lmax::Int, m::Int) where {T<:
     @inbounds fill!(P, zero(T))
     m < 0 && throw(ArgumentError("m must be ≥ 0"))
     lmax >= m || return P
-    s = sqrt(max(zero(T), one(T) - x*x))
+    s = _sin_from_cos(x)
     pmm, e = _plm_sectoral_seed(s, m)
     e == 0 || return _plm_norm_row_scaled!(P, x, lmax, m, pmm, e)
     P[m+1] = pmm
@@ -318,13 +321,30 @@ function _plm_norm_row_scaled!(P::AbstractVector{T}, x::T, lmax::Int, m::Int,
     return _plm_norm_recurrence!(P, x, l, lmax, m)
 end
 
+# P′_l(x) = l P_{l-1}(x) + x P′_{l-1}(x). In orthonormal θ derivatives
+# this avoids subtracting nearly equal Legendre values and dividing by sinθ.
+@inline function _zonal_dtheta_step(l, x::T, sinth::T, previous_p::T,
+                                    previous_d::T) where {T}
+    return sqrt(T(2l + 1) / T(2l - 1)) * (x * previous_d - T(l) * sinth * previous_p)
+end
+
+function _zonal_dtheta_row!(dPdtheta, P, x::T, sinth::T, lmax) where {T}
+    derivative = zero(T)
+    @inbounds for l in 1:lmax
+        derivative = _zonal_dtheta_step(l, x, sinth, P[l], derivative)
+        dPdtheta[l+1] = derivative
+    end
+    return dPdtheta
+end
+
 """
     Plm_norm_and_dPdtheta_row!(P, dPdtheta, x, lmax, m)
 
 Compute orthonormal normalized P̄_l^m(x) and dP̄_l^m/dθ for l = m..lmax.
 
 `P` is filled with `P̄_l^m` (identical to `Plm_norm_row!`).
-`dPdtheta` is filled with `dP̄_l^m/dθ` using the bounded recurrence:
+`dPdtheta` is filled with `dP̄_l^m/dθ`. Zonal derivatives use the differentiated
+Legendre recurrence to retain accuracy near both poles. Nonzero orders satisfy
 
     d(l,m) = l==0 ? 0 : sqrt((l^2 - m^2) / (4l^2 - 1))
     sinθ · dP̄_l^m/dθ = l·d(l+1,m)·P̄_{l+1}^m − (l+1)·d(l,m)·P̄_{l-1}^m
@@ -359,8 +379,14 @@ function Plm_norm_and_dPdtheta_row!(P::AbstractVector{T}, dPdtheta::AbstractVect
     @inbounds begin
         fill!(dPdtheta, zero(T))
 
-        sinth = sqrt(max(zero(T), one(T) - x*x))
+        sinth = _sin_from_cos(x)
         interior = lmax >= m && sinth >= POLE_TOLERANCE_FACTOR * eps(T)
+
+        if m == 0
+            Plm_norm_row!(P, x, lmax, m)
+            interior && _zonal_dtheta_row!(dPdtheta, P, x, sinth, lmax)
+            return P, dPdtheta
+        end
 
         if interior
             # The dθ recurrence needs P̄ up to lmax+1, and the first lmax+1 of
@@ -397,7 +423,7 @@ function Plm_norm_and_dPdtheta_row!(P::AbstractVector{T}, dPdtheta::AbstractVect
                     end
                 end
             end
-            # m == 0 or m > 1: stays zero
+            # Higher orders have zero derivative at the poles.
             return P, dPdtheta
         end
 
@@ -459,8 +485,20 @@ function Plm_norm_dPdtheta_over_sinth_row!(P::AbstractVector{T}, dPdtheta::Abstr
         fill!(dPdtheta, zero(T))
         fill!(P_over_sinth, zero(T))
 
-        sinth = sqrt(max(zero(T), one(T) - x*x))
+        sinth = _sin_from_cos(x)
         interior = lmax >= m && sinth >= POLE_TOLERANCE_FACTOR * eps(T)
+
+        if m == 0
+            Plm_norm_row!(P, x, lmax, m)
+            if interior
+                _zonal_dtheta_row!(dPdtheta, P, x, sinth, lmax)
+                inv_sinth = inv(sinth)
+                for l in 0:lmax
+                    P_over_sinth[l+1] = P[l+1] * inv_sinth
+                end
+            end
+            return P, dPdtheta, P_over_sinth
+        end
 
         if interior
             # Single recurrence pass: the dθ formula needs P̄ to degree lmax+1 and
@@ -491,7 +529,7 @@ function Plm_norm_dPdtheta_over_sinth_row!(P::AbstractVector{T}, dPdtheta::Abstr
                     end
                 end
             end
-            # m == 0 or m > 1: both stay zero
+            # Higher orders have zero limits for both quantities.
             return P, dPdtheta, P_over_sinth
         end
 

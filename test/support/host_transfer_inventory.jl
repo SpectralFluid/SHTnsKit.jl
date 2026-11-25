@@ -9,6 +9,7 @@ const TRANSFER_PATTERNS = (
     :to_device_cpu => r"to_device\s*\(\s*CPU\s*\(\s*\)\s*,",
     :to_cpu => r"\b_to_cpu\b",
     :similar_array => r"\bsimilar\s*\([^,\n]+,\s*Array\s*\)",
+    :host_view => r"\bunsafe_wrap\s*\(\s*Array\b",
     :typed_array => r"\bArray\s*\{[^\n]*?\}\s*\(",
     :array => r"\bArray\s*\(",
     :matrix => r"\bMatrix\s*\{[^\n]*?\}\s*\(",
@@ -109,6 +110,11 @@ function classify_transfer_occurrence(entry)
     path, token, snippet = entry.path, entry.token, entry.snippet
     if token == "allowscalar"
         return nothing
+    elseif token == "host_view" && path == "ext/SHTnsKitMetalExt.jl" && occursin("tables", snippet)
+        return (
+            classification="metadata_or_storage_preserving",
+            reason="the CPU initializes fresh shared Metal basis tables in place before publication",
+        )
     elseif path == "ext/ParallelGPUVendorFirewall.jl" &&
            token == "cpu_constructor"
         return (

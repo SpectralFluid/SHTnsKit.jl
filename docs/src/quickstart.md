@@ -52,7 +52,7 @@ constructor constraints.
 - Repeated or batched transforms: [Performance Guide](performance.md)
 - Tangential vector fields and QST fields: [Examples Gallery](examples/index.md)
   and [Advanced Usage](advanced.md)
-- CUDA or AMDGPU arrays: [GPU Acceleration](gpu.md)
+- For CUDA, ROCm, or Metal arrays, see [GPU Acceleration](gpu.md).
 - MPI/PencilArrays: [Distributed Computing](distributed.md)
 - Non-default coefficient conventions: [Normalization and Phase](norms.md)
 - Complete signatures and in-place argument order: [API Reference](api/index.md)

@@ -31,7 +31,7 @@ range are not supported.
 ### Minimum Requirements
 - **Operating System**: Linux, macOS, or Windows with WSL
 - **Julia**: Version 1.10 or later 1.x
-- **Memory**: 8GB RAM (32GB+ for large parallel problems)
+- **Memory** depends on the grid dimensions, coefficient layout, and number of fields per rank.
 - **Network**: Fast interconnect recommended for multi-node MPI
 
 ### Recommended Hardware
@@ -49,6 +49,9 @@ Pkg.add("SHTnsKit")
 ```
 
 ### Step 2: MPI Setup
+
+MPI.jl provides a bundled MPI implementation for a local run. The following
+commands install a system MPI for sites that need one.
 
 **Linux (Ubuntu/Debian):**
 ```bash
@@ -81,19 +84,23 @@ brew install open-mpi
 
 ### Step 3: Julia MPI Configuration
 
+For a bundled MPI, install `MPI` and go straight to verification. To use the
+system library, select it in your application's Julia project.
+
 ```julia
 using Pkg
+Pkg.add(["MPI", "MPIPreferences"])
+using MPIPreferences
+MPIPreferences.use_system_binary()
+```
 
-# Install MPI.jl
-Pkg.add("MPI")
+Restart Julia in the same project, run `Pkg.instantiate()`, and verify the
+selected implementation. [MPI.jl configuration](https://juliaparallel.org/MPI.jl/stable/configuration/)
 
-# Build MPI with system library
-Pkg.build("MPI")
-
-# Verify installation
+```julia
 using MPI
 MPI.Init()
-println("MPI initialized successfully")
+println(MPI.Get_library_version())
 MPI.Finalize()
 ```
 
@@ -127,10 +134,10 @@ using MPI
 MPI.Init()
 
 comm = MPI.COMM_WORLD
-rank = Comm_rank(comm)
-size = Comm_size(comm)
+rank = MPI.Comm_rank(comm)
+nprocs = MPI.Comm_size(comm)
 
-println("Hello from process $rank of $size")
+println("Hello from process $rank of $nprocs")
 
 MPI.Finalize()
 ```
@@ -163,7 +170,7 @@ nlon = 2*lmax + 1
 cfg = create_gauss_config(lmax, nlat; nlon=nlon)
 
 # Create distributed array
-pen = Pencil((nlat, nlon), (1,), MPI.COMM_WORLD)
+pen = create_spatial_pencil(cfg; comm=MPI.COMM_WORLD)
 fθφ = PencilArray(pen, zeros(Float64, PencilArrays.size_local(pen)...))
 
 # Fill with test data (Y_2^0)
@@ -171,7 +178,7 @@ ranges = PencilArrays.range_local(pen)
 for (i_local, i_global) in enumerate(ranges[1])
     x = cfg.x[i_global]
     for j in 1:length(ranges[2])
-        fθφ[i_local, j] = (3*x^2 - 1)/2
+        parent(fθφ)[i_local, j] = (3*x^2 - 1)/2
     end
 end
 
@@ -197,10 +204,11 @@ MPI.Finalize()
 mpiexec -n 2 julia --project test_parallel.jl
 ```
 
-**Run the built-in parallel testset (includes PencilArrays/PencilFFTs):**
+From a source checkout with MPI, PencilArrays, and PencilFFTs in the active
+environment, run the integration suite directly on two ranks.
+
 ```bash
-SHTNSKIT_RUN_MPI_TESTS=1 JULIA_NUM_THREADS=1 \
-    mpiexec -n 2 julia --project -e 'using Pkg; Pkg.test()'
+mpiexec -n 2 julia --threads=1 --project=. test/parallel/test_mpi_integration.jl
 ```
 This exercises distributed analysis/synthesis, vector/QST transforms, rotations, and diagnostics across ranks using PencilArrays and PencilFFTs.
 
@@ -228,11 +236,10 @@ export OMPI_MCA_coll_hcoll_enable=1
 # Threading
 export JULIA_NUM_THREADS=8
 export OPENBLAS_NUM_THREADS=1
-export FFTW_NUM_THREADS=4
-
-# Memory
-export JULIA_GC_ALLOC_POOL_GROW_THRESHOLD=0.1
 ```
+
+Set FFTW threads inside each Julia process with `FFTW.set_num_threads(n)`
+before creating FFT plans.
 
 ### Performance Tuning
 
@@ -331,7 +338,7 @@ export JULIA_NUM_THREADS=2
 export OPENBLAS_NUM_THREADS=1
 
 # Run parallel job
-mpirun julia --project=. parallel_example.jl --benchmark
+mpirun julia --project=. examples/parallel_roundtrip.jl
 ```
 
 ### PBS/Torque Script
@@ -350,7 +357,7 @@ module load julia/1.11
 module load openmpi/3.1.4
 
 # Run job
-mpirun -np 32 julia --project=. examples/parallel_example.jl
+mpirun -np 32 julia --project=. examples/parallel_roundtrip.jl
 ```
 
 ## Troubleshooting
@@ -364,10 +371,11 @@ ERROR: MPI library not found
 
 **Solution:**
 ```julia
-# Force MPI.jl to use system MPI
-ENV["JULIA_MPI_BINARY"] = "system"
-using Pkg; Pkg.build("MPI")
+using MPIPreferences
+MPIPreferences.use_system_binary()
 ```
+
+Restart Julia and instantiate the project after changing the preference.
 
 **2. PencilArrays compilation errors:**
 ```
@@ -376,11 +384,10 @@ ERROR: LoadError: FFTW not found
 
 **Solution:**
 ```julia
-# Install FFTW explicitly
 using Pkg
-Pkg.add("FFTW")
-Pkg.build("FFTW")
-Pkg.build("PencilFFTs")
+Pkg.add(["SHTnsKit", "MPI", "PencilArrays", "PencilFFTs"])
+Pkg.instantiate()
+using SHTnsKit, MPI, PencilArrays, PencilFFTs
 ```
 
 **3. Process binding warnings:**
@@ -414,10 +421,9 @@ Pkg.resolve()
 Pkg.status("PencilArrays")  # Should show v0.19.x
 ```
 
-The supported PencilArrays v0.19 API uses:
-- `get_comm(pen)` instead of `communicator(pen)`
-- `range_local(pen)` instead of `globalindices(arr, dim)`
-- `size_local(pen)` instead of other size functions
+In PencilArrays v0.19, `get_comm(pen)` returns the communicator,
+`range_local(pen)` returns the global indices owned by the rank, and
+`size_local(pen)` gives its local array dimensions.
 
 **5. Precompilation cache conflicts with MPI:**
 ```
@@ -450,7 +456,7 @@ mpiexec -n 4 julia --project script.jl
 
 **Memory errors:**
 - Increase system limits: `ulimit -v unlimited`
-- Use memory-efficient transforms: `memory_efficient_parallel_transform!()`
+- Use `DistTransposePlan` to distribute spectral storage by order `m`.
 - Process data in chunks for very large problems
 
 ## Validation and Testing
@@ -462,6 +468,7 @@ Save as `test_complete_setup.jl`:
 using Test
 using SHTnsKit
 using LinearAlgebra
+using MPI, PencilArrays, PencilFFTs
 
 @testset "Complete Setup Verification" begin
     # Test basic functionality
@@ -470,11 +477,7 @@ using LinearAlgebra
     @test cfg.nlm > 0
 
     # Test parallel packages availability
-    @testset "Package Loading" begin
-        @test_nowarn using MPI
-        @test_nowarn using PencilArrays
-        @test_nowarn using PencilFFTs
-    end
+    @test Base.get_extension(SHTnsKit, :SHTnsKitParallelExt) !== nothing
 
     # Test basic transforms
     @testset "Transform Accuracy" begin

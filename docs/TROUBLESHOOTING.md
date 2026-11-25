@@ -225,4 +225,4 @@ versioninfo()  # Include this in bug reports
 ## Getting Help
 
 - File an issue with the minimal reproducer and `versioninfo()` output:
-  https://github.com/subhk/SHTnsKit.jl/issues
+  https://github.com/SpectralFluid/SHTnsKit.jl/issues

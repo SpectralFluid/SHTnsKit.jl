@@ -100,9 +100,12 @@ const _WORKGROUP_SIZE = 64
     _is_cpu_array(arr)
 
 Check if the array is a standard CPU array (not GPU).
-Uses duck typing to detect GPU arrays without requiring GPU packages.
+Uses registered device adapters and recognizes common GPU storage type names.
 """
 function _is_cpu_array(arr::AbstractArray)
+    # Registered adapters also recognize wrapped arrays and printed aliases
+    # such as MtlMatrix, which do not contain the storage type's full name.
+    on_device(arr) isa GPU && return false
     T = typeof(arr)
     type_name = string(T)
     # Check for common GPU array types

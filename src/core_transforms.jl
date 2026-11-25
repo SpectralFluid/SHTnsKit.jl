@@ -210,8 +210,8 @@ end
 """
     analysis!(cfg::SHTConfig, alm_out::AbstractMatrix, f::AbstractMatrix)
 
-In-place forward transform. Writes coefficients into `alm_out`.
-`alm_out` must be size `(lmax+1, mmax+1)`.
+In-place forward transform. Writes coefficients into `alm_out`, which must have
+size `(lmax+1, mmax+1)` and may overlap `f`.
 """
 Base.@constprop :aggressive function analysis!(cfg::SHTConfig, alm_out::AbstractMatrix, f::AbstractMatrix; fft_scratch::Union{Nothing,AbstractMatrix{<:Complex}}=nothing, use_rfft::Bool=false)
     # Function barrier: `Val(use_rfft)` makes the scratch shape and FFT branch
@@ -227,7 +227,12 @@ function _analysis!(cfg::SHTConfig, alm_out::AbstractMatrix, f::AbstractMatrix,
     nlat, nlon = cfg.nlat, cfg.nlon
     size(f, 1) == nlat || throw(DimensionMismatch("first dim must be nlat=$(nlat)"))
     size(f, 2) == nlon || throw(DimensionMismatch("second dim must be nlon=$(nlon)"))
-    fill!(alm_out, zero(eltype(alm_out)))
+    # Keep the Fourier coefficients live until the Legendre sums finish, even
+    # when the caller provides views of the same storage for multiple operands.
+    if fft_scratch !== nothing && (Base.mightalias(fft_scratch, alm_out) ||
+                                   (fft_scratch !== f && Base.mightalias(fft_scratch, f)))
+        fft_scratch = similar(fft_scratch)
+    end
     if use_rfft
         eltype(f) <: Real || throw(ArgumentError("use_rfft=true requires a real-valued input"))
         nbins = nlon ÷ 2 + 1
@@ -250,6 +255,7 @@ function _analysis!(cfg::SHTConfig, alm_out::AbstractMatrix, f::AbstractMatrix,
             Fph = fft_phi!(fft_scratch, f)
         end
     end
+    fill!(alm_out, zero(eltype(alm_out)))
     _analysis_scalar_mloop!(alm_out, cfg, Fph)
     return _externalize_coefficients!(alm_out, cfg)
 end

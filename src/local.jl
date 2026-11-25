@@ -26,41 +26,31 @@ function SH_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, cost::Real; n
     _validate_local_nphi(nphi, :SH_to_lat)
     (0 ≤ ltr ≤ cfg.lmax) || throw(ArgumentError("ltr must be within [0, lmax]"))
     (0 ≤ mtr ≤ cfg.mmax) || throw(ArgumentError("mtr must be within [0, mmax]"))
-    Qlm_int = _internal_coefficients(Qlm, cfg)
-    CT = eltype(Qlm_int)
-    RT = typeof(real(zero(CT)))
-    PT = _local_basis_type(RT, cost)
-    AT, ACT = _local_accumulator_types(CT, PT)
+    scales = _coefficient_scale_matrix_to_canonical(cfg)
+    PT, OT, ACT = _local_eval_types(eltype(Qlm), cost)
     x = convert(PT, cost)
     lmax = cfg.lmax
-    # Accumulator/output eltype follows the input so AD types (e.g.
-    # ForwardDiff.Dual) propagate; defaults to Float64 for ComplexF64 input.
-    P = Vector{PT}(undef, lmax + 1)
-    vals = Vector{AT}(undef, nphi)
-    fill!(vals, zero(AT))
-
+    P = Vector{PT}(undef, ltr + 1)
+    vals = Vector{real(ACT)}(undef, nphi)
 
     # m=0 contribution
-    Plm_norm_row!(P, x, lmax, 0)
+    Plm_norm_row!(P, x, ltr, 0)
     g0 = zero(ACT)
     @inbounds for l in 0:ltr
         lm = LM_index(lmax, cfg.mres, l, 0) + 1
-        a = Qlm_int[lm]
+        a = _local_coefficient(Qlm, scales, l, 0, lm)
         g0 += P[l+1] * a
     end
 
-    @inbounds for j in 0:(nphi-1)
-        vals[j+1] = real(g0)
-    end
+    fill!(vals, real(g0))
 
     # m>0
-    for m in 1:mtr
-        (m % cfg.mres == 0) || continue
-        Plm_norm_row!(P, x, lmax, m)
+    for m in cfg.mres:cfg.mres:min(mtr, ltr)
+        Plm_norm_row!(P, x, ltr, m)
         gm = zero(ACT)
-        @inbounds for l in m:min(ltr, lmax)
+        @inbounds for l in m:ltr
             lm = LM_index(lmax, cfg.mres, l, m) + 1
-            a = Qlm_int[lm]
+            a = _local_coefficient(Qlm, scales, l, m, lm)
             gm += P[l+1] * a
         end
         
@@ -70,7 +60,7 @@ function SH_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, cost::Real; n
     end
     sφ = _evaluator_phi_scale(cfg, eltype(vals))   # 1 under :dft; 1/2π under :quad
     sφ == 1 || (vals .*= sφ)
-    return vals
+    return convert(Vector{OT}, vals)
 end
 
 """
@@ -88,40 +78,32 @@ function SH_to_lat_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex}, c
     _validate_local_cost(cost, :SH_to_lat_cplx)
     _validate_local_nphi(nphi, :SH_to_lat_cplx)
     (0 <= ltr <= cfg.lmax) || throw(ArgumentError("ltr must be within [0, lmax]"))
-    alm_int = _internal_coefficients(alm_packed, cfg)
-    CT = eltype(alm_int)
-    RT = typeof(real(zero(CT)))
-    PT = _local_basis_type(RT, cost)
-    _, ACT = _local_accumulator_types(CT, PT)
+    scales = _coefficient_scale_matrix_to_canonical(cfg)
+    PT, OT, ACT = _local_eval_types(eltype(alm_packed), cost)
     x = convert(PT, cost)
-    P = Vector{PT}(undef, lmax + 1)
+    P = Vector{PT}(undef, ltr + 1)
     vals = Vector{ACT}(undef, nphi)
-    fill!(vals, zero(ACT))
     # m=0
-    Plm_norm_row!(P, x, lmax, 0)
+    Plm_norm_row!(P, x, ltr, 0)
     g0 = zero(ACT)
-    @inbounds for l in 0:min(ltr, lmax)
+    @inbounds for l in 0:ltr
         idx = LM_cplx_index(lmax, mmax, l, 0) + 1
-        a = alm_int[idx]
+        a = _local_coefficient(alm_packed, scales, l, 0, idx)
         g0 += P[l+1] * a
     end
 
-    @inbounds for j in 1:nphi
-        vals[j] += g0
-    end
+    fill!(vals, g0)
 
     # m ≠ 0
-    for m in 1:mmax
-        Plm_norm_row!(P, x, lmax, m)
+    for m in 1:min(mmax, ltr)
+        Plm_norm_row!(P, x, ltr, m)
         gm = zero(ACT); gn = zero(ACT)
-        @inbounds for l in m:min(ltr, lmax)
+        @inbounds for l in m:ltr
             Ylm = P[l+1]
-            # positive m
-            ap = alm_int[LM_cplx_index(lmax, mmax, l, m) + 1]
-            # negative m
-            an = alm_int[LM_cplx_index(lmax, mmax, l, -m) + 1]
-            gm += Ylm * ap
-            gn += Ylm * an
+            pos = LM_cplx_index(lmax, mmax, l, m) + 1
+            neg = LM_cplx_index(lmax, mmax, l, -m) + 1
+            gm += Ylm * _local_coefficient(alm_packed, scales, l, m, pos)
+            gn += Ylm * _local_coefficient(alm_packed, scales, l, m, neg)
         end
         for j in 0:(nphi-1)
             phase = cis(PT(2π * m * j / nphi))
@@ -130,7 +112,7 @@ function SH_to_lat_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex}, c
     end
     sφ = _evaluator_phi_scale(cfg, eltype(vals))   # 1 under :dft; 1/2π under :quad
     sφ == 1 || (vals .*= sφ)
-    return vals
+    return convert(Vector{Complex{OT}}, vals)
 end
 
 """
@@ -145,13 +127,9 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
     length(Slm) == cfg.nlm || throw(DimensionMismatch("Slm length"))
     length(Tlm) == cfg.nlm || throw(DimensionMismatch("Tlm length"))
     _validate_local_coordinates(cost, phi, :SHqst_to_point)
-    Qlm_int = _internal_coefficients(Qlm, cfg)
-    Slm_int = _internal_coefficients(Slm, cfg)
-    Tlm_int = _internal_coefficients(Tlm, cfg)
-    CT = promote_type(eltype(Qlm_int), eltype(Slm_int), eltype(Tlm_int))
-    RT = typeof(real(zero(CT)))
-    PT = _local_basis_type(RT, cost, phi)
-    _, ACT = _local_accumulator_types(CT, PT)
+    scales = _coefficient_scale_matrix_to_canonical(cfg)
+    CT = promote_type(eltype(Qlm), eltype(Slm), eltype(Tlm))
+    PT, OT, ACT = _local_eval_types(CT, cost, phi)
     x = convert(PT, cost)
     phiv = convert(PT, phi)
     lmax = cfg.lmax; mmax = cfg.mmax
@@ -165,10 +143,12 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
     vp = zero(ACT)
 
     # m=0 (no 1/sinθ terms)
-    Plm_norm_and_dPdtheta_row!(P, dPdtheta, x, lmax, 0)
+    Plm_norm_and_dPdtheta_row!(P, dPdtheta, x, lmax, 0, Pbuf)
     for l in 0:lmax
         lm = LM_index(lmax, cfg.mres, l, 0) + 1
-        aQ = Qlm_int[lm]; aS = Slm_int[lm]; aT = Tlm_int[lm]
+        aQ = _local_coefficient(Qlm, scales, l, 0, lm)
+        aS = _local_coefficient(Slm, scales, l, 0, lm)
+        aT = _local_coefficient(Tlm, scales, l, 0, lm)
         Y = P[l+1]
         dθY = dPdtheta[l+1]
         vr += Y   * aQ
@@ -187,7 +167,9 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
         gvp = zero(ACT)
         for l in m:lmax
             lm = LM_index(lmax, cfg.mres, l, m) + 1
-            aQ = Qlm_int[lm]; aS = Slm_int[lm]; aT = Tlm_int[lm]
+            aQ = _local_coefficient(Qlm, scales, l, m, lm)
+            aS = _local_coefficient(Slm, scales, l, m, lm)
+            aT = _local_coefficient(Tlm, scales, l, m, lm)
             Y = P[l+1]
             dθY = dPdtheta[l+1]
             Y_over_sθ = P_over_sinth[l+1]
@@ -203,15 +185,12 @@ function SHqst_to_point(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abs
         vp += 2 * real(gvp * ph)
     end
     if cfg.robert_form
-        sinth = sqrt(max(zero(PT), one(PT) - x*x))
+        sinth = _sin_from_cos(x)
         vt *= sinth
         vp *= sinth
     end
-    # Narrow the scale to the accumulator's own real type first: the untyped
-    # scale is Float64, and multiplying by it would widen a Float32 evaluation
-    # (and break the element type these functions promise their caller).
     sφ = _evaluator_phi_scale(cfg, typeof(real(vr)))
-    return real(vr) * sφ, real(vt) * sφ, real(vp) * sφ
+    return OT(real(vr) * sφ), OT(real(vt) * sφ), OT(real(vp) * sφ)
 end
 
 """
@@ -226,12 +205,9 @@ function SH_to_grad_point(cfg::SHTConfig, DrSlm::AbstractVector{<:Complex}, Slm:
     length(DrSlm) == cfg.nlm || throw(DimensionMismatch("DrSlm length"))
     length(Slm) == cfg.nlm || throw(DimensionMismatch("Slm length"))
     _validate_local_coordinates(cost, phi, :SH_to_grad_point)
-    DrSlm_int = _internal_coefficients(DrSlm, cfg)
-    Slm_int = _internal_coefficients(Slm, cfg)
-    CT = promote_type(eltype(DrSlm_int), eltype(Slm_int))
-    RT = typeof(real(zero(CT)))
-    PT = _local_basis_type(RT, cost, phi)
-    _, ACT = _local_accumulator_types(CT, PT)
+    scales = _coefficient_scale_matrix_to_canonical(cfg)
+    CT = promote_type(eltype(DrSlm), eltype(Slm))
+    PT, OT, ACT = _local_eval_types(CT, cost, phi)
     x = convert(PT, cost)
     phiv = convert(PT, phi)
     lmax = cfg.lmax; mmax = cfg.mmax
@@ -246,11 +222,11 @@ function SH_to_grad_point(cfg::SHTConfig, DrSlm::AbstractVector{<:Complex}, Slm:
 
 
     # m=0: Vθ = dθY*S; the (im/sinθ)*Y*S term in Vφ vanishes
-    Plm_norm_and_dPdtheta_row!(P, dPdtheta, x, lmax, 0)
+    Plm_norm_and_dPdtheta_row!(P, dPdtheta, x, lmax, 0, Pbuf)
     for l in 0:lmax
         lm = LM_index(lmax, cfg.mres, l, 0) + 1
-        aDr = DrSlm_int[lm]
-        aS = Slm_int[lm]
+        aDr = _local_coefficient(DrSlm, scales, l, 0, lm)
+        aS = _local_coefficient(Slm, scales, l, 0, lm)
         vr += P[l+1] * aDr
         vt += dPdtheta[l+1] * aS
     end
@@ -264,8 +240,8 @@ function SH_to_grad_point(cfg::SHTConfig, DrSlm::AbstractVector{<:Complex}, Slm:
         gvr = zero(ACT)
         for l in m:lmax
             lm = LM_index(lmax, cfg.mres, l, m) + 1
-            aDr = DrSlm_int[lm]
-            aS = Slm_int[lm]
+            aDr = _local_coefficient(DrSlm, scales, l, m, lm)
+            aS = _local_coefficient(Slm, scales, l, m, lm)
             gvr += P[l+1] * aDr
             # Vθ = dθY*S, Vφ = (im/sinθ)*Y*S (T ≡ 0 for a scalar gradient)
             gvt += dPdtheta[l+1] * aS
@@ -277,20 +253,17 @@ function SH_to_grad_point(cfg::SHTConfig, DrSlm::AbstractVector{<:Complex}, Slm:
         vp += 2 * real(gvp * ph)
     end
     if cfg.robert_form
-        sinth = sqrt(max(zero(PT), one(PT) - x*x))
+        sinth = _sin_from_cos(x)
         vt *= sinth
         vp *= sinth
     end
-    # Narrow the scale to the accumulator's own real type first: the untyped
-    # scale is Float64, and multiplying by it would widen a Float32 evaluation
-    # (and break the element type these functions promise their caller).
     sφ = _evaluator_phi_scale(cfg, typeof(real(vr)))
-    return real(vr) * sφ, real(vt) * sφ, real(vp) * sφ
+    return OT(real(vr) * sφ), OT(real(vt) * sφ), OT(real(vp) * sφ)
 end
 
 """
     SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::AbstractVector{<:Complex}, Tlm::AbstractVector{<:Complex}, cost::Real;
-                 nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax) -> Vr, Vt, Vp
+                 nphi::Int=cfg.nlon, ltr::Int=cfg.lmax, mtr::Int=cfg.mmax) -> (Vr, Vt, Vp)
 
 Evaluate 3D field along latitude (cosθ = cost) at `nphi` longitudes from packed real spectra.
 Inputs `Qlm, Slm, Tlm` are all packed (LM order) vectors for each component.
@@ -305,36 +278,32 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
     _validate_local_nphi(nphi, :SHqst_to_lat)
     (0 ≤ ltr ≤ cfg.lmax) || throw(ArgumentError("ltr must be within [0, lmax]"))
     (0 ≤ mtr ≤ cfg.mmax) || throw(ArgumentError("mtr must be within [0, mmax]"))
-    Qlm_int = _internal_coefficients(Qlm, cfg)
-    Slm_int = _internal_coefficients(Slm, cfg)
-    Tlm_int = _internal_coefficients(Tlm, cfg)
-    CT = promote_type(eltype(Qlm_int), eltype(Slm_int), eltype(Tlm_int))
-    RT = typeof(real(zero(CT)))
-    PT = _local_basis_type(RT, cost)
-    AT, ACT = _local_accumulator_types(CT, PT)
+    scales = _coefficient_scale_matrix_to_canonical(cfg)
+    CT = promote_type(eltype(Qlm), eltype(Slm), eltype(Tlm))
+    PT, OT, ACT = _local_eval_types(CT, cost)
     x = convert(PT, cost)
     lmax = cfg.lmax
-    # Accumulator/output eltype follows the inputs so AD types propagate.
-    P = Vector{PT}(undef, lmax + 1)
-    dPdtheta = Vector{PT}(undef, lmax + 1)
-    P_over_sinth = Vector{PT}(undef, lmax + 1)
-    Pbuf = Vector{PT}(undef, lmax + 2)  # scratch for the dθ recurrence
+    P = Vector{PT}(undef, ltr + 1)
+    dPdtheta = Vector{PT}(undef, ltr + 1)
+    P_over_sinth = Vector{PT}(undef, ltr + 1)
+    Pbuf = Vector{PT}(undef, ltr + 2)  # the dθ recurrence needs degree ltr+1
     imagunit = complex(zero(PT), one(PT))
-    Vr = Vector{AT}(undef, nphi)
-    Vt = Vector{AT}(undef, nphi)
-    Vp = Vector{AT}(undef, nphi)
-    fill!(Vr, zero(AT)); fill!(Vt, zero(AT)); fill!(Vp, zero(AT))
+    Vr = zeros(real(ACT), nphi)
+    Vt = zeros(real(ACT), nphi)
+    Vp = zeros(real(ACT), nphi)
 
 
     # m=0 (no 1/sinθ terms)
-    Plm_norm_and_dPdtheta_row!(P, dPdtheta, x, lmax, 0)
+    Plm_norm_and_dPdtheta_row!(P, dPdtheta, x, ltr, 0, Pbuf)
     g0 = zero(ACT)
     gθ0 = zero(ACT)
     gφ0 = zero(ACT)
 
     @inbounds for l in 0:ltr
         lm = LM_index(lmax, cfg.mres, l, 0) + 1
-        aQ = Qlm_int[lm]; aS = Slm_int[lm]; aT = Tlm_int[lm]
+        aQ = _local_coefficient(Qlm, scales, l, 0, lm)
+        aS = _local_coefficient(Slm, scales, l, 0, lm)
+        aT = _local_coefficient(Tlm, scales, l, 0, lm)
         Y = P[l+1]
         dθY = dPdtheta[l+1]
         g0  += Y * aQ
@@ -347,17 +316,18 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
     end
 
     # m>0 (need pole-safe 1/sinθ handling)
-    for m in 1:mtr
-        (m % cfg.mres == 0) || continue
+    for m in cfg.mres:cfg.mres:min(mtr, ltr)
         # Single call computes P̄, dP̄/dθ, and P̄/sinθ (avoids redundant Plm_norm_row!)
-        Plm_norm_dPdtheta_over_sinth_row!(P, dPdtheta, P_over_sinth, x, lmax, m, Pbuf)
+        Plm_norm_dPdtheta_over_sinth_row!(P, dPdtheta, P_over_sinth, x, ltr, m, Pbuf)
         g  = zero(ACT)
         gθ = zero(ACT)
         gφ = zero(ACT)
 
-        @inbounds for l in m:min(ltr, lmax)
+        @inbounds for l in m:ltr
             lm = LM_index(lmax, cfg.mres, l, m) + 1
-            aQ = Qlm_int[lm]; aS = Slm_int[lm]; aT = Tlm_int[lm]
+            aQ = _local_coefficient(Qlm, scales, l, m, lm)
+            aS = _local_coefficient(Slm, scales, l, m, lm)
+            aT = _local_coefficient(Tlm, scales, l, m, lm)
             Y = P[l+1]
             dθY = dPdtheta[l+1]
             Y_over_sθ = P_over_sinth[l+1]
@@ -375,7 +345,7 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
         end
     end
     if cfg.robert_form
-        sinth = sqrt(max(zero(PT), one(PT) - x*x))
+        sinth = _sin_from_cos(x)
         Vt .*= sinth
         Vp .*= sinth
     end
@@ -383,6 +353,9 @@ function SHqst_to_lat(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, Slm::Abstr
     if sφ != 1
         Vr .*= sφ; Vt .*= sφ; Vp .*= sφ
     end
+    Vr = convert(Vector{OT}, Vr)
+    Vt = convert(Vector{OT}, Vt)
+    Vp = convert(Vector{OT}, Vp)
     return Vr, Vt, Vp
 end
 

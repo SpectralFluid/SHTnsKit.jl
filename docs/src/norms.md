@@ -63,6 +63,14 @@ The `real_norm` factor is independent of Schmidt scaling. Toggling
 `cs_phase` changes the sign of odd-`m` basis functions and coefficients through
 the corresponding `(-1)^m` factor.
 
+## Longitude scaling and energy
+
+Grid constructors default to `cfg.phi_scale = :dft`. With the same coefficients,
+switching to `:quad` divides synthesized field values by `2π` and divides
+energy, power spectra, and enstrophy by `(2π)^2`. Analysis uses the reciprocal
+factor, so a band-limited roundtrip recovers the input coefficients in either
+mode. The environment variable `SHTNSKIT_PHI_SCALE` can override the configuration.
+
 ## Axisymmetric analysis
 
 `analysis_axisym` and `analysis_axisym_l` include the longitude integral even

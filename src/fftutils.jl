@@ -99,15 +99,19 @@ const _LOCAL_FFT_PLAN_CACHE_LOCK = ReentrantLock()
 
 # `SHTNSKIT_CACHE_PENCILFFTS` is the legacy spelling kept for scripts that already
 # set it; `SHTNSKIT_FFT_PLAN_CACHE` is the current name.
-const _FFT_PLAN_CACHE_ENABLED =
-    Ref(get(ENV, "SHTNSKIT_FFT_PLAN_CACHE",
-            get(ENV, "SHTNSKIT_CACHE_PENCILFFTS", "1")) != "0")
+const _FFT_PLAN_CACHE_ENABLED = Ref(true)
 
 # Soft cap on distinct cached plans. Transform sizes are few and stable in
 # practice, but a long-lived process that sweeps many grid shapes would otherwise
 # grow this dictionary without bound. Flush wholesale when the cap is reached.
-const _FFT_PLAN_CACHE_MAX =
-    Ref(parse(Int, get(ENV, "SHTNSKIT_FFT_PLAN_CACHE_MAX", "64")))
+const _FFT_PLAN_CACHE_MAX = Ref(64)
+
+function __init__()
+    _FFT_PLAN_CACHE_ENABLED[] = get(ENV, "SHTNSKIT_FFT_PLAN_CACHE",
+                                    get(ENV, "SHTNSKIT_CACHE_PENCILFFTS", "1")) != "0"
+    _FFT_PLAN_CACHE_MAX[] = parse(Int, get(ENV, "SHTNSKIT_FFT_PLAN_CACHE_MAX", "64"))
+    return nothing
+end
 
 """
     fft_plan_cache_enabled() -> Bool
@@ -260,7 +264,7 @@ Y[k] = Σⱼ A[j] * exp(dir * 2πi * k * j / N)
 """
 function _dft_phi(A::AbstractMatrix, dir::Int)
     nlat, nlon = size(A)
-    Y = similar(A, complex(eltype(A)))  # complex output; avoids materializing complex.(A) just for its type/shape
+    Y = similar(A, complex(float(eltype(A))))
     
     # Compute DFT for each latitude band independently with SIMD optimization
     @inbounds for i in 1:nlat
@@ -443,6 +447,10 @@ function rfft_phi!(dest::StridedMatrix{Complex{T}}, A::StridedMatrix{T}) where {
     _FFT_BACKEND[] = _FFT_BACKEND_FFTW
     return dest
 end
+
+# FFTW's real plans need floating-point input on both planning and execution.
+rfft_phi!(dest::AbstractMatrix{<:Complex}, A::AbstractMatrix{<:Integer}) =
+    rfft_phi!(dest, float.(A))
 
 function rfft_phi!(dest::AbstractMatrix{<:Complex}, A::AbstractMatrix{<:Real})
     nlat, nlon = size(A)

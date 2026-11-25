@@ -8,9 +8,11 @@ println("Building SHTnsKit.jl documentation...")
 #####
 
 # HTML format configuration
+repository = "SpectralFluid/SHTnsKit.jl"
 format = Documenter.HTML(
-    prettyurls = get(ENV, "CI", "false") == "true",
-    canonical = "https://subhk.github.io/SHTnsKit.jl/stable",
+    # Keep relative figure paths identical in the preview and on GitHub Pages.
+    prettyurls = true,
+    canonical = "https://spectralfluid.github.io/SHTnsKit.jl/stable/",
     assets = [
         "assets/custom.css",
         "assets/extra.js",
@@ -19,7 +21,7 @@ format = Documenter.HTML(
     collapselevel = 2,
     sidebar_sitename = true,
     edit_link = "main",
-    repolink = "https://github.com/subhk/SHTnsKit.jl",
+    repolink = "https://github.com/$repository",
     size_threshold = 200 * 1024^2,  # 200 MiB
     size_threshold_warn = 10 * 1024^2   # 10 MiB warning
 )
@@ -56,7 +58,7 @@ println("Generating documentation with Documenter.jl...")
 makedocs(;
     modules = [SHTnsKit],
     authors = "SHTnsKit.jl contributors",
-    repo = "https://github.com/subhk/SHTnsKit.jl/blob/{commit}{path}#{line}",
+    repo = "https://github.com/$repository/blob/{commit}{path}#{line}",
     sitename = "SHTnsKit.jl",
     format = format,
     pages = pages,
@@ -77,7 +79,7 @@ if get(ENV, "CI", "false") == "true"
     println("Deploying documentation...")
     
     deploydocs(;
-        repo = "github.com/subhk/SHTnsKit.jl",
+        repo = "github.com/$repository",
         devbranch = "main",
         target = "build",
         deps = nothing,
@@ -91,5 +93,5 @@ if get(ENV, "CI", "false") == "true"
 else
     println("Skipping deployment (not running in CI)")
     println("Documentation built successfully!")
-    println("Open docs/build/index.html to view locally")
+    println("Preview from the repository root with `python3 -m http.server --directory docs/build`")
 end

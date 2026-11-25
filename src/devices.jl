@@ -9,7 +9,7 @@ struct CPU <: ComputeDevice end
 """
 GPU compute device.
 
-`GPU()` is vendor-neutral. A concrete CUDA or AMDGPU backend is inferred from
+`GPU()` is vendor-neutral. A CUDA, AMDGPU, or Metal backend is inferred from
 an existing device array/prototype, or selected when exactly one loaded GPU
 adapter is functional.
 """

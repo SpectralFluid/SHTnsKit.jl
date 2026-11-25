@@ -3,7 +3,7 @@
 # runners in test/gpu/cuda and test/gpu/amdgpu add the on-device parity.
 using Test
 using SHTnsKit
-using KernelAbstractions
+import KernelAbstractions
 
 include("../wrapper_reference.jl")
 include("../../parity/scalar_full.jl")

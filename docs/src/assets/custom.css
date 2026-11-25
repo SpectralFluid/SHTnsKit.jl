@@ -67,17 +67,6 @@ html {
     line-height: 1.6;
 }
 
-.hero-banner .hero-version {
-    display: inline-block;
-    margin-top: 0.75rem;
-    padding: 0.2rem 0.75rem;
-    background: rgba(255,255,255,0.18);
-    border-radius: 9999px;
-    font-size: 0.82rem;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-}
-
 /* ===== Feature Cards ===== */
 .feature-grid {
     display: grid;
@@ -622,10 +611,6 @@ html.theme--documenter-dark {
 
 html.theme--documenter-dark .hero-banner {
     background: linear-gradient(135deg, var(--gradient-start) 0%, var(--gradient-end) 100%);
-}
-
-html.theme--documenter-dark .hero-banner .hero-version {
-    background: rgba(255, 255, 255, 0.12);
 }
 
 html.theme--documenter-dark .feature-card {

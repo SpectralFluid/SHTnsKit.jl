@@ -11,6 +11,10 @@ using Pkg
 Pkg.add("SHTnsKit")
 ```
 
+The stable documentation follows tagged releases. The development documentation
+follows `main`. To use features from a local checkout, run
+`Pkg.develop(path="/path/to/SHTnsKit.jl")` in your application environment.
+
 Verify the installation with a small band-limited roundtrip:
 
 ```@example installation-core
@@ -38,6 +42,7 @@ the matching SHTnsKit extension automatically.
 |:---|:---|
 | NVIDIA GPU | `CUDA`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
 | AMD GPU | `AMDGPU`, `GPUArrays`, `GPUArraysCore`, `KernelAbstractions` |
+| Apple Silicon GPU (single precision) | `Metal` |
 | MPI distributed | `MPI`, `PencilArrays`, `PencilFFTs` |
 | SIMD helpers | `LoopVectorization` |
 | Forward-mode AD | `ForwardDiff` |

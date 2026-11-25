@@ -65,7 +65,7 @@ end
 
 function SHTnsKit.energy_scalar(cfg::SHTnsKit.SHTConfig, Alm::PencilArray; real_field::Bool=true)
     _require_diagnostic_array(cfg, Alm, :spectral, "Alm"; options=(real_field,))
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     lloc = axes(Alm, 1); mloc = axes(Alm, 2)
     gl_l = collect(Int, globalindices(Alm, 1))
     gl_m = collect(Int, globalindices(Alm, 2))
@@ -78,7 +78,7 @@ function SHTnsKit.energy_scalar(cfg::SHTnsKit.SHTConfig, Alm::PencilArray; real_
         for (ii, il) in enumerate(lloc)
             lval = gl_l[ii] - 1
             if lval >= mval
-                metric = SHTnsKit._convention_metric(scale_matrix, lval, mval)
+                metric = SHTnsKit._mode_power_scale(scaling, lval, mval)
                 e_local += w * metric * abs2(Alm[il, jm])
             end
         end
@@ -92,7 +92,7 @@ function SHTnsKit.energy_vector(cfg::SHTnsKit.SHTConfig,
                                 real_field::Bool=true)
     _require_diagnostic_pair(cfg, Slm, Tlm, :spectral, ("Slm", "Tlm");
                              options=(real_field,))
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     lloc = axes(Slm, 1); mloc = axes(Slm, 2)
     gl_l = collect(Int, globalindices(Slm, 1))
     gl_m = collect(Int, globalindices(Slm, 2))
@@ -106,7 +106,7 @@ function SHTnsKit.energy_vector(cfg::SHTnsKit.SHTConfig,
             lval = gl_l[ii] - 1
             if lval >= max(1, mval)
                 L2 = lval * (lval + 1)
-                metric = SHTnsKit._convention_metric(scale_matrix, lval, mval)
+                metric = SHTnsKit._mode_power_scale(scaling, lval, mval)
                 e_local += w * metric * L2 *
                            (abs2(Slm[il, jm]) + abs2(Tlm[il, jm]))
             end
@@ -118,7 +118,7 @@ end
 function SHTnsKit.enstrophy(cfg::SHTnsKit.SHTConfig, Tlm::PencilArray;
                             real_field::Bool=true)
     _require_diagnostic_array(cfg, Tlm, :spectral, "Tlm"; options=(real_field,))
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     lloc = axes(Tlm, 1); mloc = axes(Tlm, 2)
     gl_l = collect(Int, globalindices(Tlm, 1))
     gl_m = collect(Int, globalindices(Tlm, 2))
@@ -132,7 +132,7 @@ function SHTnsKit.enstrophy(cfg::SHTnsKit.SHTConfig, Tlm::PencilArray;
             lval = gl_l[ii] - 1
             if lval >= max(1, mval)
                 L2 = lval * (lval + 1)
-                metric = SHTnsKit._convention_metric(scale_matrix, lval, mval)
+                metric = SHTnsKit._mode_power_scale(scaling, lval, mval)
                 z_local += w * metric * (L2^2) * abs2(Tlm[il, jm])
             end
         end
@@ -145,7 +145,7 @@ function SHTnsKit.energy_scalar_l_spectrum(cfg::SHTnsKit.SHTConfig, Alm::PencilA
     lmax = cfg.lmax
     RT = real(float(eltype(Alm)))
     E = zeros(RT, lmax + 1)
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     lloc = axes(Alm, 1); mloc = axes(Alm, 2)
     gl_l = collect(Int, globalindices(Alm, 1))
     gl_m = collect(Int, globalindices(Alm, 2))
@@ -156,7 +156,7 @@ function SHTnsKit.energy_scalar_l_spectrum(cfg::SHTnsKit.SHTConfig, Alm::PencilA
         for (ii, il) in enumerate(lloc)
             lval = gl_l[ii] - 1
             if lval >= mval
-                metric = SHTnsKit._convention_metric(scale_matrix, lval, mval)
+                metric = SHTnsKit._mode_power_scale(scaling, lval, mval)
                 E[lval + 1] += wm * metric * abs2(Alm[il, jm])
             end
         end
@@ -170,7 +170,7 @@ function SHTnsKit.energy_scalar_m_spectrum(cfg::SHTnsKit.SHTConfig, Alm::PencilA
     mmax = cfg.mmax
     RT = real(float(eltype(Alm)))
     E = zeros(RT, mmax + 1)
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     mloc = axes(Alm, 2)
     gl_m = collect(Int, globalindices(Alm, 2))
     lloc = axes(Alm, 1)
@@ -182,7 +182,7 @@ function SHTnsKit.energy_scalar_m_spectrum(cfg::SHTnsKit.SHTConfig, Alm::PencilA
         for (ii, il) in enumerate(lloc)
             lval = gl_l[ii] - 1
             if lval >= mval
-                metric = SHTnsKit._convention_metric(scale_matrix, lval, mval)
+                metric = SHTnsKit._mode_power_scale(scaling, lval, mval)
                 s += metric * abs2(Alm[il, jm])
             end
         end
@@ -199,7 +199,7 @@ function SHTnsKit.energy_vector_l_spectrum(cfg::SHTnsKit.SHTConfig, Slm::PencilA
     lmax = cfg.lmax
     RT = real(float(promote_type(eltype(Slm), eltype(Tlm))))
     E = zeros(RT, lmax + 1)
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     lloc = axes(Slm, 1); mloc = axes(Slm, 2)
     gl_l = collect(Int, globalindices(Slm, 1))
     gl_m = collect(Int, globalindices(Slm, 2))
@@ -211,7 +211,7 @@ function SHTnsKit.energy_vector_l_spectrum(cfg::SHTnsKit.SHTConfig, Slm::PencilA
             lval = gl_l[ii] - 1
             if lval >= max(1, mval)
                 L2 = lval*(lval+1)
-                metric = SHTnsKit._convention_metric(scale_matrix, lval, mval)
+                metric = SHTnsKit._mode_power_scale(scaling, lval, mval)
                 E[lval + 1] += wm * metric * L2 *
                                (abs2(Slm[il, jm]) + abs2(Tlm[il, jm]))
             end
@@ -227,7 +227,7 @@ function SHTnsKit.energy_vector_m_spectrum(cfg::SHTnsKit.SHTConfig, Slm::PencilA
     mmax = cfg.mmax
     RT = real(float(promote_type(eltype(Slm), eltype(Tlm))))
     E = zeros(RT, mmax + 1)
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     lloc = axes(Slm, 1); mloc = axes(Slm, 2)
     gl_l = collect(Int, globalindices(Slm, 1))
     gl_m = collect(Int, globalindices(Slm, 2))
@@ -239,7 +239,7 @@ function SHTnsKit.energy_vector_m_spectrum(cfg::SHTnsKit.SHTConfig, Slm::PencilA
             lval = gl_l[ii] - 1
             if lval >= max(1, mval)
                 L2 = lval*(lval+1)
-                metric = SHTnsKit._convention_metric(scale_matrix, lval, mval)
+                metric = SHTnsKit._mode_power_scale(scaling, lval, mval)
                 s += metric * L2 * (abs2(Slm[il, jm]) + abs2(Tlm[il, jm]))
             end
         end
@@ -255,7 +255,7 @@ function SHTnsKit.enstrophy_l_spectrum(cfg::SHTnsKit.SHTConfig, Tlm::PencilArray
     lmax = cfg.lmax
     RT = real(float(eltype(Tlm)))
     Z = zeros(RT, lmax + 1)
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     lloc = axes(Tlm, 1); mloc = axes(Tlm, 2)
     gl_l = collect(Int, globalindices(Tlm, 1))
     gl_m = collect(Int, globalindices(Tlm, 2))
@@ -267,7 +267,7 @@ function SHTnsKit.enstrophy_l_spectrum(cfg::SHTnsKit.SHTConfig, Tlm::PencilArray
             lval = gl_l[ii] - 1
             if lval >= max(1, mval)
                 L2 = lval*(lval+1)
-                metric = SHTnsKit._convention_metric(scale_matrix, lval, mval)
+                metric = SHTnsKit._mode_power_scale(scaling, lval, mval)
                 Z[lval + 1] += wm * metric * (L2^2) * abs2(Tlm[il, jm])
             end
         end
@@ -281,7 +281,7 @@ function SHTnsKit.enstrophy_m_spectrum(cfg::SHTnsKit.SHTConfig, Tlm::PencilArray
     mmax = cfg.mmax
     RT = real(float(eltype(Tlm)))
     Z = zeros(RT, mmax + 1)
-    scale_matrix = SHTnsKit._diagnostic_scale_matrix(cfg)
+    scaling = SHTnsKit._diagnostic_scaling(cfg)
     lloc = axes(Tlm, 1); mloc = axes(Tlm, 2)
     gl_l = collect(Int, globalindices(Tlm, 1))
     gl_m = collect(Int, globalindices(Tlm, 2))
@@ -293,7 +293,7 @@ function SHTnsKit.enstrophy_m_spectrum(cfg::SHTnsKit.SHTConfig, Tlm::PencilArray
             lval = gl_l[ii] - 1
             if lval >= max(1, mval)
                 L2 = lval*(lval+1)
-                metric = SHTnsKit._convention_metric(scale_matrix, lval, mval)
+                metric = SHTnsKit._mode_power_scale(scaling, lval, mval)
                 s += metric * (L2^2) * abs2(Tlm[il, jm])
             end
         end
@@ -325,6 +325,7 @@ end
 function SHTnsKit.grid_energy_vector(cfg::SHTnsKit.SHTConfig, Vtθφ::PencilArray, Vpθφ::PencilArray)
     _require_diagnostic_pair(cfg, Vtθφ, Vpθφ, :spatial,
                              ("Vtθφ", "Vpθφ"))
+    weights = SHTnsKit._vector_energy_weights(cfg)
     θloc = axes(Vtθφ, 1)
     gl_θ = collect(Int, globalindices(Vtθφ, 1))
     φscale = 2π / cfg.nlon
@@ -333,7 +334,7 @@ function SHTnsKit.grid_energy_vector(cfg::SHTnsKit.SHTConfig, Vtθφ::PencilArra
     e_local = zero(RT)
     @inbounds for (ii, iθ) in enumerate(θloc)
         iglobθ = gl_θ[ii]
-        wi = cfg.w[iglobθ]
+        wi = weights[iglobθ]
         for j in axes(Vtθφ, 2)
             e_local += wi * (abs2(Vtθφ[iθ, j]) + abs2(Vpθφ[iθ, j]))
         end

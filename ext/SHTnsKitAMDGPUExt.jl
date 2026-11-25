@@ -360,11 +360,7 @@ function _amdgpu_validate_local_arrays(operation::Symbol, arrays...)
             "$operation requires AMDGPU-owned coefficient storage",
         ))
     end
-    first_type = eltype(first(arrays))
-    all(array -> eltype(array) === first_type, arrays) || throw(ArgumentError(
-        "$operation requires matching coefficient element types",
-    ))
-    return _amdgpu_local_precision(first(arrays))
+    return promote_type(map(_amdgpu_local_precision, arrays)...)
 end
 
 function _amdgpu_local_scalar(cfg, coefficients, cost, phi;
@@ -387,24 +383,24 @@ function _amdgpu_local_scalar(cfg, coefficients, cost, phi;
         size(coefficients) == (cfg.lmax + 1, cfg.mmax + 1) ||
             throw(DimensionMismatch("Qlm must be (lmax+1, mmax+1)"))
     end
-    tables = _amdgpu_local_tables(cfg, T, cost)
-    step = nphi == 1 ? zero(T) : T(2pi / nphi)
-    phi_scale = SHTnsKit._evaluator_phi_scale(cfg, T)
+    x, phi0, step = GPUCommon.local_coordinates(T, cost, phi, nphi)
+    tables = _amdgpu_local_tables(cfg, typeof(x), x)
+    phi_scale = SHTnsKit._evaluator_phi_scale(cfg, typeof(x))
     if complex_layout
         output = similar(coefficients, Complex{T}, (nphi,))
         local_complex_kernel!(ROCBackend())(
             output, coefficients, tables.Plm, tables.scales,
-            T(phi), step, cfg.lmax, cfg.mmax, ltr, phi_scale; ndrange=nphi,
+            phi0, step, cfg.lmax, cfg.mmax, ltr, phi_scale; ndrange=nphi,
         )
     else
         output = similar(coefficients, T, (nphi,))
         local_scalar_kernel!(ROCBackend())(
             output, coefficients, tables.Plm, tables.scales,
-            T(phi), step, cfg.lmax, cfg.mmax, cfg.mres, ltr, mtr, phi_scale;
+            phi0, step, cfg.lmax, cfg.mmax, cfg.mres, ltr, mtr, phi_scale;
             ndrange=nphi,
         )
     end
-    return nphi == 1 ? reshape(output, ()) : output
+    return output
 end
 
 function _amdgpu_local_qst(cfg, Q, S, Tlm, cost, phi;
@@ -421,27 +417,26 @@ function _amdgpu_local_qst(cfg, Q, S, Tlm, cost, phi;
         ((name == "Tlm" && !has_t) || length(array) == cfg.nlm) ||
             throw(DimensionMismatch("$name length"))
     end
-    tables = _amdgpu_local_tables(cfg, T, cost)
+    x, phi0, step = GPUCommon.local_coordinates(T, cost, phi, nphi)
+    tables = _amdgpu_local_tables(cfg, typeof(x), x)
     Vr = similar(Q, T, (nphi,)); Vt = similar(Q, T, (nphi,)); Vp = similar(Q, T, (nphi,))
-    step = nphi == 1 ? zero(T) : T(2pi / nphi)
-    sinth = T(sqrt(max(0.0, 1 - Float64(cost)^2)))
+    sinth = typeof(x)(SHTnsKit._sin_from_cos(Float64(x)))
     local_qst_kernel!(ROCBackend())(
         Vr, Vt, Vp, Q, S, Tlm, tables.Plm, tables.dtheta,
-        tables.over_sin, tables.scales, T(phi), step,
+        tables.over_sin, tables.scales, phi0, step,
         cfg.lmax, cfg.mmax, cfg.mres, ltr, mtr,
         has_q, has_s, has_t, cfg.robert_form, sinth,
-        SHTnsKit._evaluator_phi_scale(cfg, T); ndrange=nphi,
+        SHTnsKit._evaluator_phi_scale(cfg, typeof(x)); ndrange=nphi,
     )
-    return nphi == 1 ? (reshape(Vr, ()), reshape(Vt, ()), reshape(Vp, ())) :
-                        (Vr, Vt, Vp)
+    return Vr, Vt, Vp
 end
 
 synthesis_point(::SHTnsKit.GPU, cfg::SHTConfig, coefficients::AMDGPU.AnyROCArray{<:Complex,2}, cost::Real, phi::Real) =
-    _amdgpu_local_scalar(cfg, coefficients, cost, phi)
+    reshape(_amdgpu_local_scalar(cfg, coefficients, cost, phi), ())
 synthesis_point(cfg::SHTConfig, coefficients::AMDGPU.AnyROCArray{<:Complex,2}, cost::Real, phi::Real) =
     synthesis_point(SHTnsKit.GPU(), cfg, coefficients, cost, phi)
 synthesis_point_cplx(::SHTnsKit.GPU, cfg::SHTConfig, coefficients::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real, phi::Real) =
-    _amdgpu_local_scalar(cfg, coefficients, cost, phi; complex_layout=true)
+    reshape(_amdgpu_local_scalar(cfg, coefficients, cost, phi; complex_layout=true), ())
 synthesis_point_cplx(cfg::SHTConfig, coefficients::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real, phi::Real) =
     synthesis_point_cplx(SHTnsKit.GPU(), cfg, coefficients, cost, phi)
 SH_to_lat(::SHTnsKit.GPU, cfg::SHTConfig, coefficients::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real;
@@ -456,7 +451,7 @@ SH_to_lat_cplx(::SHTnsKit.GPU, cfg::SHTConfig, coefficients::AMDGPU.AnyROCArray{
 SH_to_lat_cplx(cfg::SHTConfig, coefficients::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real; kwargs...) =
     SH_to_lat_cplx(SHTnsKit.GPU(), cfg, coefficients, cost; kwargs...)
 SHqst_to_point(::SHTnsKit.GPU, cfg::SHTConfig, Q::AMDGPU.AnyROCArray{<:Complex,1}, S::AMDGPU.AnyROCArray{<:Complex,1}, Tlm::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real, phi::Real) =
-    _amdgpu_local_qst(cfg, Q, S, Tlm, cost, phi)
+    map(v -> reshape(v, ()), _amdgpu_local_qst(cfg, Q, S, Tlm, cost, phi))
 SHqst_to_point(cfg::SHTConfig, Q::AMDGPU.AnyROCArray{<:Complex,1}, S::AMDGPU.AnyROCArray{<:Complex,1}, Tlm::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real, phi::Real) =
     SHqst_to_point(SHTnsKit.GPU(), cfg, Q, S, Tlm, cost, phi)
 SHqst_to_lat(::SHTnsKit.GPU, cfg::SHTConfig, Q::AMDGPU.AnyROCArray{<:Complex,1}, S::AMDGPU.AnyROCArray{<:Complex,1}, Tlm::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real;
@@ -465,7 +460,7 @@ SHqst_to_lat(::SHTnsKit.GPU, cfg::SHTConfig, Q::AMDGPU.AnyROCArray{<:Complex,1},
 SHqst_to_lat(cfg::SHTConfig, Q::AMDGPU.AnyROCArray{<:Complex,1}, S::AMDGPU.AnyROCArray{<:Complex,1}, Tlm::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real; kwargs...) =
     SHqst_to_lat(SHTnsKit.GPU(), cfg, Q, S, Tlm, cost; kwargs...)
 SH_to_grad_point(::SHTnsKit.GPU, cfg::SHTConfig, Dr::AMDGPU.AnyROCArray{<:Complex,1}, S::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real, phi::Real) =
-    _amdgpu_local_qst(cfg, Dr, S, S, cost, phi; has_t=false)
+    map(v -> reshape(v, ()), _amdgpu_local_qst(cfg, Dr, S, S, cost, phi; has_t=false))
 SH_to_grad_point(cfg::SHTConfig, Dr::AMDGPU.AnyROCArray{<:Complex,1}, S::AMDGPU.AnyROCArray{<:Complex,1}, cost::Real, phi::Real) =
     SH_to_grad_point(SHTnsKit.GPU(), cfg, Dr, S, cost, phi)
 
@@ -1189,16 +1184,16 @@ synthesis_qst_ml(cfg::SHTConfig, im::Integer, Q::AMDGPU.AnyROCArray{T,1},
 
 function _amdgpu_vector_batch_analysis(cfg::SHTConfig,
                                        Vt::AMDGPU.AnyROCArray{T,3},
-                                       Vp::AMDGPU.AnyROCArray{R,3}) where {T<:Real,R<:Real}
+                                       Vp::AMDGPU.AnyROCArray{R,3},
+                                       ::Type{RT}=float(promote_type(T, R))) where {T<:Real,R<:Real,RT}
     size(Vt, 1) == cfg.nlat && size(Vt, 2) == cfg.nlon ||
         throw(DimensionMismatch("vector batch must start with (nlat, nlon)"))
     size(Vp) == size(Vt) || throw(DimensionMismatch("Vt/Vp batch shape mismatch"))
     nfields = size(Vt, 3)
     nfields > 0 || throw(ArgumentError("analysis_sphtor_batch requires at least one field"))
     SHTnsKit._validate_robert_analysis(cfg)
-    RTt = float(T); RTp = float(R)
-    RTt === RTp || throw(ArgumentError("vector batches must use the same precision"))
-    RT = RTt; CT = Complex{RT}; tables = _amdgpu_vector_tables(cfg, RT)
+    CT = Complex{RT}
+    tables = _amdgpu_vector_tables(cfg, RT)
     Ft = CT.(Vt); Fp = CT.(Vp)
     FFTW.fft!(Ft, 2); FFTW.fft!(Fp, 2)
     S = AMDGPU.zeros(CT, cfg.lmax + 1, cfg.mmax + 1, nfields); Tlm = similar(S)
@@ -1213,16 +1208,16 @@ end
 
 function _amdgpu_vector_batch_synthesis(cfg::SHTConfig,
                                         S::AMDGPU.AnyROCArray{T,3},
-                                        Tlm::AMDGPU.AnyROCArray{R,3};
-                                        real_output::Bool=true) where {T<:Complex,R<:Complex}
+                                        Tlm::AMDGPU.AnyROCArray{R,3},
+                                        ::Type{RT}=real(float(promote_type(T, R)));
+                                        real_output::Bool=true) where {T<:Complex,R<:Complex,RT}
     size(S, 1) == cfg.lmax + 1 && size(S, 2) == cfg.mmax + 1 ||
         throw(DimensionMismatch("vector coefficient batch has wrong spectral shape"))
     size(Tlm) == size(S) || throw(DimensionMismatch("S/T batch shape mismatch"))
     nfields = size(S, 3)
     nfields > 0 || throw(ArgumentError("synthesis_sphtor_batch requires at least one field"))
-    RTs = typeof(float(real(zero(T)))); RTt = typeof(float(real(zero(R))))
-    RTs === RTt || throw(ArgumentError("vector batches must use the same precision"))
-    RT = RTs; CT = Complex{RT}; tables = _amdgpu_vector_tables(cfg, RT)
+    CT = Complex{RT}
+    tables = _amdgpu_vector_tables(cfg, RT)
     Ft = AMDGPU.zeros(CT, cfg.nlat, cfg.nlon, nfields)
     Fp = AMDGPU.zeros(CT, cfg.nlat, cfg.nlon, nfields)
     vector_batch_synthesis_kernel!(ROCBackend())(
@@ -1258,19 +1253,25 @@ synthesis_sphtor_batch_cplx(::SHTnsKit.GPU, cfg::SHTConfig,
                             S::AMDGPU.AnyROCArray{T,3},
                             Tlm::AMDGPU.AnyROCArray{R,3}) where {T<:Complex,R<:Complex} =
     synthesis_sphtor_batch(SHTnsKit.GPU(), cfg, S, Tlm; real_output=false)
-analysis_qst_batch(::SHTnsKit.GPU, cfg::SHTConfig,
-                   Vr::AMDGPU.AnyROCArray{T,3}, Vt::AMDGPU.AnyROCArray{R,3},
-                   Vp::AMDGPU.AnyROCArray{U,3}) where {T<:Real,R<:Real,U<:Real} =
-    (_amdgpu_batch_analysis(cfg, Vr), _amdgpu_vector_batch_analysis(cfg, Vt, Vp)...)
+function analysis_qst_batch(::SHTnsKit.GPU, cfg::SHTConfig,
+                            Vr::AMDGPU.AnyROCArray{<:Real,3}, Vt::AMDGPU.AnyROCArray{<:Real,3},
+                            Vp::AMDGPU.AnyROCArray{<:Real,3})
+    RT = GPUCommon.qst_batch_precision(Vr, Vt, Vp)
+    Q = _amdgpu_batch_analysis(cfg, Vr, RT)
+    S, Tlm = _amdgpu_vector_batch_analysis(cfg, Vt, Vp, RT)
+    return Q, S, Tlm
+end
 analysis_qst_batch(cfg::SHTConfig, Vr::AMDGPU.AnyROCArray{T,3},
                    Vt::AMDGPU.AnyROCArray{R,3}, Vp::AMDGPU.AnyROCArray{U,3}) where {T<:Real,R<:Real,U<:Real} =
     analysis_qst_batch(SHTnsKit.GPU(), cfg, Vr, Vt, Vp)
-synthesis_qst_batch(::SHTnsKit.GPU, cfg::SHTConfig,
-                    Q::AMDGPU.AnyROCArray{T,3}, S::AMDGPU.AnyROCArray{R,3},
-                    Tlm::AMDGPU.AnyROCArray{U,3};
-                    real_output::Bool=true) where {T<:Complex,R<:Complex,U<:Complex} =
-    (_amdgpu_batch_synthesis(cfg, Q; real_output),
-     _amdgpu_vector_batch_synthesis(cfg, S, Tlm; real_output)...)
+function synthesis_qst_batch(::SHTnsKit.GPU, cfg::SHTConfig,
+                             Q::AMDGPU.AnyROCArray{<:Complex,3}, S::AMDGPU.AnyROCArray{<:Complex,3},
+                             Tlm::AMDGPU.AnyROCArray{<:Complex,3}; real_output::Bool=true)
+    RT = GPUCommon.qst_batch_precision(Q, S, Tlm)
+    Vr = _amdgpu_batch_synthesis(cfg, Q, RT; real_output)
+    Vt, Vp = _amdgpu_vector_batch_synthesis(cfg, S, Tlm, RT; real_output)
+    return Vr, Vt, Vp
+end
 synthesis_qst_batch(cfg::SHTConfig, Q::AMDGPU.AnyROCArray{T,3},
                     S::AMDGPU.AnyROCArray{R,3}, Tlm::AMDGPU.AnyROCArray{U,3};
                     kwargs...) where {T<:Complex,R<:Complex,U<:Complex} =
@@ -1729,8 +1730,9 @@ synthesis_packed_cplx_l(cfg::SHTConfig,
                         ltr::Integer) where {T<:Complex} =
     synthesis_packed_cplx_l(SHTnsKit.GPU(), cfg, coefficients, ltr)
 
-function _amdgpu_batch_analysis(cfg::SHTConfig, fields::AMDGPU.AnyROCArray;
-                                use_rfft::Bool=false, fft_batch=nothing)
+function _amdgpu_batch_analysis(cfg::SHTConfig, fields::AMDGPU.AnyROCArray,
+                                ::Type{RT}=real(float(eltype(fields)));
+                                use_rfft::Bool=false, fft_batch=nothing) where {RT}
     fft_batch === nothing || throw(ArgumentError(
         "AMDGPU scalar batches do not accept caller-provided fft_batch scratch",
     ))
@@ -1742,7 +1744,6 @@ function _amdgpu_batch_analysis(cfg::SHTConfig, fields::AMDGPU.AnyROCArray;
     use_rfft && !(eltype(fields) <: Real) && throw(ArgumentError(
         "use_rfft=true requires real-valued fields",
     ))
-    RT = typeof(float(real(zero(eltype(fields)))))
     CT = Complex{RT}
     tables = _amdgpu_scalar_tables(cfg, RT)
     fourier = CT.(fields)
@@ -1819,9 +1820,10 @@ analysis_batch!(cfg::SHTConfig, output::AMDGPU.AnyROCArray{T,3},
     analysis_batch!(SHTnsKit.GPU(), cfg, output, fields; kwargs...)
 
 function _amdgpu_batch_synthesis(cfg::SHTConfig,
-                                 coefficients::AMDGPU.AnyROCArray;
+                                 coefficients::AMDGPU.AnyROCArray,
+                                 ::Type{RT}=real(float(eltype(coefficients)));
                                  real_output::Bool=true, use_rfft::Bool=false,
-                                 fft_batch=nothing)
+                                 fft_batch=nothing) where {RT}
     fft_batch === nothing || throw(ArgumentError(
         "AMDGPU scalar batches do not accept caller-provided fft_batch scratch",
     ))
@@ -1832,7 +1834,6 @@ function _amdgpu_batch_synthesis(cfg::SHTConfig,
         "synthesis_batch requires at least one coefficient field",
     ))
     use_rfft && !real_output && throw(ArgumentError("use_rfft=true implies real_output"))
-    RT = typeof(float(real(zero(eltype(coefficients)))))
     CT = Complex{RT}
     tables = _amdgpu_scalar_tables(cfg, RT)
     canonical = CT.(coefficients) .* reshape(

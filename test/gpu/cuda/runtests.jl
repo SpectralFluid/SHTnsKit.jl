@@ -3,7 +3,7 @@ using SHTnsKit
 using CUDA
 using GPUArrays
 using GPUArraysCore
-using KernelAbstractions
+import KernelAbstractions
 
 include("../wrapper_reference.jl")
 include("../test_mres.jl")
@@ -740,6 +740,7 @@ SHTnsKit.synthesis(::SHTConfig, ::SafeFallbackArray; kwargs...) =
             pole_orders=(false, true),
         )
         run_gpu_vector_batch_parity(CUDAVectorAdapter())
+        GPUWrapperReference.run_gpu_qst_regressions(SHTnsKit, CuArray, CUDA.AnyCuArray)
         run_shared_legendre_precision_reference(
             extension.GPUCommon, CUDABackend(); place=CuArray,
         )

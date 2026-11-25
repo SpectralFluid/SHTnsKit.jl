@@ -217,10 +217,9 @@ println("maximum flow speed: ", maximum(hypot.(Vθ, Vφ)))
 
 ## Benchmark repeated transforms
 
-Use `@belapsed` from BenchmarkTools.jl to measure median wall time across
-many samples. The `$` interpolation passes variables by reference so the
-macro does not measure lookup overhead. `seconds=0.2` caps total benchmarking
-time — increase it for more stable estimates.
+Use `@belapsed` from BenchmarkTools.jl to report the fastest sample in seconds
+per evaluation. The `$` interpolation passes the benchmark its inputs directly.
+Increase the `seconds=0.2` sampling budget for longer measurements.
 
 The test field mixes several spherical-harmonic modes so the transform
 exercises the full `lmax` range. Always verify accuracy alongside timing:
@@ -248,9 +247,9 @@ println("analysis: $(round(analysis_time * 1e3, digits=2)) ms")
 println("synthesis: $(round(synthesis_time * 1e3, digits=2)) ms")
 ```
 
-For a long-running application, switch to [`SHTPlan`](@ref) for
-zero-allocation in-place transforms, and use batch calls when multiple fields
-share a grid. See the [Performance Guide](../performance.md) for details.
+For a long-running application, use [`SHTPlan`](@ref) to reuse outputs and FFT
+workspace. Batch calls group fields that share a grid. See the
+[Performance Guide](../performance.md) for measurement examples.
 
 ## Rotate a field
 

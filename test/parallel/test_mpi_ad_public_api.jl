@@ -157,13 +157,20 @@ end
 
     @testset "replicated energy cotangents must agree across ranks" begin
         # Blocks scaled by different cotangents would not form one gradient.
-        for (energy, args) in ((energy_scalar, (a,)), (energy_vector, (a, b)),
-                               (enstrophy, (a,)))
-            _, pullback = ChainRulesCore.rrule(energy, cfg, args...)
+        quad_cfg = copy(cfg)
+        quad_cfg.phi_scale = :quad
+        for (energy, args, dense_args) in ((energy_scalar, (a,), (A,)),
+                                           (energy_vector, (a, b), (A, B)),
+                                           (enstrophy, (a,), (A,)))
+            _, pullback = ChainRulesCore.rrule(energy, quad_cfg, args...)
             nprocs > 1 && @test_throws ArgumentError pullback(1.0 + rank)
             tangents = pullback(2.0)
             @test length(tangents) == 2 + length(args)
             @test all(tangent -> tangent isa PencilArray, tangents[3:end])
+            _, dense_pullback = ChainRulesCore.rrule(energy, quad_cfg, dense_args...)
+            for (local_gradient, reference) in zip(tangents[3:end], dense_pullback(2.0)[3:end])
+                @test collect_global(local_gradient) ≈ reference rtol=tol
+            end
             @test pullback(ZeroTangent())[3] isa ChainRulesCore.AbstractZero
         end
     end

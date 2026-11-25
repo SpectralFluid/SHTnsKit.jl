@@ -5,7 +5,6 @@
   <h1>SHTnsKit.jl</h1>
   <p>Fast spherical harmonic transforms for Julia &mdash; scalars, vectors, and
   spectral operators on CPUs, GPUs, and MPI clusters.</p>
-  <span class="hero-version">v2.0.3</span>
 </div>
 ```
 
@@ -18,8 +17,8 @@
   </div>
   <div class="feature-card">
     <h3><span class="icon">&#x26A1;</span> Multi-Backend</h3>
-    <p>Same API on CPU, NVIDIA CUDA, and AMD ROCm GPUs. Drop-in
-    acceleration without rewriting your code.</p>
+    <p>Run full-grid transforms on CPUs, NVIDIA CUDA, AMD ROCm, and Apple Metal GPUs
+    through the same Julia API.</p>
   </div>
   <div class="feature-card">
     <h3><span class="icon">&#x1F4E1;</span> MPI Distribution</h3>
@@ -73,7 +72,7 @@ Spatial fields use `(latitude, longitude)` order. Dense coefficients use
 | understand arrays and transform directions | [Quick Start](quickstart.md) |
 | choose the right spherical sampling | [Grid Types](grids.md) |
 | adapt a working scientific recipe | [Examples Gallery](examples/index.md) |
-| keep transforms on an NVIDIA or AMD GPU | [GPU Acceleration](gpu.md) |
+| keep transforms on an NVIDIA, AMD, or Apple GPU | [GPU Acceleration](gpu.md) |
 | distribute fields across MPI ranks | [Distributed Computing](distributed.md) |
 | make repeated transforms faster | [Performance Guide](performance.md) |
 | use packed storage, operators, rotations, or AD | [Advanced Usage](advanced.md) |

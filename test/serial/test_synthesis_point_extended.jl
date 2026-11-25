@@ -101,4 +101,25 @@ end
         bad = zeros(ComplexF64, cfg.lmax, cfg.mmax + 1)
         @test_throws DimensionMismatch synthesis_point(cfg, bad, 0.1, 0.2)
     end
+
+    @testset "Scalar local evaluation normalizes coefficients as needed" begin
+        lmax = 47
+        cfg = create_gauss_config(lmax, lmax+2; norm=:schmidt, cs_phase=false, real_norm=true)
+        canonical = create_gauss_config(lmax, lmax+2)
+        rng = MersenneTwister(704)
+        dense = randn(rng, ComplexF32, lmax+1, lmax+1)
+        packed = SHTnsKit.pack_lm(cfg, dense)
+        signed = randn(rng, ComplexF32, nlm_cplx_calc(lmax, lmax, 1))
+        for (evaluate, coefficients) in (
+            ((c, a) -> synthesis_point(c, a, 0.3, 0.7), dense),
+            ((c, a) -> synthesis_point_cplx(c, a, 0.3, 0.7), signed),
+            ((c, a) -> SH_to_lat(c, a, 0.3; nphi=8, ltr=5), packed),
+            ((c, a) -> SH_to_lat_cplx(c, a, 0.3; nphi=8, ltr=5), signed),
+        )
+            internal = SHTnsKit.convert_alm_norm!(similar(coefficients), coefficients, cfg; to_internal=true)
+            @test evaluate(cfg, coefficients) == evaluate(canonical, internal)
+            # The result and Legendre row fit well below the size of a coefficient copy.
+            @test @allocated(evaluate(cfg, coefficients)) < sizeof(coefficients) ÷ 2
+        end
+    end
 end
