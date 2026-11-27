@@ -164,9 +164,9 @@ function assert_warm_device_noalloc(::AMDGPUScalarAdapter, call)
     return nothing
 end
 
-# Mixed Float32/Float64 operands promote as on the CPU: an S/T pair takes the
-# wider precision and a QST call keeps Q in its own. Values are compared with
-# the CPU transform of the promoted operands.
+# Mixed Float32/Float64 operands promote as on the CPU: an S/T pair, and all
+# three QST components, take the widest precision among them. Values are
+# compared with the CPU transform of the promoted operands.
 function test_mixed_precision_single_field()
     @testset "Mixed Float32/Float64 single-field vector and QST transforms" begin
         cfg = create_gauss_config(5, 8; nlon=14, norm=:schmidt,
@@ -175,7 +175,7 @@ function test_mixed_precision_single_field()
         Q64, S64, T64 = dense, 2 .* conj.(dense), -0.5 .* dense
         Vr64 = synthesis(cfg, Q64)
         Vt64, Vp64 = synthesis_sphtor(cfg, S64, T64)
-        promoted(a, b) = (P = promote_type(eltype(a), eltype(b)); (P.(a), P.(b)))
+        promoted(xs...) = (P = promote_type(map(eltype, xs)...); map(x -> P.(x), xs))
         function test_promoted(result, cpu, expected)
             for (values, reference, exact) in zip(result, cpu, expected)
                 @test values isa AMDGPU.AnyROCArray
@@ -216,17 +216,20 @@ function test_mixed_precision_single_field()
 
         for wide in 1:3
             fields = ntuple(i -> (i == wide ? Float64 : Float32).((Vr64, Vt64, Vp64)[i]), 3)
-            exact = (analysis(cfg, fields[1]),
-                     analysis_sphtor(cfg, promoted(fields[2], fields[3])...)...)
             test_promoted(analysis_qst(cfg, map(ROCArray, fields)...),
-                          analysis_qst(cfg, fields...), exact)
+                          analysis_qst(cfg, fields...),
+                          analysis_qst(cfg, promoted(fields...)...))
+            test_promoted(analysis_qst_l(cfg, map(ROCArray, fields)..., 3),
+                          analysis_qst_l(cfg, fields..., 3),
+                          analysis_qst_l(cfg, promoted(fields...)..., 3))
             spectra = ntuple(i -> (i == wide ? ComplexF64 : ComplexF32).((Q64, S64, T64)[i]), 3)
             for real_output in (true, false)
-                exact = (synthesis(cfg, spectra[1]; real_output),
-                         synthesis_sphtor(cfg, promoted(spectra[2], spectra[3])...;
-                                          real_output)...)
                 test_promoted(synthesis_qst(cfg, map(ROCArray, spectra)...; real_output),
-                              synthesis_qst(cfg, spectra...; real_output), exact)
+                              synthesis_qst(cfg, spectra...; real_output),
+                              synthesis_qst(cfg, promoted(spectra...)...; real_output))
+                test_promoted(synthesis_qst_l(cfg, map(ROCArray, spectra)..., 3; real_output),
+                              synthesis_qst_l(cfg, spectra..., 3; real_output),
+                              synthesis_qst_l(cfg, promoted(spectra...)..., 3; real_output))
             end
         end
 
@@ -244,6 +247,17 @@ function test_mixed_precision_single_field()
             test_promoted(analysis_sphtor_ml(cfg, stored_im, ROCArray(Vtl), ROCArray(Vpl), ltr),
                           analysis_sphtor_ml(cfg, stored_im, Vtl, Vpl, ltr),
                           analysis_sphtor_ml(cfg, stored_im, promoted(Vtl, Vpl)..., ltr))
+        end
+        Ql64 = Q64[(physical_m + 1):end, physical_m + 1]
+        for wide in 1:3
+            modes = ntuple(i -> (i == wide ? ComplexF64 : ComplexF32).((Ql64, Sl64, Tl64)[i]), 3)
+            exact = synthesis_qst_ml(cfg, stored_im, promoted(modes...)..., ltr)
+            test_promoted(synthesis_qst_ml(cfg, stored_im, map(ROCArray, modes)..., ltr),
+                          synthesis_qst_ml(cfg, stored_im, modes..., ltr), exact)
+            profiles = ntuple(i -> (i == wide ? ComplexF64 : ComplexF32).(exact[i]), 3)
+            test_promoted(analysis_qst_ml(cfg, stored_im, map(ROCArray, profiles)..., ltr),
+                          analysis_qst_ml(cfg, stored_im, profiles..., ltr),
+                          analysis_qst_ml(cfg, stored_im, promoted(profiles...)..., ltr))
         end
     end
     return nothing

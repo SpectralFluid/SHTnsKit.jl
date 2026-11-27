@@ -96,7 +96,8 @@ velocity fields in spherical coordinates (Vr, Vt, Vp).
     synthesis_qst(cfg, Qlm, Slm, Tlm; real_output=true, use_rfft=false) -> (Vr, Vt, Vp)
 
 Transform QST spectral coefficients to 3D spatial vector field components.
-Returns radial (Vr), colatitude (Vt), and azimuthal (Vp) components.
+Returns radial (Vr), colatitude (Vt), and azimuthal (Vp) components. All three
+take the precision promoted across the inputs, as in `synthesis_qst_batch`.
 """
 Base.@constprop :aggressive function synthesis_qst(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix;
                                                    real_output::Bool=true,
@@ -111,6 +112,7 @@ end
 function _synthesis_qst(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix,
                         ::Val{real_output}, ::Val{use_rfft}) where {real_output,use_rfft}
     validate_qst_dimensions(Qlm, Slm, Tlm, cfg)
+    Qlm, Slm, Tlm = _qst_promoted((Qlm, Slm, Tlm))
     # Reuse the scalar and sphtor public-boundary implementations. Each converts
     # exactly its own component from the configured coefficient convention.
     Vr = _synthesis(cfg, Qlm, Val(real_output), nothing, Val(use_rfft))
@@ -129,7 +131,9 @@ _synthesis_qst(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatrix,
     analysis_qst(cfg, Vr, Vt, Vp) -> (Qlm, Slm, Tlm)
 
 Transform 3D spatial vector field to QST spectral coefficients.
-Input: radial (Vr), colatitude (Vt), and azimuthal (Vp) components.
+Input: radial (Vr), colatitude (Vt), and azimuthal (Vp) components. All three
+coefficient arrays take the precision promoted across the inputs, as in
+`analysis_qst_batch`.
 """
 function analysis_qst(cfg::SHTConfig, Vr::AbstractMatrix, Vt::AbstractMatrix,
                       Vp::AbstractMatrix; use_rfft::Bool=false)
@@ -137,6 +141,7 @@ function analysis_qst(cfg::SHTConfig, Vr::AbstractMatrix, Vt::AbstractMatrix,
         return analysis_qst(GPU(), cfg, Vr, Vt, Vp; use_rfft)
     # Validate input dimensions
     validate_vector_spatial_dimensions(Vr, Vt, Vp, cfg)
+    Vr, Vt, Vp = _qst_promoted((Vr, Vt, Vp))
 
     # Each sub-transform returns configured coefficients exactly once.
     Qlm = use_rfft ? analysis(cfg, Vr; use_rfft=true) : analysis(cfg, Vr)
@@ -179,14 +184,36 @@ function _rerouted_operands(operation::Symbol, values::Tuple)
     return last(_qst_gpu_operands(operation, nothing, values))
 end
 
+# The QST components share one precision, the one promoted across all three, as
+# in the batch transforms: a Float32 radial field with Float64 tangential
+# components gives three ComplexF64 spectra. Operands that already share an
+# element type pass through unchanged.
+_qst_promoted(values::Tuple{AbstractArray{T},AbstractArray{T},AbstractArray{T}}) where {T} = values
+
+function _qst_promoted(values::Tuple{AbstractArray,AbstractArray,AbstractArray})
+    R = real(float(promote_type(map(eltype, values)...)))
+    return map(value -> _with_precision(value, R), values)
+end
+
+# Widen `value` to precision `R`, keeping it real or complex. A CPU operand is
+# converted by broadcasting, which AD can trace. A device operand is copied into
+# storage allocated on its device: broadcasting a nested wrapper on its own
+# would build the copy on the host.
+function _with_precision(value::AbstractArray, ::Type{R}) where {R}
+    T = eltype(value) <: Complex ? Complex{R} : R
+    eltype(value) === T && return value
+    return on_device(value) isa GPU ? (similar(value, T) .= value) : T.(value)
+end
+
 function synthesis_qst(::GPU, cfg::SHTConfig, Qlm::AbstractMatrix,
                        Slm::AbstractMatrix, Tlm::AbstractMatrix;
                        prototype=nothing, real_output::Bool=true,
                        use_rfft::Bool=false)
     validate_qst_dimensions(Qlm, Slm, Tlm, cfg)
-    adapter, (Qd, Sd, Td) = _qst_gpu_operands(
+    adapter, operands = _qst_gpu_operands(
         :synthesis_qst, prototype, (Qlm, Slm, Tlm),
     )
+    Qd, Sd, Td = _qst_promoted(operands)
     Vr = _gpu_adapter_synthesis(
         adapter, cfg, Qd; real_output, use_rfft,
     )
@@ -200,9 +227,10 @@ function analysis_qst(::GPU, cfg::SHTConfig, Vr::AbstractMatrix,
                       Vt::AbstractMatrix, Vp::AbstractMatrix;
                       prototype=nothing, use_rfft::Bool=false)
     validate_vector_spatial_dimensions(Vr, Vt, Vp, cfg)
-    adapter, (Vrd, Vtd, Vpd) = _qst_gpu_operands(
+    adapter, operands = _qst_gpu_operands(
         :analysis_qst, prototype, (Vr, Vt, Vp),
     )
+    Vrd, Vtd, Vpd = _qst_promoted(operands)
     Qlm = _gpu_adapter_analysis(adapter, cfg, Vrd; use_rfft)
     Slm, Tlm = _gpu_adapter_analysis_sphtor(
         adapter, cfg, Vtd, Vpd; use_rfft,
@@ -235,6 +263,7 @@ function synthesis_qst_cplx(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMa
     any(value -> on_device(value) isa GPU, (Qlm, Slm, Tlm)) &&
         return synthesis_qst_cplx(GPU(), cfg, Qlm, Slm, Tlm)
     validate_qst_dimensions(Qlm, Slm, Tlm, cfg)
+    Qlm, Slm, Tlm = _qst_promoted((Qlm, Slm, Tlm))
     # Each component delegates to the same converting boundary as the real path.
     Vr = synthesis_cplx(cfg, Qlm)
     Vt, Vp = synthesis_sphtor_cplx(cfg, Slm, Tlm)
@@ -262,6 +291,7 @@ function analysis_qst_cplx(cfg::SHTConfig, Vr::AbstractMatrix{<:Complex}, Vt::Ab
 
     # Validate input dimensions
     validate_vector_spatial_dimensions(Vr, Vt, Vp, cfg)
+    Vr, Vt, Vp = _qst_promoted((Vr, Vt, Vp))
 
     # Transform each component through its configured-convention boundary.
     Qlm = analysis(cfg, Vr)
@@ -291,6 +321,7 @@ function analysis_qst_l(cfg::SHTConfig, Vr::AbstractMatrix, Vt::AbstractMatrix, 
     ltr = _validate_degree_limit(cfg, ltr)
     validate_vector_spatial_dimensions(Vr, Vt, Vp, cfg)
     _validate_robert_analysis(cfg; ltr)
+    Vr, Vt, Vp = _qst_promoted((Vr, Vt, Vp))
     Q2 = analysis(cfg, Vr)
     zero_high_degree_modes!(Q2, cfg, ltr)
     # Keep the degree limit at the vector boundary: ltr=0 has no tangential
@@ -344,6 +375,7 @@ function _synthesis_qst_l(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatr
                           ltr::Integer, ::Val{real_output}) where {real_output}
     ltr = _validate_degree_limit(cfg, ltr)
     validate_qst_dimensions(Qlm, Slm, Tlm, cfg)
+    Qlm, Slm, Tlm = _qst_promoted((Qlm, Slm, Tlm))
     # The scalar and horizontal degree-limited boundaries each convert once.
     Vr = _synthesis_l(cfg, Qlm, ltr, Val(real_output))
     Vt, Vp = _synthesis_sphtor_l(cfg, Slm, Tlm, ltr, Val(real_output))
@@ -359,6 +391,7 @@ function analysis_qst_ml(cfg::SHTConfig, mval::Integer, Vr_m::AbstractVector{<:C
     operands = _rerouted_operands(:analysis_qst_ml, (Vr_m, Vt_m, Vp_m))
     operands === nothing || return analysis_qst_ml(cfg, mval, operands..., ltr)
     stored_im, _, lcap = _validate_stored_order(cfg, mval, ltr)
+    Vr_m, Vt_m, Vp_m = _qst_promoted((Vr_m, Vt_m, Vp_m))
     # Transform each component for this specific mode
     Ql = analysis_packed_ml(cfg, stored_im, Vr_m, lcap)
     Sl, Tl = analysis_sphtor_ml(cfg, stored_im, Vt_m, Vp_m, lcap)
@@ -386,6 +419,7 @@ function synthesis_qst_ml(cfg::SHTConfig, mval::Integer, Ql::AbstractVector{<:Co
     operands = _rerouted_operands(:synthesis_qst_ml, (Ql, Sl, Tl))
     operands === nothing || return synthesis_qst_ml(cfg, mval, operands..., ltr)
     stored_im, _, lcap = _validate_stored_order(cfg, mval, ltr)
+    Ql, Sl, Tl = _qst_promoted((Ql, Sl, Tl))
     # Each fixed-mode sub-transform converts its component to canonical once.
     Vr_m = synthesis_packed_ml(cfg, stored_im, Ql, lcap)
     Vt_m, Vp_m = synthesis_sphtor_ml(cfg, stored_im, Sl, Tl, lcap)

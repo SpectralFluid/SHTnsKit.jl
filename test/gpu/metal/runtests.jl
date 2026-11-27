@@ -398,6 +398,39 @@ end
                      analysis_sphtor_ml(cfg, 1, modes..., 4))
 end
 
+@testset "QST components share the promoted precision" begin
+    # Metal stores half precision, so a Float16 component is the one mix it can
+    # see. As on the CPU, it is widened, on the device, to the others' Float32.
+    cfg = create_gauss_config(5, 8; nlon=12)
+    rng = MersenneTwister(13)
+    v = ntuple(_ -> randn(rng, Float32, cfg.nlat, cfg.nlon), 3)
+    a = analysis_qst(cfg, v...)
+    for narrow in 1:3
+        narrowed(x, T) = ntuple(i -> i == narrow ? T.(x[i]) : x[i], 3)
+        fields = narrowed(v, Float16)
+        check_components(analysis_qst(cfg, map(MtlArray, fields)...), analysis_qst(cfg, fields...))
+        check_components(analysis_qst_l(cfg, map(MtlArray, fields)..., 3),
+                         analysis_qst_l(cfg, fields..., 3))
+        spectra = narrowed(a, ComplexF16)
+        check_components(synthesis_qst(cfg, map(MtlArray, spectra)...), synthesis_qst(cfg, spectra...))
+        check_components(synthesis_qst_l(cfg, map(MtlArray, spectra)..., 3),
+                         synthesis_qst_l(cfg, spectra..., 3))
+        modes = narrowed(map(x -> x[2:end, 2], a), ComplexF16)
+        profiles = synthesis_qst_ml(cfg, 1, modes..., cfg.lmax)
+        check_components(synthesis_qst_ml(cfg, 1, map(MtlArray, modes)..., cfg.lmax), profiles)
+        profiles = narrowed(profiles, ComplexF16)
+        check_components(analysis_qst_ml(cfg, 1, map(MtlArray, profiles)..., cfg.lmax),
+                         analysis_qst_ml(cfg, 1, profiles..., cfg.lmax))
+    end
+    # A host component, and a nested wrapper of device storage, widen there too.
+    r = Float16.(v[1])
+    nested = view(PermutedDimsArray(MtlArray(permutedims(r)), (2, 1)), :, :)
+    expected = analysis_qst(cfg, r, v[2], v[3])
+    for x in (r, nested)
+        check_components(analysis_qst(cfg, x, MtlArray(v[2]), MtlArray(v[3])), expected)
+    end
+end
+
 @testset "Nested device wrappers stay on the GPU" begin
     cfg = create_gauss_config(4, 6; nlon=9)
     host = randn(MersenneTwister(3), Float32, cfg.nlon, cfg.nlat)

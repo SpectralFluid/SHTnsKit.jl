@@ -637,6 +637,7 @@ SHT.synthesis_grad_l(::GPU, cfg::SHTConfig, s::WrappedMtlMatrix, ltr::Integer; k
 function SHT.analysis_qst_l(::GPU, cfg::SHTConfig, vr::WrappedMtlMatrix, vt::WrappedMtlMatrix,
                             vp::WrappedMtlMatrix, ltr::Integer)
     lcap = SHT._validate_degree_limit(cfg, ltr)
+    vr, vt, vp = SHT._qst_promoted((vr, vt, vp))
     q = _scalar_analysis(cfg, vr; lcap)
     s, t = _vector_analysis(cfg, vt, vp; lcap)
     return _completed((q, s, t))
@@ -644,6 +645,7 @@ end
 function SHT.synthesis_qst_l(::GPU, cfg::SHTConfig, q::WrappedMtlMatrix, s::WrappedMtlMatrix,
                              t::WrappedMtlMatrix, ltr::Integer; real_output::Bool=true)
     lcap = SHT._validate_degree_limit(cfg, ltr)
+    q, s, t = SHT._qst_promoted((q, s, t))
     vr = _scalar_synthesis(cfg, q; real_output, lcap)
     vt, vp = _vector_synthesis(cfg, s, t; real_output, lcap)
     return _completed((vr, vt, vp))
@@ -738,6 +740,7 @@ function SHT.analysis_qst_ml(::GPU, cfg::SHTConfig, im::Integer, vr::WrappedMtlV
                              vt::WrappedMtlVector{<:Complex}, vp::WrappedMtlVector{<:Complex},
                              ltr::Integer)
     stored_im, m, lcap = SHT._validate_stored_order(cfg, im, ltr)
+    vr, vt, vp = SHT._qst_promoted((vr, vt, vp))
     _check_mode(vr, cfg.nlat)
     q = _mode_analysis(cfg, m, vr, lcap, SHT._analysis_phi_scale(cfg))
     s, t = _vector_mode_analysis(cfg, stored_im, vt, vp, lcap)
@@ -747,6 +750,7 @@ function SHT.synthesis_qst_ml(::GPU, cfg::SHTConfig, im::Integer, q::WrappedMtlV
                               s::WrappedMtlVector{<:Complex}, t::WrappedMtlVector{<:Complex},
                               ltr::Integer)
     stored_im, m, lcap = SHT._validate_stored_order(cfg, im, ltr)
+    q, s, t = SHT._qst_promoted((q, s, t))
     _check_mode(q, lcap - m + 1)
     vr = _mode_synthesis(cfg, m, q, lcap, SHT.phi_inv_scale(cfg))
     vt, vp = _vector_mode_synthesis(cfg, stored_im, s, t, lcap)

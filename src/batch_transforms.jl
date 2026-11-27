@@ -483,7 +483,8 @@ function _synthesis_batch_modes!(Fφ_batch, cfg::SHTConfig, alm_batch, mirror::B
     lmax, mmax = cfg.lmax, cfg.mmax
     nlat, nlon = cfg.nlat, cfg.nlon
     nfields = size(alm_batch, 3)
-    CT = complex(float(eltype(alm_batch)))
+    # Capture the zero value so older Julia compilers can infer the threaded accumulator type.
+    zero_coefficient = zero(complex(float(eltype(alm_batch))))
     scale_matrix = _coefficient_scale_matrix_to_canonical(cfg)
     fill!(Fφ_batch, zero(eltype(Fφ_batch)))
     inv_scaleφ = phi_inv_scale(cfg)
@@ -496,7 +497,7 @@ function _synthesis_batch_modes!(Fφ_batch, cfg::SHTConfig, alm_batch, mirror::B
             tbl = cfg.plm_tables[m+1]
             @inbounds for k in 1:nfields
                 for i in 1:nlat
-                    acc = zero(CT)
+                    acc = zero_coefficient
                     for l in m:lmax
                         acc += tbl[l+1, i] * _canonical_coefficient(
                             alm_batch, scale_matrix, l, col, k)
@@ -517,7 +518,7 @@ function _synthesis_batch_modes!(Fφ_batch, cfg::SHTConfig, alm_batch, mirror::B
                 Plm_norm_row!(P, x, lmax, m)
 
                 @inbounds for k in 1:nfields
-                    acc = zero(CT)
+                    acc = zero_coefficient
                     for l in m:lmax
                         acc += P[l+1] * _canonical_coefficient(
                             alm_batch, scale_matrix, l, col, k)

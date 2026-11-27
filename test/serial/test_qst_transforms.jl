@@ -340,4 +340,68 @@ using SHTnsKit
             end
         end
     end
+
+    @testset "QST components share the promoted precision" begin
+        # As in the batch transforms, one Float64 component makes the whole
+        # call Float64: the result is the transform of the widened operands.
+        lmax = 6
+        cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
+        rng = MersenneTwister(104)
+        Q64, S64, T64 = (randn(rng, ComplexF64, lmax+1, lmax+1) for _ in 1:3)
+        for A in (Q64, S64, T64), m in 0:lmax
+            A[1:m, m+1] .= 0
+        end
+        for A in (Q64, S64, T64)
+            A[:, 1] .= real.(A[:, 1])
+        end
+        S64[1, :] .= 0; T64[1, :] .= 0
+        Vr, Vt, Vp = synthesis_qst(cfg, Q64, S64, T64)
+
+        single(x) = (eltype(x) <: Complex ? ComplexF32 : Float32).(x)
+        mixed(xs, wide) = ntuple(i -> i == wide ? xs[i] : single(xs[i]), 3)
+        widened(xs) = map(x -> (eltype(x) <: Complex ? ComplexF64 : Float64).(x), xs)
+        batch(xs) = map(x -> reshape(x, size(x)..., 1), xs)
+        ltr, im = lmax - 2, 2
+
+        for wide in 1:3
+            spectra = mixed((Q64, S64, T64), wide)
+            for real_output in (true, false)
+                fields = synthesis_qst(cfg, spectra...; real_output)
+                @test all(V -> eltype(V) === (real_output ? Float64 : ComplexF64), fields)
+                @test fields == synthesis_qst(cfg, widened(spectra)...; real_output)
+                @test synthesis_qst_l(cfg, spectra..., ltr; real_output) ==
+                      synthesis_qst_l(cfg, widened(spectra)..., ltr; real_output)
+                batched = synthesis_qst_batch(cfg, batch(spectra)...; real_output)
+                @test map(eltype, batched) == map(eltype, fields)
+                @test all(map((B, V) -> B[:, :, 1] ≈ V, batched, fields))
+            end
+            @test (@inferred synthesis_qst_cplx(cfg, spectra...)) ==
+                  synthesis_qst_cplx(cfg, widened(spectra)...)
+
+            fields = mixed((Vr, Vt, Vp), wide)
+            coefficients = @inferred analysis_qst(cfg, fields...)
+            @test all(A -> eltype(A) === ComplexF64, coefficients)
+            @test coefficients == analysis_qst(cfg, widened(fields)...)
+            @test analysis_qst_l(cfg, fields..., ltr) ==
+                  analysis_qst_l(cfg, widened(fields)..., ltr)
+            batched = analysis_qst_batch(cfg, batch(fields)...)
+            @test map(eltype, batched) == map(eltype, coefficients)
+            @test all(map((B, A) -> B[:, :, 1] ≈ A, batched, coefficients))
+            complex_fields = map(complex, fields)
+            @test analysis_qst_cplx(cfg, complex_fields...) ==
+                  analysis_qst_cplx(cfg, widened(complex_fields)...)
+
+            modes = mixed(map(A -> A[(im+1):end, im+1], (Q64, S64, T64)), wide)
+            profiles = synthesis_qst_ml(cfg, im, modes..., lmax)
+            @test all(v -> eltype(v) === ComplexF64, profiles)
+            @test profiles == synthesis_qst_ml(cfg, im, widened(modes)..., lmax)
+            profiles = mixed(profiles, wide)
+            @test analysis_qst_ml(cfg, im, profiles..., lmax) ==
+                  analysis_qst_ml(cfg, im, widened(profiles)..., lmax)
+        end
+
+        # Operands of one element type pass through without a copy.
+        operands = (Vr, Vt, Vp)
+        @test SHTnsKit._qst_promoted(operands) === operands
+    end
 end

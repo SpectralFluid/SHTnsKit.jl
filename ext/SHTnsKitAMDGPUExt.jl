@@ -1132,6 +1132,7 @@ analysis_qst_l(::SHTnsKit.GPU, cfg::SHTConfig, Vr::AMDGPU.AnyROCArray{T,2},
                Vt::AMDGPU.AnyROCArray{R,2}, Vp::AMDGPU.AnyROCArray{U,2},
                ltr::Integer) where {T,R,U} = begin
     lcap = SHTnsKit._validate_degree_limit(cfg, ltr)
+    Vr, Vt, Vp = SHTnsKit._qst_promoted((Vr, Vt, Vp))
     (_amdgpu_scalar_analysis(cfg, Vr; lcap),
      _amdgpu_vector_analysis(cfg, Vt, Vp; lcap)...)
 end
@@ -1142,6 +1143,7 @@ synthesis_qst_l(::SHTnsKit.GPU, cfg::SHTConfig, Q::AMDGPU.AnyROCArray{T,2},
                 S::AMDGPU.AnyROCArray{R,2}, Tlm::AMDGPU.AnyROCArray{U,2},
                 ltr::Integer; real_output::Bool=true) where {T,R,U} = begin
     lcap = SHTnsKit._validate_degree_limit(cfg, ltr)
+    Q, S, Tlm = SHTnsKit._qst_promoted((Q, S, Tlm))
     (_amdgpu_scalar_synthesis(cfg, Q; real_output, lcap),
      _amdgpu_vector_synthesis(cfg, S, Tlm; real_output, lcap)...)
 end
@@ -1160,6 +1162,7 @@ analysis_qst_ml(::SHTnsKit.GPU, cfg::SHTConfig, im::Integer,
                 Vr::AMDGPU.AnyROCArray{T,1}, Vt::AMDGPU.AnyROCArray{R,1},
                 Vp::AMDGPU.AnyROCArray{U,1}, ltr::Integer) where {T<:Complex,R<:Complex,U<:Complex} = begin
     stored_im, _, lcap = SHTnsKit._validate_stored_order(cfg, im, ltr)
+    Vr, Vt, Vp = SHTnsKit._qst_promoted((Vr, Vt, Vp))
     (analysis_packed_ml(SHTnsKit.GPU(), cfg, stored_im, Vr, lcap),
      _amdgpu_vector_mode_analysis(cfg, stored_im, Vt, Vp, lcap)...)
 end
@@ -1171,6 +1174,7 @@ synthesis_qst_ml(::SHTnsKit.GPU, cfg::SHTConfig, im::Integer,
                  Q::AMDGPU.AnyROCArray{T,1}, S::AMDGPU.AnyROCArray{R,1},
                  Tlm::AMDGPU.AnyROCArray{U,1}, ltr::Integer) where {T<:Complex,R<:Complex,U<:Complex} = begin
     stored_im, _, lcap = SHTnsKit._validate_stored_order(cfg, im, ltr)
+    Q, S, Tlm = SHTnsKit._qst_promoted((Q, S, Tlm))
     (synthesis_packed_ml(SHTnsKit.GPU(), cfg, stored_im, Q, lcap),
      _amdgpu_vector_mode_synthesis(cfg, stored_im, S, Tlm, lcap)...)
 end
