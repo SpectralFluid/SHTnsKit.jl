@@ -37,6 +37,46 @@ using SHTnsKit
         @test output ≈ expected
     end
 
+    @testset "Synthesis reads coefficients that share memory with the scratch" begin
+        cfg = create_gauss_config(8, 10; nlon=18)
+        alm = randn(MersenneTwister(399), ComplexF64, cfg.lmax + 1, cfg.mmax + 1)
+        alm[:, 1] .= real.(alm[:, 1])
+        for use_rfft in (false, true)
+            expected = synthesis(cfg, alm; use_rfft)
+            scratch = zeros(ComplexF64, cfg.nlat, use_rfft ? cfg.nlon ÷ 2 + 1 : cfg.nlon)
+            coefficients = @view scratch[1:cfg.lmax + 1, 1:cfg.mmax + 1]
+            coefficients .= alm
+            @test synthesis(cfg, coefficients; use_rfft, fft_scratch=scratch) ≈ expected
+            coefficients .= alm
+            out = similar(expected)
+            @test synthesis!(cfg, out, coefficients; use_rfft, fft_scratch=scratch) ≈ expected
+        end
+        # Complex output may still be its own scratch.
+        out = zeros(ComplexF64, cfg.nlat, cfg.nlon)
+        @test synthesis!(cfg, out, alm; real_output=false, fft_scratch=out) ≈ synthesis_cplx(cfg, alm)
+    end
+
+    @testset "Planned vector transforms read inputs that share memory with outputs" begin
+        cfg = create_gauss_config(8, 10; nlon=18)
+        plan = SHTPlan(cfg)
+        rng = MersenneTwister(400)
+        Vt, Vp = (complex.(randn(rng, cfg.nlat, cfg.nlon), randn(rng, cfg.nlat, cfg.nlon)) for _ in 1:2)
+        S, T = analysis_sphtor(cfg, Vt, Vp)
+        spectral = (1:cfg.lmax + 1, 1:cfg.mmax + 1)
+        shared = copy(Vp)
+        Tout = similar(T)
+        analysis_sphtor!(plan, view(shared, spectral...), Tout, Vt, shared)
+        @test view(shared, spectral...) ≈ S
+        @test Tout ≈ T
+        expected = synthesis_sphtor(cfg, S, T; real_output=false)
+        Vt_out = zeros(ComplexF64, cfg.nlat, cfg.nlon)
+        view(Vt_out, spectral...) .= S
+        Vp_out = similar(Vt_out)
+        synthesis_sphtor!(plan, Vt_out, Vp_out, view(Vt_out, spectral...), T; real_output=false)
+        @test Vt_out ≈ expected[1]
+        @test Vp_out ≈ expected[2]
+    end
+
     @testset "Real coefficient matrices" begin
         for T in (Float32, Float64, Int), norm in (:orthonormal, :schmidt)
             T === Int && norm !== :orthonormal && continue

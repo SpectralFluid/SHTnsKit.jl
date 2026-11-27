@@ -336,6 +336,34 @@ end
         @test ParExt.gather_to_dense(coefficients32) ≈ analysis(cfg, F) rtol=1e-5
     end
 
+    @testset "Z rotation phase precision ($CT)" for CT in (ComplexF32, ComplexF64)
+        spectrum = zeros(CT, spectral_dims)
+        spectrum[6, 6] = 1
+        source = scatter_spectral(pen_m, spectrum)
+        packed = SHTnsKit.pack_lm(cfg, spectrum)
+        for angle in (1.234567f0, 2π, 100_000 * 2π, 1_000_000 * 2π + 0.125, big(2)^55 + big"0.125")
+            rotated = SHTnsKit.dist_SH_Zrotate(cfg, source, angle)
+            reference = copy(spectrum)
+            reference[6, 6] = cis(-5 * (angle isa BigFloat ? angle : Float64(angle)))
+            @test SH_Zrotate(cfg, packed, angle, similar(packed)) == SHTnsKit.pack_lm(cfg, reference)
+            @test eltype(rotated) === CT
+            @test parent(rotated) == reference[PencilArrays.range_local(pen_m)...]
+        end
+        if MPI.Comm_size(comm) > 1
+            # Multiplying this angle by order 5 rounds differently in Float64.
+            root_angle = BigFloat(2)^54 + 4
+            local_angle = MPI.Comm_rank(comm) == 0 ? root_angle : Float64(root_angle)
+            reference = SH_Zrotate(cfg, packed, root_angle, similar(packed))
+            dense_reference = SHTnsKit.unpack_lm(cfg, reference)
+            rotated = SHTnsKit.dist_SH_Zrotate(cfg, source, local_angle)
+            @test parent(rotated) == dense_reference[PencilArrays.range_local(pen_m)...]
+            @test SHTnsKit.dist_SH_Zrotate_packed(cfg, packed, local_angle; prototype_lm=source) == reference
+
+            unequal = MPI.Comm_rank(comm) == 0 ? root_angle + big"0.125" : local_angle
+            @test_throws ArgumentError SHTnsKit.dist_SH_Zrotate(cfg, source, unequal)
+        end
+    end
+
     @testset "local vector evaluations honor Robert form" begin
         Q = zeros(ComplexF64, spectral_dims)
         S = copy(Q)

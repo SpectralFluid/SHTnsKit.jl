@@ -135,6 +135,9 @@ dist_synthesis!(splan, fθφ, Alm; real_output=true)
 keeps a single complex `(θ, φ)` buffer inside vector/QST plans so real outputs
 avoid per-call iFFT allocations.
 
+Rebuild a distributed analysis plan after changing a quadrature node or weight.
+The plan caches the values for each rank's latitude range.
+
 ## Precomputed Legendre tables
 
 On fixed grids, precompute associated Legendre values for faster transforms:
@@ -168,6 +171,12 @@ alm = analysis_turbo(cfg, field)
 ```
 
 ## Threading
+
+Scalar batch analysis and synthesis distribute the stored orders
+`0:cfg.mres:cfg.mmax` across Julia workers. Inside an outer threaded loop,
+each batch runs its Legendre stage on the calling worker. Use
+`SHTnsKit.check_thread_utilization(cfg)` to see how many workers a top-level
+transform can use for its orders.
 
 Start Julia with the desired thread count and tune FFTW separately with
 `FFTW.set_num_threads`. Avoid oversubscribing cores with Julia tasks, FFTW

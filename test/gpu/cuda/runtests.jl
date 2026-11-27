@@ -170,6 +170,91 @@ function assert_warm_device_noalloc(::CUDAScalarAdapter, call)
     return nothing
 end
 
+# Mixed Float32/Float64 operands promote as on the CPU: an S/T pair takes the
+# wider precision and a QST call keeps Q in its own. Values are compared with
+# the CPU transform of the promoted operands.
+function test_mixed_precision_single_field()
+    @testset "Mixed Float32/Float64 single-field vector and QST transforms" begin
+        cfg = create_gauss_config(5, 8; nlon=14, norm=:schmidt,
+                                  real_norm=true, cs_phase=false)
+        dense = _variant_coefficients(cfg, Float64)
+        Q64, S64, T64 = dense, 2 .* conj.(dense), -0.5 .* dense
+        Vr64 = synthesis(cfg, Q64)
+        Vt64, Vp64 = synthesis_sphtor(cfg, S64, T64)
+        promoted(a, b) = (P = promote_type(eltype(a), eltype(b)); (P.(a), P.(b)))
+        function test_promoted(result, cpu, expected)
+            for (values, reference, exact) in zip(result, cpu, expected)
+                @test values isa CUDA.AnyCuArray
+                @test eltype(values) === eltype(reference)
+                tol = _vector_tol(real(eltype(reference)))
+                @test Array(values) ≈ exact atol=tol.atol rtol=tol.rtol
+            end
+        end
+
+        plan = SHTPlan(cfg)
+        for (A, B) in ((Float32, Float64), (Float64, Float32))
+            Vt, Vp = A.(Vt64), B.(Vp64)
+            cpu = analysis_sphtor(cfg, Vt, Vp)
+            exact = analysis_sphtor(cfg, promoted(Vt, Vp)...)
+            test_promoted(analysis_sphtor(cfg, CuArray(Vt), CuArray(Vp)), cpu, exact)
+            # A host component moves to the device without being narrowed.
+            test_promoted(analysis_sphtor(cfg, CuArray(Vt), Vp), cpu, exact)
+            # Planned outputs carry the promoted precision the allocating call returns.
+            S_out = CUDA.zeros(ComplexF64, size(S64)); T_out = similar(S_out)
+            analysis_sphtor!(plan, S_out, T_out, CuArray(Vt), CuArray(Vp))
+            test_promoted((S_out, T_out), cpu, exact)
+            @test_throws ArgumentError analysis_sphtor!(
+                plan, CUDA.zeros(ComplexF32, size(S64)),
+                CUDA.zeros(ComplexF32, size(S64)), CuArray(Vt), CuArray(Vp),
+            )
+
+            S, Tlm = Complex{A}.(S64), Complex{B}.(T64)
+            cpu = synthesis_sphtor(cfg, S, Tlm)
+            exact = synthesis_sphtor(cfg, promoted(S, Tlm)...)
+            test_promoted(synthesis_sphtor(cfg, CuArray(S), CuArray(Tlm)), cpu, exact)
+            Vt_out = CUDA.zeros(Float64, size(Vt64)); Vp_out = similar(Vt_out)
+            synthesis_sphtor!(plan, Vt_out, Vp_out, CuArray(S), CuArray(Tlm))
+            test_promoted((Vt_out, Vp_out), cpu, exact)
+            test_promoted(synthesis_sphtor_cplx(cfg, CuArray(S), CuArray(Tlm)),
+                          synthesis_sphtor_cplx(cfg, S, Tlm),
+                          synthesis_sphtor_cplx(cfg, promoted(S, Tlm)...))
+        end
+
+        for wide in 1:3
+            fields = ntuple(i -> (i == wide ? Float64 : Float32).((Vr64, Vt64, Vp64)[i]), 3)
+            exact = (analysis(cfg, fields[1]),
+                     analysis_sphtor(cfg, promoted(fields[2], fields[3])...)...)
+            test_promoted(analysis_qst(cfg, map(CuArray, fields)...),
+                          analysis_qst(cfg, fields...), exact)
+            spectra = ntuple(i -> (i == wide ? ComplexF64 : ComplexF32).((Q64, S64, T64)[i]), 3)
+            for real_output in (true, false)
+                exact = (synthesis(cfg, spectra[1]; real_output),
+                         synthesis_sphtor(cfg, promoted(spectra[2], spectra[3])...;
+                                          real_output)...)
+                test_promoted(synthesis_qst(cfg, map(CuArray, spectra)...; real_output),
+                              synthesis_qst(cfg, spectra...; real_output), exact)
+            end
+        end
+
+        stored_im = 1
+        physical_m = stored_im * cfg.mres
+        ltr = cfg.lmax
+        Sl64 = S64[(physical_m + 1):end, physical_m + 1]
+        Tl64 = T64[(physical_m + 1):end, physical_m + 1]
+        for (A, B) in ((ComplexF32, ComplexF64), (ComplexF64, ComplexF32))
+            Sl, Tl = A.(Sl64), B.(Tl64)
+            exact = synthesis_sphtor_ml(cfg, stored_im, promoted(Sl, Tl)..., ltr)
+            test_promoted(synthesis_sphtor_ml(cfg, stored_im, CuArray(Sl), CuArray(Tl), ltr),
+                          synthesis_sphtor_ml(cfg, stored_im, Sl, Tl, ltr), exact)
+            Vtl, Vpl = A.(exact[1]), B.(exact[2])
+            test_promoted(analysis_sphtor_ml(cfg, stored_im, CuArray(Vtl), CuArray(Vpl), ltr),
+                          analysis_sphtor_ml(cfg, stored_im, Vtl, Vpl, ltr),
+                          analysis_sphtor_ml(cfg, stored_im, promoted(Vtl, Vpl)..., ltr))
+        end
+    end
+    return nothing
+end
+
 struct SafeFallbackRedispatchError <: Exception end
 
 struct SafeFallbackArray{T,N,A<:AbstractArray{T,N}} <: AbstractArray{T,N}
@@ -264,7 +349,7 @@ SHTnsKit.synthesis(::SHTConfig, ::SafeFallbackArray; kwargs...) =
                 Tuple{SHTnsKit.GPU,SHTConfig,CuArray{ComplexF32,2},Float32,Float32}).module === extension
     @test which(SHqst_to_point,
                 Tuple{SHTnsKit.GPU,SHTConfig,CuArray{ComplexF32,1},CuArray{ComplexF32,1},CuArray{ComplexF32,1},Float32,Float32}).module === extension
-    @test fieldnames(extension.CUDAScalarTables) == (:x, :weights, :Plm, :scales)
+    @test fieldnames(extension.CUDAScalarTables) == (:sint, :weights, :Plm, :scales)
     @test isdefined(extension, :CUDAVectorTables)
     @test isdefined(extension, :_CUDA_VECTOR_CACHE)
     @test isdefined(extension, :_cuda_vector_tables)
@@ -667,6 +752,7 @@ SHTnsKit.synthesis(::SHTConfig, ::SafeFallbackArray; kwargs...) =
         assert_warm_device_noalloc(CUDAScalarAdapter()) do
             synthesis_sphtor!(vector_plan, plan_Vt, plan_Vp, plan_S, plan_T)
         end
+        test_mixed_precision_single_field()
         variant_cfg = create_gauss_config(
             5, 8; nlon=14, mres=2, norm=:schmidt,
             real_norm=true, cs_phase=false,

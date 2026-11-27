@@ -67,16 +67,20 @@ function spatial_err(out, prototype)
 end
 
 @testset "2D plan alignment contracts (4 ranks)" begin
-    for (pθ, pφ) in ((4, 1), (1, 4), (2, 2))
+    for (pθ, pφ) in ((4, 1), (1, 4), (2, 2)), scratch_type in (nothing, Float32, Float64)
         f = spatial(pθ, pφ)
-        plan = EXT.create_distributed_spectral_plan_2d(LMAX, CFG.mmax, COMM; p_l=pθ, p_m=pφ)
+        f32 = spatial(pθ, pφ, Float32)
+        plan = EXT.create_distributed_spectral_plan_2d(
+            LMAX, CFG.mmax, COMM; p_l=pθ, p_m=pφ, with_scratch=scratch_type !== nothing,
+            prototype_θφ=scratch_type === Float32 ? f32 : f, cfg=CFG,
+        )
         try
             aligned, _ = EXT.validate_2d_distribution_alignment(plan, f)
             # The verdict must be identical on every rank, or the guards below
             # would throw on some ranks and enter a collective on others.
             @test MPI.Allreduce(aligned, &, COMM) == MPI.Allreduce(aligned, |, COMM)
 
-            @testset "pθ=$pθ × pφ=$pφ (aligned=$aligned)" begin
+            @testset "pθ=$pθ × pφ=$pφ (aligned=$aligned, scratch=$scratch_type)" begin
                 # The safe paths are correct on every decomposition.
                 Asafe = EXT.dist_analysis_distributed_2d(CFG, f; plan=plan, assume_aligned=false)
                 @test maximum(abs, EXT.gather_to_full_dense_2d(Asafe) .- AREF) <
@@ -84,7 +88,6 @@ end
 
                 # Float32 fields keep their precision; the 2D analyses used to
                 # return ComplexF64 coefficients for any input.
-                f32 = spatial(pθ, pφ, Float32)
                 for assume_aligned in (aligned ? (false, true) : (false,))
                     A32 = EXT.dist_analysis_distributed_2d(CFG, f32; plan, assume_aligned)
                     @test eltype(A32.local_coeffs) === ComplexF32
@@ -104,6 +107,22 @@ end
                           1e-12 * maximum(abs, AREF)
                     @test spatial_err(
                         EXT.dist_synthesis_distributed_2d_optimized(CFG, dsa; prototype_θφ=f), f) < 1e-11
+
+                    dsa32 = EXT.create_distributed_spectral_array_2d(plan, ComplexF32)
+                    alm32 = ComplexF32.(ALM)
+                    EXT.scatter_from_dense_2d!(dsa32, alm32)
+                    ranges = PencilArrays.range_local(PencilArrays.pencil(f32))
+                    for real_output in (true, false)
+                        out = EXT.dist_synthesis_distributed_2d_optimized(
+                            CFG, dsa32; prototype_θφ=f32, real_output,
+                        )
+                        ref = synthesis(CFG, alm32; real_output)
+                        @test eltype(out) === eltype(ref)
+                        @test out ≈ ref[ranges...] rtol=1e-5
+                        if real_output && scratch_type === Float32 && length(ranges[2]) == NLON
+                            @test out === plan.scratch.fθφ_result
+                        end
+                    end
                 else
                     # ...and raise, rather than returning garbage, where it does not.
                     @test_throws ArgumentError EXT.dist_analysis_distributed_2d(

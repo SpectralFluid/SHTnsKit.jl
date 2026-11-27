@@ -177,8 +177,12 @@ _to_cpu(value) = value
 _to_cpu(value::Array) = value
 _to_cpu(value::AbstractArray) = Array(value)
 
-"""Return `CPU()` for ordinary arrays; vendor extensions specialize this."""
-on_device(::AbstractArray) = CPU()
+"""Return `CPU()` for ordinary arrays; vendor extensions specialize this.
+A wrapper reports the storage of the array it wraps."""
+function on_device(x::AbstractArray)
+    p = parent(x)
+    return p !== x && p isa AbstractArray ? on_device(p) : CPU()
+end
 
 function _require_cpu_storage(operation::Symbol, value)
     on_device(value) isa CPU && return nothing

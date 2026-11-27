@@ -7,6 +7,14 @@ using Random
 
 @isdefined(VERBOSE) || (const VERBOSE = get(ENV, "SHTNSKIT_TEST_VERBOSE", "0") == "1")
 
+# Zero-based coefficients, standing in for OffsetArrays without the dependency.
+struct ZeroBasedCoefficients{T,N} <: AbstractArray{T,N}
+    data::Array{T,N}
+end
+Base.size(a::ZeroBasedCoefficients) = size(a.data)
+Base.axes(a::ZeroBasedCoefficients) = map(n -> 0:n-1, size(a.data))
+Base.getindex(a::ZeroBasedCoefficients{T,N}, i::Vararg{Int,N}) where {T,N} = a.data[(i .+ 1)...]
+
 @testset "Local Evaluations" begin
     @testset "Robert-form local vector evaluations match grid synthesis" begin
         for grid in (:gauss, :regular_poles), mres in (1, 2)
@@ -115,6 +123,34 @@ using Random
                     cfg, zeros(CT, SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)), x, φ) isa CT
             end
         end
+    end
+
+    @testset "exact coordinates evaluate at the coefficient precision" begin
+        cfg = create_gauss_config(4, 6; nlon=9)
+        @test SHTnsKit._local_eval_types(ComplexF32, 0, 1) === (Float32, Float32, ComplexF32)
+        @test SHTnsKit._local_eval_types(ComplexF32, 1//2, π) === (Float32, Float32, ComplexF32)
+        @test SHTnsKit._local_eval_types(ComplexF32, 0.3, 0) === (Float64, Float32, ComplexF64)
+        @test SHTnsKit._local_eval_types(ComplexF64, 0f0, 0) === (Float64, Float64, ComplexF64)
+        A = zeros(ComplexF32, cfg.lmax + 1, cfg.mmax + 1)
+        A[2, 1] = 0.6f0; A[3, 2] = ComplexF32(0.4, 0.2)
+        @test synthesis_point(cfg, A, 0, 1) ≈ synthesis_point(cfg, A, 0f0, 1f0) rtol=1e-6
+        @test SH_to_lat(cfg, SHTnsKit.pack_lm(cfg, A), 0) ≈ SH_to_lat(cfg, SHTnsKit.pack_lm(cfg, A), 0f0)
+    end
+
+    @testset "evaluators reject coefficient arrays that are not one-based" begin
+        # The evaluators read coefficients under @inbounds, so a zero-based
+        # array of the right length would be read past its end.
+        cfg = create_gauss_config(4, 6)
+        packed = ZeroBasedCoefficients(zeros(ComplexF64, cfg.nlm))
+        signed = ZeroBasedCoefficients(zeros(ComplexF64, SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)))
+        dense = ZeroBasedCoefficients(zeros(ComplexF64, cfg.lmax + 1, cfg.mmax + 1))
+        @test_throws ArgumentError synthesis_point(cfg, dense, 0.3, 0.2)
+        @test_throws ArgumentError synthesis_point_cplx(cfg, signed, 0.3, 0.2)
+        @test_throws ArgumentError SH_to_lat(cfg, packed, 0.3)
+        @test_throws ArgumentError SH_to_lat_cplx(cfg, signed, 0.3)
+        @test_throws ArgumentError SHTnsKit.SHqst_to_point(cfg, packed, packed, packed, 0.3, 0.2)
+        @test_throws ArgumentError SHqst_to_lat(cfg, packed, packed, packed, 0.3)
+        @test_throws ArgumentError SHTnsKit.SH_to_grad_point(cfg, packed, packed, 0.3, 0.2)
     end
 
     @testset "SH_to_lat matches synthesis at grid latitudes" begin

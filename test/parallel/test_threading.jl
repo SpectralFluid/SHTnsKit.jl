@@ -99,19 +99,21 @@ end
         end
     end
 
-    @testset "Per-thread SHTPlan: concurrent analysis" begin
+    @testset "Concurrent analysis with one plan per group of fields" begin
         lmax = 6
         cfg = create_gauss_config(lmax, lmax + 2; nlon=2*lmax + 1)
-        plans = [SHTPlan(cfg) for _ in 1:Threads.maxthreadid()]
 
         ntasks = 12
         rng = MersenneTwister(1100)
         fields = [randn(rng, cfg.nlat, cfg.nlon) for _ in 1:ntasks]
         outs = [zeros(ComplexF64, lmax + 1, lmax + 1) for _ in 1:ntasks]
 
-        @threads :static for k in 1:ntasks
-            plan = plans[Threads.threadid()]
-            analysis!(plan, outs[k], fields[k])
+        nplans = min(nt, length(fields))
+        plans = [SHTPlan(cfg) for _ in 1:nplans]
+        @threads for slot in eachindex(plans)
+            for k in slot:nplans:length(fields)
+                analysis!(plans[slot], outs[k], fields[k])
+            end
         end
 
         for k in 1:ntasks
@@ -135,6 +137,25 @@ end
             ref = analysis(cfg, fields[:, :, k])
             @test isapprox(alm_batch[:, :, k], ref; rtol=1e-11, atol=1e-13)
         end
+    end
+
+    @testset "Batch Legendre work is distributed over stored orders" begin
+        cfg = create_gauss_fly_config(8, 10; mres=2)
+        fields = randn(MersenneTwister(1230), cfg.nlat, cfg.nlon, 3)
+        alms = cat((analysis(cfg, f) for f in eachslice(fields; dims=3))...; dims=3)
+        recovered = cat((synthesis(cfg, a) for a in eachslice(alms; dims=3))...; dims=3)
+        scratch = cfg._otf_scratch_P
+        expected_workers = SHTnsKit._use_internal_mloop_threads() ?
+            min(nt, length(0:cfg.mres:cfg.mmax)) : 1
+        for (transform, ref) in (
+                (() -> analysis_batch!(cfg, similar(alms), fields), alms),
+                (() -> synthesis_batch!(cfg, similar(fields), alms), recovered))
+            foreach(buffer -> fill!(buffer, NaN), scratch)
+            @test transform() ≈ ref
+            @test count(buffer -> any(isfinite, buffer), scratch) == expected_workers
+        end
+        _test_threaded_matches(k -> analysis_batch(cfg, k .* fields),
+                               [k .* alms for k in 1:4]; rtol=1e-11, atol=1e-13)
     end
 
     @testset "Batch synthesis: result independent of thread count" begin

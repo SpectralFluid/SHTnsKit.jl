@@ -120,8 +120,8 @@ by higher-level helpers when needed.
 Check if threading configuration is optimal for this transform configuration.
 Returns utilization statistics and optionally warns about suboptimal setups.
 
-SHTnsKit parallelizes transforms over m-modes (azimuthal order) using
-`@threads :static`. If `mmax + 1 < nthreads`, some threads will be idle.
+A top-level transform distributes the stored azimuthal orders
+`0:cfg.mres:cfg.mmax` across Julia's default thread pool.
 
 # Arguments
 - `cfg::SHTConfig`: The transform configuration to check
@@ -131,28 +131,21 @@ SHTnsKit parallelizes transforms over m-modes (azimuthal order) using
 A named tuple with:
 - `nthreads`: Number of Julia threads available
 - `mmax`: Maximum azimuthal order from config
-- `active_threads`: Number of threads that will actually do work
+- `active_threads`: Maximum number of threads that can each process a stored order
 - `utilization`: Fraction of threads utilized (0.0 to 1.0)
 
 # Example
 ```julia
-cfg = create_gauss_config(8, 10)  # Small problem with mmax=8
-stats = check_thread_utilization(cfg)
-# If running with 16 threads, this warns about only 9 active threads (56%)
-
-# For better utilization, either:
-# 1. Use fewer threads: julia -t 8
-# 2. Use larger mmax: cfg = create_gauss_config(32, 34)
+cfg = create_gauss_config(8, 10; mmax=4, mres=4)
+stats = SHTnsKit.check_thread_utilization(cfg)
+# With four threads, orders 0 and 4 can use two workers.
 ```
-
-See also: [`configure_threading!`](@ref)
 """
 function check_thread_utilization(cfg::SHTConfig; warn::Bool=true)
     nthreads = Threads.nthreads()
     mmax = cfg.mmax
 
-    # With @threads :static for m in 0:mmax, we have (mmax + 1) work items
-    work_items = mmax + 1
+    work_items = length(0:cfg.mres:mmax)
     active_threads = min(nthreads, work_items)
     utilization = nthreads > 0 ? active_threads / nthreads : 1.0
 
@@ -174,6 +167,12 @@ and phase convention configured by `cfg`.
 Parallelizes over m-modes using static scheduling for consistent performance.
 """
 function analysis(cfg::SHTConfig, f::AbstractMatrix; fft_scratch::Union{Nothing,AbstractMatrix{<:Complex}}=nothing, use_rfft::Bool=false)
+    # Vendor methods take device arrays and single views of them. GPU storage
+    # in another wrapper reaches this method and goes through the adapter.
+    if on_device(f) isa GPU
+        scratch = fft_scratch === nothing ? (;) : (; fft_scratch)
+        return analysis(GPU(), cfg, f; use_rfft, scratch...)
+    end
     nlat, nlon = cfg.nlat, cfg.nlon
     size(f, 1) == nlat || throw(DimensionMismatch("first dim must be nlat=$(nlat)"))
     size(f, 2) == nlon || throw(DimensionMismatch("second dim must be nlon=$(nlon)"))
@@ -267,6 +266,11 @@ Inverse transform back to a grid `(nlat, nlon)`. If `real_output=true`,
 Hermitian symmetry is enforced before IFFT.
 """
 Base.@constprop :aggressive function synthesis(cfg::SHTConfig, alm::AbstractMatrix; real_output::Bool=true, fft_scratch::Union{Nothing,AbstractMatrix{<:Complex}}=nothing, use_rfft::Bool=false)
+    # GPU storage in a wrapper no vendor method takes; see `analysis`.
+    if on_device(alm) isa GPU
+        scratch = fft_scratch === nothing ? (;) : (; fft_scratch)
+        return synthesis(GPU(), cfg, alm; real_output, use_rfft, scratch...)
+    end
     # Function barrier: output element type and FFT buffer shape depend on
     # keyword values, so route literals through Val-dispatched methods.
     return _synthesis(cfg, alm, Val(real_output), fft_scratch, Val(use_rfft))
@@ -280,6 +284,7 @@ Complex-output inverse scalar transform. This is equivalent to
 output mode so callers can rely on a concrete return type.
 """
 function synthesis_cplx(cfg::SHTConfig, alm::AbstractMatrix)
+    on_device(alm) isa GPU && return synthesis_cplx(GPU(), cfg, alm)
     return _synthesis(cfg, alm, Val(false), nothing, Val(false))
 end
 
@@ -289,6 +294,11 @@ function _synthesis(cfg::SHTConfig, alm::AbstractMatrix, ::Val{real_output},
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
+    # The scratch is cleared before the Legendre sums read the coefficients,
+    # so scratch that shares their memory is replaced, as in `_analysis!`.
+    if fft_scratch !== nothing && Base.mightalias(fft_scratch, alm)
+        fft_scratch = similar(fft_scratch)
+    end
     scale_matrix = _coefficient_scale_matrix_to_canonical(cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
     # Fourier bins are complex even when all spectral coefficients are real.
@@ -374,6 +384,13 @@ function _synthesis!(cfg::SHTConfig, f_out::AbstractMatrix, alm::AbstractMatrix,
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))
+    # Clearing the scratch must not touch the coefficients, and the inverse FFT
+    # must not write over output it has yet to fill. Replace scratch sharing
+    # memory with either; complex output may still be its own scratch.
+    if fft_scratch !== nothing && (Base.mightalias(fft_scratch, alm) ||
+                                   (fft_scratch !== f_out && Base.mightalias(fft_scratch, f_out)))
+        fft_scratch = similar(fft_scratch)
+    end
     scale_matrix = _coefficient_scale_matrix_to_canonical(cfg)
     nlat, nlon = cfg.nlat, cfg.nlon
     CT = complex(float(eltype(alm)))

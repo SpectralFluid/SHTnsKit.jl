@@ -1190,9 +1190,11 @@ function exchange!(send, receive, comm;
 end
 
 function _parallel_storage_code(value)
-    adapter = _parallel_gpu_adapter(_parallel_parent(value))
-    adapter === nothing && return 0
-    return _parallel_vendor_code(adapter.name)
+    raw = _parallel_parent(value)
+    adapter = _parallel_gpu_adapter(raw)
+    adapter === nothing || return _parallel_vendor_code(adapter.name)
+    # GPU storage that no MPI adapter recognizes (Metal) has no distributed path.
+    return SHTnsKit.on_device(raw) isa SHTnsKit.GPU ? -1 : 0
 end
 
 """Validate vendor/residency collectively before allocation or mutation."""
@@ -1206,6 +1208,12 @@ function _validate_parallel_storage!(comm, operation::Symbol, values...;
     global_min = MPI.Allreduce(local_min, min, comm)
     global_max = MPI.Allreduce(local_max, max, comm)
     global_min == global_max || (flags |= 0x20000)
+    # Every rank sees the same reduced code, so all of them throw here.
+    global_min < 0 && throw(SHTnsKit.BackendUnavailableError(
+        operation,
+        "distributed transforms need CPU, CUDA or ROCm storage; this GPU backend " *
+        "has no MPI support, so copy the data to the CPU first",
+    ))
     device_descriptors = Any[]
     for value in values
         raw = _parallel_parent(value)

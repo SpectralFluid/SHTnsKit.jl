@@ -6,10 +6,23 @@ Local/partial evaluations along latitude circles and at points.
     devices = map(on_device, arrays)
     all(device -> typeof(device) === typeof(first(devices)), devices) ||
         throw(ArgumentError("$operation requires all coefficient arrays on the same backend"))
-    first(devices) isa GPU && throw(ArgumentError(
-        "$operation with GPU storage requires GPU() dispatch and one vendor's arrays",
-    ))
+    first(devices) isa GPU && throw(_local_gpu_unavailable(operation))
+    # The evaluators index coefficients from 1 inside @inbounds loops.
+    Base.require_one_based_indexing(arrays...)
     return nothing
+end
+
+# Vendor extensions define the GPU methods for point and latitude evaluation,
+# so GPU storage that reaches the generic methods belongs to a backend without
+# them (Metal).
+_local_gpu_unavailable(operation::Symbol) = BackendUnavailableError(
+    operation,
+    "this GPU backend does not implement it; copy the coefficients with to_device(CPU(), x) first",
+)
+
+function _local_gpu_fallback_error(operation::Symbol, arrays...)
+    all(array -> on_device(array) isa GPU, arrays) && return _local_gpu_unavailable(operation)
+    return ArgumentError("$operation(GPU(), ...) requires one supported GPU vendor's storage")
 end
 
 """
@@ -401,18 +414,18 @@ function SH_to_grad_point(::CPU, cfg::SHTConfig,
 end
 
 
-SH_to_lat(::GPU, ::SHTConfig, ::AbstractVector{<:Complex}, ::Real; kwargs...) =
-    throw(ArgumentError("SH_to_lat(GPU(), ...) requires one supported GPU vendor's storage"))
-SH_to_lat_cplx(::GPU, ::SHTConfig, ::AbstractVector{<:Complex}, ::Real; kwargs...) =
-    throw(ArgumentError("SH_to_lat_cplx(GPU(), ...) requires one supported GPU vendor's storage"))
-SHqst_to_point(::GPU, ::SHTConfig, ::AbstractVector{<:Complex},
-               ::AbstractVector{<:Complex}, ::AbstractVector{<:Complex},
+SH_to_lat(::GPU, ::SHTConfig, Qlm::AbstractVector{<:Complex}, ::Real; kwargs...) =
+    throw(_local_gpu_fallback_error(:SH_to_lat, Qlm))
+SH_to_lat_cplx(::GPU, ::SHTConfig, alm::AbstractVector{<:Complex}, ::Real; kwargs...) =
+    throw(_local_gpu_fallback_error(:SH_to_lat_cplx, alm))
+SHqst_to_point(::GPU, ::SHTConfig, Qlm::AbstractVector{<:Complex},
+               Slm::AbstractVector{<:Complex}, Tlm::AbstractVector{<:Complex},
                ::Real, ::Real) =
-    throw(ArgumentError("SHqst_to_point(GPU(), ...) requires one supported GPU vendor's storage"))
-SHqst_to_lat(::GPU, ::SHTConfig, ::AbstractVector{<:Complex},
-             ::AbstractVector{<:Complex}, ::AbstractVector{<:Complex},
+    throw(_local_gpu_fallback_error(:SHqst_to_point, Qlm, Slm, Tlm))
+SHqst_to_lat(::GPU, ::SHTConfig, Qlm::AbstractVector{<:Complex},
+             Slm::AbstractVector{<:Complex}, Tlm::AbstractVector{<:Complex},
              ::Real; kwargs...) =
-    throw(ArgumentError("SHqst_to_lat(GPU(), ...) requires one supported GPU vendor's storage"))
-SH_to_grad_point(::GPU, ::SHTConfig, ::AbstractVector{<:Complex},
-                 ::AbstractVector{<:Complex}, ::Real, ::Real) =
-    throw(ArgumentError("SH_to_grad_point(GPU(), ...) requires one supported GPU vendor's storage"))
+    throw(_local_gpu_fallback_error(:SHqst_to_lat, Qlm, Slm, Tlm))
+SH_to_grad_point(::GPU, ::SHTConfig, DrSlm::AbstractVector{<:Complex},
+                 Slm::AbstractVector{<:Complex}, ::Real, ::Real) =
+    throw(_local_gpu_fallback_error(:SH_to_grad_point, DrSlm, Slm))

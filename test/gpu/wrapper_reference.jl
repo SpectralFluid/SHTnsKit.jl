@@ -288,6 +288,20 @@ end
         @test GPUCommon.scalar_cache_lookup(tables, :device, identity, Float64,
                                             UInt(2); owner=[1.0]) === nothing
 
+        # Planned transforms key their workspace on the SHTPlan, held weakly.
+        # A live plan must keep it through a collection instead of rebuilding.
+        workspaces = GPUCommon.ScalarWorkspaceCache(4)
+        plan = SHTPlan(create_gauss_config(4, 6))
+        builds = Ref(0)
+        use_workspace() = GPUCommon.scalar_workspace_use!(
+            workspace -> workspace, () -> (builds[] += 1; :workspace),
+            workspaces, :device, plan, Float64, :fft, (1,), UInt(0),
+        )
+        use_workspace()
+        GC.gc(); GC.gc()
+        @test use_workspace() === :workspace
+        @test builds[] == 1
+
         # Dense rotation blocks grow like lmax³, so the cache is byte-bounded.
         blocks = GPUCommon.RotationBlockCache(8; max_bytes_per_device=1000)
         block(n) = (values=zeros(UInt8, n), alpha=0.0)

@@ -109,31 +109,38 @@ simultaneously. The internal buffers (`P`, `dPdtheta`, `G`, `Fθk`, etc.) are
 shared mutable state — concurrent calls to `analysis!` or `synthesis!` on the
 same plan will produce data races and incorrect results.
 
-For multi-threaded use, create one `SHTPlan` per thread:
+For multi-threaded use, give each group of fields its own plan. The loop
+iteration owns that plan even if Julia moves its task to another thread.
+
 ```julia
-plans = [SHTPlan(cfg) for _ in 1:Threads.nthreads()]
-Threads.@threads for i in 1:n
-    plan = plans[Threads.threadid()]
-    analysis!(plan, alm_out[i], fields[i])
+nplans = min(Threads.nthreads(), length(fields))
+plans = [SHTPlan(cfg) for _ in 1:nplans]
+Threads.@threads for slot in eachindex(plans)
+    for i in slot:nplans:length(fields)
+        analysis!(plans[slot], alm_out[i], fields[i])
+    end
 end
 ```
 """
-struct SHTPlan{FP, IP, RP, IRP}
-    cfg::SHTConfig                # Configuration parameters
-    P::Vector{Float64}            # Working array for Legendre polynomials P_l^m(x)
-    dPdx::Vector{Float64}         # Working array for derivatives dP_l^m/dx (legacy, kept for compatibility)
-    dPdtheta::Vector{Float64}     # Working array for pole-safe derivatives dP_l^m/dθ
-    P_over_sinth::Vector{Float64} # Working array for pole-safe P_l^m/sin(θ)
-    Pb::Vector{Float64}           # Scratch buffer of length lmax+2 for normalized dθ recurrence
-    G::Vector{ComplexF64}         # Temporary array for latitudinal profiles
-    Fθk::Matrix{ComplexF64}       # Fourier coefficient matrix [latitude × longitude] (complex path)
-    Fθk_r::Matrix{ComplexF64}     # (nlat, nlon÷2+1) buffer for rfft path; 0×0 when use_rfft=false
-    real_scratch::Matrix{Float64} # (nlat, nlon) real scratch for rfft path; 0×0 when use_rfft=false
-    fft_plan::FP                  # Pre-optimized forward FFT plan
-    ifft_plan::IP                 # Pre-optimized inverse FFT plan
-    rfft_plan::RP                 # Real→complex FFT plan (nothing when use_rfft=false)
-    irfft_plan::IRP               # Complex→real inverse FFT plan (nothing when use_rfft=false)
-    use_rfft::Bool                # Flag: true = use real FFT optimization, false = complex FFT
+# Mutable only for a stable identity; every field is const. GPU extensions key
+# device workspaces on the plan through a WeakRef, and a WeakRef to an
+# immutable plan can hold a transient copy that the next collection clears.
+mutable struct SHTPlan{FP, IP, RP, IRP}
+    const cfg::SHTConfig                # Configuration parameters
+    const P::Vector{Float64}            # Working array for Legendre polynomials P_l^m(x)
+    const dPdx::Vector{Float64}         # Working array for derivatives dP_l^m/dx (legacy, kept for compatibility)
+    const dPdtheta::Vector{Float64}     # Working array for pole-safe derivatives dP_l^m/dθ
+    const P_over_sinth::Vector{Float64} # Working array for pole-safe P_l^m/sin(θ)
+    const Pb::Vector{Float64}           # Scratch buffer of length lmax+2 for normalized dθ recurrence
+    const G::Vector{ComplexF64}         # Temporary array for latitudinal profiles
+    const Fθk::Matrix{ComplexF64}       # Fourier coefficient matrix [latitude × longitude] (complex path)
+    const Fθk_r::Matrix{ComplexF64}     # (nlat, nlon÷2+1) buffer for rfft path; 0×0 when use_rfft=false
+    const real_scratch::Matrix{Float64} # (nlat, nlon) real scratch for rfft path; 0×0 when use_rfft=false
+    const fft_plan::FP                  # Pre-optimized forward FFT plan
+    const ifft_plan::IP                 # Pre-optimized inverse FFT plan
+    const rfft_plan::RP                 # Real→complex FFT plan (nothing when use_rfft=false)
+    const irfft_plan::IRP               # Complex→real inverse FFT plan (nothing when use_rfft=false)
+    const use_rfft::Bool                # Flag: true = use real FFT optimization, false = complex FFT
 end
 
 @inline function _checked_plan_config(plan::SHTPlan)
@@ -220,7 +227,13 @@ function analysis_sphtor!(plan::SHTPlan, Slm_out::AbstractMatrix, Tlm_out::Abstr
     size(Slm_out,1)==cfg.lmax+1 && size(Slm_out,2)==cfg.mmax+1 || throw(DimensionMismatch("Slm_out dims"))
     size(Tlm_out,1)==cfg.lmax+1 && size(Tlm_out,2)==cfg.mmax+1 || throw(DimensionMismatch("Tlm_out dims"))
     _validate_robert_analysis(cfg)
-    
+    # Both spectra are cleared and accumulated before the second pass reads Vp,
+    # so inputs that share memory with an output are read from copies.
+    if Base.mightalias(Slm_out, Vt) || Base.mightalias(Slm_out, Vp) ||
+       Base.mightalias(Tlm_out, Vt) || Base.mightalias(Tlm_out, Vp)
+        return analysis_sphtor!(plan, Slm_out, Tlm_out, copy(Vt), copy(Vp))
+    end
+
     lmax, mmax = cfg.lmax, cfg.mmax
     scaleφ = _analysis_phi_scale(cfg)  # inverts synthesis under any phi_scale (= cphi under :dft)
     fill!(Slm_out, zero(eltype(Slm_out))); fill!(Tlm_out, zero(eltype(Tlm_out)))
@@ -312,7 +325,11 @@ function synthesis_sphtor!(plan::SHTPlan, Vt_out::AbstractMatrix, Vp_out::Abstra
     size(Vp_out,1)==nlat && size(Vp_out,2)==nlon || throw(DimensionMismatch("Vp_out dims"))
     size(Slm,1)==cfg.lmax+1 && size(Slm,2)==cfg.mmax+1 || throw(DimensionMismatch("Slm dims"))
     size(Tlm,1)==cfg.lmax+1 && size(Tlm,2)==cfg.mmax+1 || throw(DimensionMismatch("Tlm dims"))
-    
+    # The second pass reads the spectra again after Vt_out is written.
+    if Base.mightalias(Vt_out, Slm) || Base.mightalias(Vt_out, Tlm)
+        return synthesis_sphtor!(plan, Vt_out, Vp_out, copy(Slm), copy(Tlm); real_output)
+    end
+
     lmax, mmax = cfg.lmax, cfg.mmax
     inv_scaleφ = phi_inv_scale(cfg)
     

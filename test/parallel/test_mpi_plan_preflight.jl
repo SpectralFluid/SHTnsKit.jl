@@ -306,6 +306,34 @@ end
         )
     end
 
+    @testset "cached analysis detects an interior weight change on a large grid" begin
+        # Integrate the constant harmonic with exact latitude-band areas.
+        nrings = 32_768
+        θ = (π / nrings) .* ((1:nrings) .- 0.5)
+        weights = (2sinpi(0.5 / nrings)) .* sin.(θ)
+        grid = SHTConfig(; lmax=0, mmax=0, mres=1, nlat=nrings, nlon=1,
+                         θ, φ=[0.0], x=cos.(θ), w=weights, st=sin.(θ), cphi=2π,
+                         Nlm=SHTnsKit.Nlm_table(0, 0), nlm=1, li=[0], mi=[0],
+                         nspat=nrings, norm=:orthonormal, cs_phase=true,
+                         real_norm=false, robert_form=false, grid_type=:regular,
+                         phi_scale=:dft)
+        ring = nrings ÷ 2
+        values = zeros(nrings, 1)
+        values[ring] = inv(grid.w[ring])
+        ring_field = distributed_spatial(grid, values)
+        plan = DistAnalysisPlan(grid, ring_field)
+        coefficient = zeros(ComplexF64, 1, 1)
+        dist_analysis!(plan, coefficient, ring_field)
+        original = only(coefficient)
+        @test real(original) > 0
+
+        grid.w[ring] *= 2
+        @test_throws ArgumentError dist_analysis!(plan, coefficient, ring_field)
+        @test only(coefficient) == original
+        dist_analysis!(DistAnalysisPlan(grid, ring_field), coefficient, ring_field)
+        @test only(coefficient) ≈ 2original
+    end
+
     @testset "2D scratch plans remain bound to cfg and prototype" begin
         plan = ParExt.create_distributed_spectral_plan_2d(
             lmax, lmax, comm; p_l=1, p_m=nprocs, mres=1,

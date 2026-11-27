@@ -147,6 +147,24 @@ using SHTnsKit
         @test_throws ArgumentError create_gauss_config(5, 3)  # nlat < lmax+1
     end
 
+    @testset "lmax reassignment respects each grid's latitude minimum" begin
+        # The constructors enforce these minimums; assigning cfg.lmax used to
+        # check only Gauss grids, so the others silently lost accuracy.
+        dh = create_regular_config(8, 18; nlon=40, include_poles=true, use_dh_weights=true)
+        @test_throws ArgumentError (dh.lmax = 12)
+        @test dh.lmax == 8
+        @test_throws ArgumentError (create_regular_config(8, 10).lmax = 9)
+        @test_throws ArgumentError (create_regular_config(8, 9; include_poles=true).lmax = 9)
+        # Lowering the degree keeps the quadrature exact.
+        dh.mmax = 4; dh.lmax = 4
+        rng = MersenneTwister(457)
+        alm = zeros(ComplexF64, dh.lmax + 1, dh.mmax + 1)
+        for m in 0:dh.mmax, l in m:dh.lmax
+            alm[l + 1, m + 1] = m == 0 ? randn(rng) : randn(rng, ComplexF64)
+        end
+        @test analysis(dh, synthesis(dh, alm)) ≈ alm rtol=1e-10
+    end
+
     @testset "south pole first toggle" begin
         lmax = 6
         nlat = lmax + 2

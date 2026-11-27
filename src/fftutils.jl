@@ -106,10 +106,21 @@ const _FFT_PLAN_CACHE_ENABLED = Ref(true)
 # grow this dictionary without bound. Flush wholesale when the cap is reached.
 const _FFT_PLAN_CACHE_MAX = Ref(64)
 
+# The initial values above are the defaults; set variables override them at load.
+# A malformed cap must not make `using SHTnsKit` fail, so it warns and keeps the
+# default.
 function __init__()
-    _FFT_PLAN_CACHE_ENABLED[] = get(ENV, "SHTNSKIT_FFT_PLAN_CACHE",
-                                    get(ENV, "SHTNSKIT_CACHE_PENCILFFTS", "1")) != "0"
-    _FFT_PLAN_CACHE_MAX[] = parse(Int, get(ENV, "SHTNSKIT_FFT_PLAN_CACHE_MAX", "64"))
+    enabled = get(ENV, "SHTNSKIT_FFT_PLAN_CACHE", get(ENV, "SHTNSKIT_CACHE_PENCILFFTS", nothing))
+    enabled === nothing || (_FFT_PLAN_CACHE_ENABLED[] = enabled != "0")
+    cap = get(ENV, "SHTNSKIT_FFT_PLAN_CACHE_MAX", nothing)
+    if cap !== nothing
+        parsed = tryparse(Int, cap)
+        if parsed === nothing
+            @warn "Ignoring SHTNSKIT_FFT_PLAN_CACHE_MAX=$(repr(cap)): expected an integer; keeping $(_FFT_PLAN_CACHE_MAX[])"
+        else
+            _FFT_PLAN_CACHE_MAX[] = parsed
+        end
+    end
     return nothing
 end
 

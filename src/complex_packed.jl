@@ -251,9 +251,7 @@ end
 Evaluate a complex field represented by packed `alm` at a single point.
 """
 function synthesis_point_cplx(cfg::SHTConfig, alm::AbstractVector{<:Complex}, cost::Real, phi::Real)
-    on_device(alm) isa CPU || throw(ArgumentError(
-        "synthesis_point_cplx with GPU storage requires GPU() dispatch",
-    ))
+    _validate_local_storage(:synthesis_point_cplx, alm)
     expected = nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)
     length(alm) == expected || throw(DimensionMismatch("alm length mismatch"))
     cfg.mres == 1 || throw(ArgumentError("synthesis_point_cplx supports mres==1 only; got mres=$(cfg.mres)"))
@@ -295,5 +293,5 @@ function synthesis_point_cplx(::CPU, cfg::SHTConfig,
     return synthesis_point_cplx(cfg, alm, cost, phi)
 end
 
-synthesis_point_cplx(::GPU, ::SHTConfig, ::AbstractVector{<:Complex}, ::Real, ::Real) =
-    throw(ArgumentError("synthesis_point_cplx(GPU(), ...) requires one supported GPU vendor's storage"))
+synthesis_point_cplx(::GPU, ::SHTConfig, alm::AbstractVector{<:Complex}, ::Real, ::Real) =
+    throw(_local_gpu_fallback_error(:synthesis_point_cplx, alm))

@@ -137,10 +137,13 @@ function SHTnsKit.zgrad_rotation_angles_real(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
     cfg.mres == 1 || throw(ArgumentError("real rotation angle gradients require mres=1"))
     rotation = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax; α, β, γ, norm=cfg.norm,
                                     cs_phase=cfg.cs_phase, real_norm=cfg.real_norm)
-    rotated, back = Zygote.pullback(SHTnsKit.shtns_rotation_apply_real, rotation, Qlm, similar(Qlm))
-    # The output cotangent of sum(abs2, rotated)/2 is rotated itself.
-    rotation_gradient = back(rotated)[1]
-    return rotation_gradient.α, rotation_gradient.β, rotation_gradient.γ
+    rotated = SHTnsKit.shtns_rotation_apply_real(rotation, Qlm, similar(Qlm))
+    # The output cotangent of sum(abs2, rotated)/2 is rotated itself. Only the
+    # angles are differentiated, so the rrule's coefficient adjoint is skipped;
+    # a directly constructed rotation stores its angles in canonical ZYZ order.
+    return SHTnsKit._rotation_apply_real_angle_gradients(
+        rotation, SHTnsKit._internal_coefficients(Qlm, cfg),
+        SHTnsKit._analysis_cotangent_to_canonical(rotated, cfg))
 end
 
 """

@@ -225,6 +225,13 @@ using SHTnsKit
         @test stats.active_threads == min(stats.nthreads, cfg.mmax + 1)
         @test stats.utilization == stats.active_threads / max(stats.nthreads, 1)
 
+        for mmax in (4, 7)
+            strided = create_gauss_config(8, 10; mmax, mres=4)
+            strided_stats = SHTnsKit.check_thread_utilization(strided; warn=false)
+            @test strided_stats.active_threads == min(Threads.nthreads(), 2)
+            @test strided_stats.utilization == strided_stats.active_threads / Threads.nthreads()
+        end
+
         # Utilization should be in [0, 1]
         @test 0.0 <= stats.utilization <= 1.0
 

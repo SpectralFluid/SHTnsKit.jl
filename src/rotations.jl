@@ -122,9 +122,10 @@ function SH_Zrotate(::CPU, cfg::SHTConfig, Qlm::AbstractVector{<:Complex},
     length(Rlm) == cfg.nlm || throw(DimensionMismatch("Rlm length must be nlm=$(cfg.nlm)"))
     isfinite(alpha) || throw(ArgumentError("rotation angle must be finite"))
     lmax = cfg.lmax; mres = cfg.mres
+    phase_angle = _rotation_phase_angle(alpha)
     @inbounds for m in 0:cfg.mmax
         (m % mres == 0) || continue
-        phase = cis(-m * alpha)
+        phase = cis(-m * phase_angle)
         for l in m:lmax
             lm = LM_index(lmax, mres, l, m) + 1
             Rlm[lm] = Qlm[lm] * phase
@@ -136,6 +137,10 @@ end
 SH_Zrotate(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real,
            Rlm::AbstractVector{<:Complex}) =
     SH_Zrotate(CPU(), cfg, Qlm, alpha, Rlm)
+
+# Form m*angle in at least Float64, including when coefficients and angle
+# are both Float32. Wider inputs retain their precision.
+@inline _rotation_phase_angle(angle::Real) = first(promote(angle, 0.0))
 
 """
     struct SHTRotation
@@ -942,4 +947,56 @@ function _rotation_apply_real_adjoint(r::SHTRotation, ȳ::AbstractVector)
         end
     end
     return Q̄
+end
+
+"""
+    _rotation_apply_real_angle_gradients(r::SHTRotation, Qcanonical, ȳcanonical) -> (gα, gβ, gγ)
+
+Gradient of `Re Σ conj(ȳₖ)·Rₖ`, `R = shtns_rotation_apply_real(r, Q, ·)`, with
+respect to the canonical ZYZ angles of `_rotation_zyz_angles`; callers map it to
+the stored parameter order.
+
+`Q` and `ȳ` enter in the canonical basis the Wigner engine works in: `Q` scaled
+by `_rotation_coefficient_scale`, `ȳ` divided by it. The engine input is rebuilt
+on all orders from the stored ones through their conjugate relation, and only the
+stored orders m ≥ 0 of the output carry cotangent. Shared by the ChainRules rrule
+and `zgrad_rotation_angles_real`, which needs no coefficient adjoint.
+"""
+function _rotation_apply_real_angle_gradients(r::SHTRotation, Qcanonical::AbstractVector,
+                                              ȳcanonical::AbstractVector)
+    lmax, mmax = r.lmax, r.mmax
+    α, β, γ = _rotation_zyz_angles(r, Float64)
+    CT = promote_type(eltype(Qcanonical), ComplexF64)
+    gα = 0.0; gβ = 0.0; gγ = 0.0
+    dbuf = Matrix{Float64}(undef, 2lmax + 1, 2lmax + 1)
+    dwork = similar(dbuf); ddbuf = similar(dbuf)
+    for l in 0:lmax
+        mm = min(l, mmax)
+        _wigner_d_advance!(dbuf, dwork, l, β)
+        dl = view(dbuf, 1:(2l + 1), 1:(2l + 1))
+        ddl = _wigner_d_deriv!(ddbuf, dl, l)  # depends only on (l,β); hoisted out of the m-loop below
+        b = zeros(CT, 2l + 1)
+        for mp in -mm:mm
+            # Reconstruct the Wigner-basis input from the packed coefficients.
+            b[mp + l + 1] = mp >= 0 ?
+                Qcanonical[LM_index(lmax, 1, l, mp) + 1] :
+                (-1)^(-mp) * conj(Qcanonical[LM_index(lmax, 1, l, -mp) + 1])
+            b[mp + l + 1] *= cis(-mp * γ)
+        end
+        c = dl * b
+        for m in 0:mm
+            idxp = LM_index(lmax, 1, l, m) + 1
+            Rm = c[m + l + 1] * cis(-m * α)
+            gα += real(conj(ȳcanonical[idxp]) * ((0 - 1im) * m * Rm))
+            sβ = zero(CT)
+            sγ = zero(CT)
+            for mp in -l:l
+                sβ += ddl[m + l + 1, mp + l + 1] * b[mp + l + 1]
+                sγ += dl[m + l + 1, mp + l + 1] * ((0 - 1im) * mp * b[mp + l + 1])
+            end
+            gβ += real(conj(ȳcanonical[idxp]) * (sβ * cis(-m * α)))
+            gγ += real(conj(ȳcanonical[idxp]) * (sγ * cis(-m * α)))
+        end
+    end
+    return gα, gβ, gγ
 end

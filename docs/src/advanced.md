@@ -43,7 +43,11 @@ All use the convention stored in `cfg`.
 
 For local point and latitude evaluations with `Float32` or `Float64` inputs,
 the coordinates retain their precision and the result follows the coefficient
-precision. Mixing `ComplexF32` and `ComplexF64` spectra in a QST or gradient
+precision. `ComplexF32` coefficients at `Float64` coordinates (any float
+literal, or `cfg.x[i]`) therefore use a `Float64` Legendre basis: about a third
+slower on the CPU, and FP64 kernels on CUDA and AMDGPU. Pass `Float32`
+coordinates to stay in single precision. Exact coordinates such as `0`, `1//2`
+or `π` take the coefficient precision. Mixing `ComplexF32` and `ComplexF64` spectra in a QST or gradient
 evaluation gives `Float64` components on CPU, CUDA, and AMDGPU.
 
 ## Vector operators

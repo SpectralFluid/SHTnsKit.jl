@@ -24,6 +24,15 @@ using SHTnsKit
         cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(dirname(Base.active_project())) -e $script`
         @test read(addenv(cmd, "SHTNSKIT_FFT_PLAN_CACHE" => "0",
                           "SHTNSKIT_CACHE_PENCILFFTS" => "1", "SHTNSKIT_FFT_PLAN_CACHE_MAX" => "3"), String) == "false 3"
+        # A malformed cap warns and keeps the default instead of failing to load.
+        for value in ("", "unlimited", "1e3")
+            log = tempname()
+            @test read(pipeline(addenv(cmd, "SHTNSKIT_FFT_PLAN_CACHE" => "1",
+                                       "SHTNSKIT_FFT_PLAN_CACHE_MAX" => value); stderr=log),
+                       String) == "true 64"
+            @test occursin("SHTNSKIT_FFT_PLAN_CACHE_MAX", read(log, String))
+            rm(log; force=true)
+        end
     end
 
     @testset "fft_phi/ifft_phi roundtrip" begin

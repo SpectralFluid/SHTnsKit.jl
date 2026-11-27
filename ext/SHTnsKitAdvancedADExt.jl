@@ -680,13 +680,12 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_cplx), r::S
     return y, pullback
 end
 
-# Adjoint for real packed rotation. The coefficient adjoint is the shared exact
-# one (SHTnsKit._rotation_apply_real_adjoint); the angle gradients differentiate
-# the canonical engine and are returned in the stored parameter order.
+# Adjoint for real packed rotation. The coefficient adjoint and the angle
+# gradients are the shared SHTnsKit._rotation_apply_real_adjoint and
+# _rotation_apply_real_angle_gradients; the angles are differentiated in the
+# canonical engine and returned in the stored parameter order.
 function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_real), r::SHTnsKit.SHTRotation, Qlm, Rlm)
     rotation = deepcopy(r)
-    lmax, mmax = rotation.lmax, rotation.mmax
-    α, β, γ = _rotation_rrule_angles(rotation)
     scales = _rotation_rrule_scales(rotation, Qlm; real_packed=true)
     Qcanonical = scales .* Qlm
     y = SHTnsKit.shtns_rotation_apply_real(r, Qlm, Rlm)
@@ -696,40 +695,7 @@ function ChainRulesCore.rrule(::typeof(SHTnsKit.shtns_rotation_apply_real), r::S
             return NoTangent(), ZeroTangent(), ZeroTangent(), ZeroTangent()
         Q̄ = similar(Qlm)
         copyto!(Q̄, SHTnsKit._rotation_apply_real_adjoint(rotation, ȳ))
-        ȳcanonical = ȳ ./ scales
-        CT = promote_type(eltype(Qcanonical), ComplexF64)
-        # Angle gradients (pack-domain contribution using m≥0 only)
-        gα = 0.0; gβ = 0.0; gγ = 0.0
-        dbuf = Matrix{typeof(β)}(undef, 2lmax + 1, 2lmax + 1)
-        dwork = similar(dbuf); ddbuf = similar(dbuf)
-        for l in 0:lmax
-            mm = min(l, mmax)
-            SHTnsKit._wigner_d_advance!(dbuf, dwork, l, β)
-            dl = view(dbuf, 1:(2l + 1), 1:(2l + 1))
-            ddl = SHTnsKit._wigner_d_deriv!(ddbuf, dl, l)  # depends only on (l,β); hoisted out of the m-loop below
-            b = zeros(CT, 2l + 1)
-            for mp in -mm:mm
-                # Reconstruct the Wigner-basis input from packed Qlm.
-                b[mp + l + 1] = mp >= 0 ?
-                    Qcanonical[SHTnsKit.LM_index(lmax, 1, l, mp) + 1] :
-                    (-1)^(-mp) * conj(Qcanonical[SHTnsKit.LM_index(lmax, 1, l, -mp) + 1])
-                b[mp + l + 1] *= cis(-mp * γ)
-            end
-            c = dl * b
-            for m in 0:mm
-                idxp = SHTnsKit.LM_index(lmax, 1, l, m) + 1
-                Rm = c[m + l + 1] * cis(-m * α)
-                gα += real(conj(ȳcanonical[idxp]) * ((0 - 1im) * m * Rm))
-                sβ = zero(CT)
-                sγ = zero(CT)
-                for mp in -l:l
-                    sβ += ddl[m + l + 1, mp + l + 1] * b[mp + l + 1]
-                    sγ += dl[m + l + 1, mp + l + 1] * ((0 - 1im) * mp * b[mp + l + 1])
-                end
-                gβ += real(conj(ȳcanonical[idxp]) * (sβ * cis(-m * α)))
-                gγ += real(conj(ȳcanonical[idxp]) * (sγ * cis(-m * α)))
-            end
-        end
+        gα, gβ, gγ = SHTnsKit._rotation_apply_real_angle_gradients(rotation, Qcanonical, ȳ ./ scales)
         rt = _rotation_rrule_tangent(rotation, gα, gβ, gγ)
         return NoTangent(), rt, Q̄, ZeroTangent()
     end

@@ -805,7 +805,7 @@ function _cuda_vector_analysis(cfg::SHTConfig,
                                Vp::CUDA.AnyCuArray{R,2};
                                use_rfft::Bool=false,
                                lcap::Int=cfg.lmax) where {T<:Number,R<:Number}
-    RT = typeof(float(real(zero(T))))
+    RT = real(float(promote_type(T, R)))
     CT = Complex{RT}
     Sout = CUDA.zeros(CT, cfg.lmax + 1, cfg.mmax + 1)
     Tout = similar(Sout)
@@ -834,12 +834,9 @@ function _cuda_vector_analysis_direct!(owner, cfg::SHTConfig,
     use_rfft && (!(T <: Real) || !(R <: Real)) && throw(ArgumentError(
         "use_rfft=true requires real-valued vector components",
     ))
-    RTt = typeof(float(real(zero(T))))
-    RTp = typeof(float(real(zero(R))))
-    RTt === RTp || throw(ArgumentError(
-        "Vt and Vp must use the same Float32/Float64 precision",
-    ))
-    RT = RTt
+    # Mixed components promote as on the CPU and in the batch path; copying
+    # into the workspace widens the narrower one before the FFT.
+    RT = real(float(promote_type(T, R)))
     CT = Complex{RT}
     RT in (Float32, Float64) || throw(ArgumentError(
         "vector analysis supports Float32 and Float64 precision",
@@ -876,7 +873,7 @@ function _cuda_vector_synthesis(cfg::SHTConfig,
                                 real_output::Bool=true,
                                 use_rfft::Bool=false,
                                 lcap::Int=cfg.lmax) where {T<:Number,R<:Number}
-    RT = typeof(float(real(zero(T))))
+    RT = real(float(promote_type(T, R)))
     output_type = real_output ? RT : Complex{RT}
     Vt = CUDA.zeros(output_type, cfg.nlat, cfg.nlon)
     Vp = similar(Vt)
@@ -902,12 +899,9 @@ function _cuda_vector_synthesis_direct!(owner, cfg::SHTConfig,
     size(Vt) == spatial || throw(DimensionMismatch("Vt must have size $spatial"))
     size(Vp) == spatial || throw(DimensionMismatch("Vp must have size $spatial"))
     use_rfft && !real_output && throw(ArgumentError("use_rfft=true implies real_output"))
-    RTs = typeof(float(real(zero(T))))
-    RTt = typeof(float(real(zero(R))))
-    RTs === RTt || throw(ArgumentError(
-        "Slm and Tlm must use the same Float32/Float64 precision",
-    ))
-    RT = RTs
+    # Mixed coefficients promote as on the CPU. As in batch synthesis, the
+    # kernel widens the narrower array through the promoted-precision scales.
+    RT = real(float(promote_type(T, R)))
     CT = Complex{RT}
     RT in (Float32, Float64) || throw(ArgumentError(
         "vector synthesis supports Float32 and Float64 precision",
@@ -1061,14 +1055,15 @@ function _cuda_vector_mode_analysis(cfg::SHTConfig, stored_im::Integer,
     SHTnsKit._validate_robert_analysis(cfg; m=physical_m, ltr=lcap)
     length(Vt) == cfg.nlat || throw(DimensionMismatch("Vt mode length mismatch"))
     length(Vp) == cfg.nlat || throw(DimensionMismatch("Vp mode length mismatch"))
-    RTt = typeof(float(real(zero(T)))); RTp = typeof(float(real(zero(R))))
-    RTt === RTp || throw(ArgumentError("mode components must have the same precision"))
-    RT = RTt; CT = Complex{RT}
+    # Mixed components promote as on the CPU. The kernel reads the modes
+    # directly, so widen the narrower one first, as batch analysis does.
+    RT = real(float(promote_type(T, R))); CT = Complex{RT}
+    Ft = T === CT ? Vt : CT.(Vt); Fp = R === CT ? Vp : CT.(Vp)
     tables = _cuda_vector_tables(cfg, RT)
     Sout = CUDA.zeros(CT, lcap - physical_m + 1)
     Tout = similar(Sout)
     vector_mode_analysis_kernel!(CUDABackend())(
-        Sout, Tout, Vt, Vp, tables.dtheta, tables.over_sin,
+        Sout, Tout, Ft, Fp, tables.dtheta, tables.over_sin,
         tables.weights, tables.scales, tables.sint, RT(SHTnsKit._analysis_phi_scale(cfg)), physical_m,
         lcap, cfg.robert_form; ndrange=length(Sout),
     )
@@ -1084,9 +1079,9 @@ function _cuda_vector_mode_synthesis(cfg::SHTConfig, stored_im::Integer,
     expected = lcap - physical_m + 1
     length(Sl) == expected || throw(DimensionMismatch("Sl mode length mismatch"))
     length(Tl) == expected || throw(DimensionMismatch("Tl mode length mismatch"))
-    RTs = typeof(float(real(zero(T)))); RTt = typeof(float(real(zero(R))))
-    RTs === RTt || throw(ArgumentError("mode coefficients must have the same precision"))
-    RT = RTs; CT = Complex{RT}
+    # Mixed coefficients promote as on the CPU; the kernel widens the narrower
+    # one through the promoted-precision scales.
+    RT = real(float(promote_type(T, R))); CT = Complex{RT}
     tables = _cuda_vector_tables(cfg, RT)
     Vt = CUDA.zeros(CT, cfg.nlat); Vp = similar(Vt)
     vector_mode_synthesis_kernel!(CUDABackend())(

@@ -4109,28 +4109,7 @@ end
 # - Memory per rank: O(lmax²/(p_l × p_m)) vs O(lmax²/P) for 1D
 # - Synthesis gather: O(lmax²/p_m) within l-comm vs O(lmax²) globally for 1D
 
-"""
-    DistributedSpectralPlan2D
-
-Plan for 2D distribution of spherical harmonic coefficients across a process grid.
-Processes are arranged in a 2D grid (p_l × p_m) where:
-- Ranks in the same column (m-group) share the same m values
-- Ranks in the same row share the same l distribution pattern
-- l-communicator connects ranks within an m-group for Legendre operations
-- m-communicator connects ranks across m-groups for potential future optimizations
-
-Distribution strategy:
-- M-distribution: m values divided into p_m groups (m-groups)
-- L-distribution: within each m-group, l is distributed cyclically: l % p_l == l_rank
-
-This achieves O(lmax²/(p_l × p_m)) memory per rank and O(lmax²/p_m) gather for synthesis.
-
-# Scratch Buffers
-When created with `with_scratch=true` and a `prototype_θφ`, the plan pre-allocates
-all temporary arrays needed for analysis and synthesis operations. This eliminates
-per-call allocations for repeated transforms.
-"""
-const _DistributedSpectralPlan2DScratch = NamedTuple{
+const _DistributedSpectralPlan2DScratch{T} = NamedTuple{
     (:nθ_local, :nlon, :n_m_valid, :n_valid_coeffs,
      :θ_globals, :weights_cache, :x_cache,
      :Fθm, :local_contrib, :P, :P_complex,
@@ -4138,9 +4117,9 @@ const _DistributedSpectralPlan2DScratch = NamedTuple{
      :packed_contrib, :pack_offsets, :m_values),
     Tuple{Int, Int, Int, Int,
           Vector{Int}, Vector{Float64}, Vector{Float64},
-          Matrix{ComplexF64}, Matrix{ComplexF64}, Vector{Float64}, Vector{ComplexF64},
-          Vector{ComplexF64}, Matrix{Float64}, Matrix{Float64},
-          Vector{ComplexF64}, Vector{Int}, Vector{Int}}
+          Matrix{Complex{T}}, Matrix{Complex{T}}, Vector{Float64}, Vector{Complex{T}},
+          Vector{Complex{T}}, Matrix{T}, Matrix{T},
+          Vector{Complex{T}}, Vector{Int}, Vector{Int}}
 }
 
 const _DISTRIBUTED_SPECTRAL_PLAN_2D_INSTANCE_COUNTER =
@@ -4157,6 +4136,20 @@ function _next_distributed_spectral_plan_2d_instance_id(comm::MPI.Comm)
     return MPI.bcast(candidate, 0, comm)
 end
 
+"""
+    DistributedSpectralPlan2D
+
+Distribute spherical harmonic coefficients over a `p_l × p_m` MPI process grid.
+Each column owns a range of orders `m`. Within that column, rank `l_rank`
+owns degrees satisfying `l % p_l == l_rank`. Synthesis gathers degrees
+within each column and sums the contributions from different orders across rows.
+
+Each rank stores O(lmax²/(p_l × p_m)) coefficients. Synthesis gathers
+O(lmax²/p_m) coefficients per rank.
+
+With `with_scratch=true` and a spatial prototype, the plan reuses its Fourier,
+communication, and spatial buffers for repeated transforms at matching precision.
+"""
 mutable struct DistributedSpectralPlan2D
     lmax::Int
     mmax::Int
@@ -4194,7 +4187,7 @@ mutable struct DistributedSpectralPlan2D
 
     # Pre-allocated scratch buffers (optional - set when with_scratch=true)
     with_scratch::Bool
-    scratch::Union{Nothing, _DistributedSpectralPlan2DScratch}
+    scratch::Union{Nothing, _DistributedSpectralPlan2DScratch{Float32}, _DistributedSpectralPlan2DScratch{Float64}}
     scratch_context::Union{Nothing, NamedTuple}
     closed::Bool
 end
@@ -4324,7 +4317,7 @@ If p_l and p_m are not specified (or set to 0), automatically determines optimal
 - `p_l::Int=0`: Number of processes in l-dimension (0 = auto)
 - `p_m::Int=0`: Number of processes in m-dimension (0 = auto)
 - `mres::Int=1`: M resolution (only m values divisible by mres are used)
-- `with_scratch::Bool=false`: Pre-allocate scratch buffers to eliminate per-call allocations
+- `with_scratch::Bool=false`: Preallocate reusable transform buffers
 - `prototype_θφ::PencilArray`: Required when `with_scratch=true` - spatial array template
 - `cfg::SHTConfig`: Required when `with_scratch=true` - SHT configuration
 
@@ -4332,9 +4325,9 @@ If p_l and p_m are not specified (or set to 0), automatically determines optimal
 - `DistributedSpectralPlan2D`: The distribution plan
 
 # Scratch Buffers
-When `with_scratch=true`, the plan pre-allocates all temporary arrays needed for
-analysis and synthesis operations. This eliminates per-call allocations when performing
-repeated transforms, improving performance for time-stepping codes.
+With `with_scratch=true`, the plan reuses Fourier, communication, and spatial
+buffers across transforms. A single-precision prototype on every rank selects
+single-precision buffers. Calls at another precision allocate matching work arrays.
 
 # Process Grid Layout
 ```
@@ -4357,7 +4350,7 @@ m_rank = rank ÷ p_l  (column in grid, which m-group)
 plan = create_distributed_spectral_plan_2d(lmax, mmax, comm;
     with_scratch=true, prototype_θφ=fθφ, cfg=cfg)
 
-# Repeated transforms reuse buffers (no allocations)
+# Repeated transforms reuse the plan's buffers
 for timestep in 1:1000
     alm = dist_analysis_distributed_2d(cfg, fθφ; plan=plan, assume_aligned=true)
     fθφ_new = dist_synthesis_distributed_2d_optimized(cfg, alm; prototype_θφ=fθφ)
@@ -4489,6 +4482,11 @@ function create_distributed_spectral_plan_2d(lmax::Int, mmax::Int, comm::MPI.Com
 
         # Create scratch buffers if requested
         scratch = if with_scratch
+            # A layout-only prototype may differ between ranks. All ranks must
+            # agree on the buffer type used by the packed reductions.
+            single_precision = _plan_real_type(eltype(prototype_θφ)) === Float32
+            RT = MPI.Allreduce(single_precision, &, comm) ? Float32 : Float64
+            CT = Complex{RT}
             θ_globals = collect(globalindices(prototype_θφ, 1))
             nθ_local = length(θ_globals)
             nlon = cfg.nlon
@@ -4525,18 +4523,18 @@ function create_distributed_spectral_plan_2d(lmax::Int, mmax::Int, comm::MPI.Com
                 x_cache = x_cache,
 
                 # Analysis buffers
-                Fθm = Matrix{ComplexF64}(undef, nθ_local, nlon),
-                local_contrib = Matrix{ComplexF64}(undef, lmax + 1, max(n_m_valid, 1)),
+                Fθm = Matrix{CT}(undef, nθ_local, nlon),
+                local_contrib = Matrix{CT}(undef, lmax + 1, max(n_m_valid, 1)),
                 P = Vector{Float64}(undef, lmax + 1),
-                P_complex = Vector{ComplexF64}(undef, lmax + 1),
+                P_complex = Vector{CT}(undef, lmax + 1),
 
                 # Gather/synthesis buffers
-                gather_buffer = Vector{ComplexF64}(undef, m_group_nlm),
-                fθφ_local = Matrix{Float64}(undef, nθ_local, nlon),
-                fθφ_result = Matrix{Float64}(undef, nθ_local, nlon),  # Separate result buffer
+                gather_buffer = Vector{CT}(undef, m_group_nlm),
+                fθφ_local = Matrix{RT}(undef, nθ_local, nlon),
+                fθφ_result = Matrix{RT}(undef, nθ_local, nlon),
 
                 # Packed communication buffers (triangular storage)
-                packed_contrib = Vector{ComplexF64}(undef, max(n_valid_coeffs, 1)),
+                packed_contrib = Vector{CT}(undef, max(n_valid_coeffs, 1)),
                 pack_offsets = pack_offsets,
                 m_values = m_values,
             )
@@ -4700,9 +4698,9 @@ function gather_to_dense_2d(dsa::DistributedSpectralArray2D{T}) where T
     end
 
     # Use scratch buffer if available, otherwise allocate
-    has_scratch = plan.with_scratch && plan.scratch !== nothing
-    if has_scratch && T === ComplexF64
-        all_coefficients = (plan.scratch::_DistributedSpectralPlan2DScratch).gather_buffer
+    scratch = plan.scratch
+    if scratch isa _DistributedSpectralPlan2DScratch{real(T)}
+        all_coefficients = scratch.gather_buffer
     else
         all_coefficients = Vector{T}(undef, plan.m_group_nlm)
     end
@@ -5050,9 +5048,9 @@ end
 
 Optimized 2D-distributed synthesis that assumes spatial and spectral distributions are aligned.
 
-**WARNING**: This function assumes that ranks with the same `l_rank` in the 2D spectral plan
-have the same θ portions in the spatial PencilArray. If this assumption is violated,
-results will be incorrect. Use `dist_synthesis_distributed_2d` for general correctness.
+Ranks with the same `l_rank` must own the same latitude range in the spatial
+`PencilArray`. The function checks alignment and throws `ArgumentError` when
+the ranges differ. Use `dist_synthesis_distributed_2d` for other layouts.
 
 # When to use this function
 - When you have explicitly set up the PencilArray to match the 2D spectral grid
@@ -5065,16 +5063,12 @@ results will be incorrect. Use `dist_synthesis_distributed_2d` for general corre
 4. IFFT along φ
 
 # Memory behavior with scratch buffers
-When the plan has `with_scratch=true` and `φ` is not distributed, the returned array
-is a view into pre-allocated scratch memory. This eliminates allocation but means:
-- The result will be **overwritten** on the next synthesis call
-- Copy the result if you need to retain it: `result_copy = copy(result)`
-- This is optimal for time-stepping codes that use the result immediately
-
-Without scratch buffers, each call returns a freshly allocated array.
+The result follows the coefficient precision. For real output with local `φ`
+and matching plan scratch precision, the result shares the plan's spatial
+buffer. Use `copy(result)` to retain it across calls. Other results own their storage.
 """
-function dist_synthesis_distributed_2d_optimized(cfg::SHTnsKit.SHTConfig, alm::DistributedSpectralArray2D;
-                                                  prototype_θφ::PencilArray, real_output::Bool=true)
+function dist_synthesis_distributed_2d_optimized(cfg::SHTnsKit.SHTConfig, alm::DistributedSpectralArray2D{CT};
+                                                  prototype_θφ::PencilArray, real_output::Bool=true) where CT
     plan = alm.plan
     _validate_distributed_plan_preflight(
         cfg, plan, prototype_θφ, "dist_synthesis_distributed_2d_optimized",
@@ -5098,38 +5092,36 @@ function dist_synthesis_distributed_2d_optimized(cfg::SHTnsKit.SHTConfig, alm::D
     alm_partial = gather_to_dense_2d(alm)
 
     # Use scratch buffers if available
-    has_scratch = plan.with_scratch && plan.scratch !== nothing
+    RT = real(CT)
+    output_type = real_output ? RT : CT
+    scratch = plan.scratch
     nlon_local = size(parent(prototype_θφ), 2)
     φ_is_local = (nlon_local == nlon)
 
-    if has_scratch
-        scratch_buf = plan.scratch::_DistributedSpectralPlan2DScratch
-        θ_globals = scratch_buf.θ_globals
-        nθ_local = scratch_buf.nθ_local
-        x_cache = scratch_buf.x_cache
-        Fθm = scratch_buf.Fθm
-        P = scratch_buf.P
-        P_complex = scratch_buf.P_complex
-        # Scratch spatial buffers are real; a complex request needs a complex
-        # destination or `ifft_along_dim2!` drops the imaginary half (see
-        # `dist_synthesis`). Fall back to a fresh complex buffer in that case.
-        fθφ_local = real_output ? scratch_buf.fθφ_local :
-                                  Matrix{ComplexF64}(undef, nθ_local, nlon)
-        fθφ_result = scratch_buf.fθφ_result  # Separate result buffer to avoid copy
+    if scratch isa _DistributedSpectralPlan2DScratch{RT}
+        θ_globals = scratch.θ_globals
+        nθ_local = scratch.nθ_local
+        x_cache = scratch.x_cache
+        Fθm = scratch.Fθm
+        P = scratch.P
+        P_complex = scratch.P_complex
+        output = if real_output
+            φ_is_local ? scratch.fθφ_result : scratch.fθφ_local
+        else
+            Matrix{CT}(undef, nθ_local, nlon)
+        end
     else
         θ_globals = collect(globalindices(prototype_θφ, 1))
         nθ_local = length(θ_globals)
         x_cache = nothing  # Will use cfg.x directly
-        Fθm = Matrix{ComplexF64}(undef, nθ_local, nlon)
+        Fθm = Matrix{CT}(undef, nθ_local, nlon)
         P = Vector{Float64}(undef, lmax + 1)
-        P_complex = Vector{ComplexF64}(undef, lmax + 1)
-        fθφ_local = real_output ? Matrix{Float64}(undef, nθ_local, nlon) :
-                                  Matrix{ComplexF64}(undef, nθ_local, nlon)
-        fθφ_result = nothing  # Will allocate on return
+        P_complex = Vector{CT}(undef, lmax + 1)
+        output = Matrix{output_type}(undef, nθ_local, nlon)
     end
 
     # Zero the Fourier coefficient matrix
-    fill!(Fθm, zero(ComplexF64))
+    fill!(Fθm, zero(CT))
 
     if !isempty(m_range)
         # Distributed coefficient containers use cfg's public convention.
@@ -5209,29 +5201,9 @@ function dist_synthesis_distributed_2d_optimized(cfg::SHTnsKit.SHTConfig, alm::D
     # This assumes ranks in m_comm have the same θ_globals!
     MPI.Allreduce!(Fθm, +, plan.m_comm)
 
-    # Determine output buffer - use fθφ_result directly to avoid copy (fix #3)
-    # Note: when scratch is used and φ is local, the returned array is a view into
-    # scratch memory. It will be overwritten on the next synthesis call. Copy if needed.
-    output_buffer = (fθφ_result !== nothing && φ_is_local && real_output) ? fθφ_result : fθφ_local
-
-    # Perform inverse FFT along φ directly into output buffer
-    SHTnsKitParallelExt.ifft_along_dim2!(output_buffer, Fθm)
-
-    # Return result
-    if φ_is_local
-        if real_output
-            # When scratch available, output_buffer IS fθφ_result - no copy needed
-            # When no scratch, output_buffer is fθφ_local - must copy
-            return fθφ_result !== nothing ? output_buffer : copy(output_buffer)
-        else
-            # output_buffer is already the complex buffer allocated above
-            return output_buffer
-        end
-    else
-        φ_globals = collect(globalindices(prototype_θφ, 2))
-        local_φ_range = _owned_range(φ_globals)
-        return fθφ_local[:, local_φ_range]
-    end
+    SHTnsKitParallelExt.ifft_along_dim2!(output, Fθm)
+    φ_is_local && return output
+    return output[:, _owned_range(globalindices(prototype_θφ, 2))]
 end
 
 """
@@ -5398,25 +5370,22 @@ function _dist_analysis_2d_aligned(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
     mres = plan.mres
     l_comm = plan.l_comm
 
-    # Use scratch buffers if available, otherwise allocate. The plan's scratch
-    # is ComplexF64; other precisions allocate so the result keeps the
-    # field's precision.
     local_data = parent(fθφ)
     CT = complex(float(real(eltype(local_data))))
-    has_scratch = plan.with_scratch && plan.scratch !== nothing && CT === ComplexF64
+    scratch = plan.scratch
+    has_scratch = scratch isa _DistributedSpectralPlan2DScratch{real(CT)}
     nlat_local, nlon_local = size(local_data)
 
     # Get cached or compute θ indices
     if has_scratch
-        scratch_buf = plan.scratch::_DistributedSpectralPlan2DScratch
-        θ_globals = scratch_buf.θ_globals
-        nθ_local = scratch_buf.nθ_local
-        weights_cache = scratch_buf.weights_cache
-        x_cache = scratch_buf.x_cache
-        Fθm = scratch_buf.Fθm
-        local_contrib = scratch_buf.local_contrib
-        P = scratch_buf.P
-        n_m_valid = scratch_buf.n_m_valid
+        θ_globals = scratch.θ_globals
+        nθ_local = scratch.nθ_local
+        weights_cache = scratch.weights_cache
+        x_cache = scratch.x_cache
+        Fθm = scratch.Fθm
+        local_contrib = scratch.local_contrib
+        P = scratch.P
+        n_m_valid = scratch.n_m_valid
     else
         θ_globals = collect(globalindices(fθφ, 1))
         nθ_local = length(θ_globals)
@@ -5503,10 +5472,8 @@ function _dist_analysis_2d_aligned(cfg::SHTnsKit.SHTConfig, fθφ::PencilArray;
         # Use packed communication to avoid sending zeros in triangular region
         # This reduces communication volume by ~50%
         if has_scratch
-            scratch_buf2 = plan.scratch::_DistributedSpectralPlan2DScratch
-            packed = scratch_buf2.packed_contrib
-            pack_offsets = scratch_buf2.pack_offsets
-            m_values = scratch_buf2.m_values
+            packed = scratch.packed_contrib
+            m_values = scratch.m_values
 
             # Pack valid coefficients (l >= m for each m column)
             pack_idx = 1

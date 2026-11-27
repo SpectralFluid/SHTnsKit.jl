@@ -50,6 +50,7 @@ batch transform families follow the same storage-based dispatch.
 | Full-grid scalar, spheroidal/toroidal, and QST transforms, including batches | Supported | Supported |
 | In-place scalar and tangential-vector transforms with `SHTPlan` | Supported | Supported |
 | Packed scalar `LM` and signed `LM_cplx` transforms, including degree truncation | Supported | Supported |
+| Degree-truncated (`_l`), single-order (`_ml`) and axisymmetric scalar, vector and QST transforms | Supported | Supported |
 | Spectral Laplacian and conversions between divergence/vorticity and vector coefficients | Supported | Supported |
 | Point and latitude evaluation, rotations | Supported | Unavailable |
 | Distributed transforms on GPU-backed MPI pencils | Supported with GPU-aware MPI | Unavailable |
@@ -124,6 +125,11 @@ operation to the CPU.
 `to_device` performs an intentional transfer and [`on_device`](@ref)
 reports placement. If several GPU backends are loaded, pass an existing device
 array as the prototype when a transfer needs to select one vendor.
+
+Vector and QST calls whose operands mix CPU and GPU storage copy the CPU
+operands to that GPU and run there. Pass device arrays directly or wrapped
+once, by a view, reshape or adjoint. Metal's full-grid transforms also accept
+deeper wrappers, such as a view of a `PermutedDimsArray`.
 
 ## Troubleshooting
 

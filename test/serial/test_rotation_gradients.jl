@@ -56,6 +56,24 @@ if _HAS_ZYGOTE_ROT
         cfg.mres = 2
         @test_throws ArgumentError zgrad_rotation_angles_real(cfg, zeros(ComplexF64, cfg.nlm), angles...)
     end
+
+    @testset "zgrad_rotation_angles_real matches the rrule angle cotangent" begin
+        # The wrapper skips the rrule and its coefficient adjoint, so it builds
+        # the canonical inputs of the shared angle kernel itself.
+        for norm in (:orthonormal, :fourpi, :schmidt), cs_phase in (true, false),
+            real_norm in (true, false), mmax in (5, 3)
+            cfg = create_gauss_config(5, 7; mmax, norm, cs_phase, real_norm)
+            q = randn(MersenneTwister(958), ComplexF64, cfg.nlm)
+            # A truncated layout only admits rotations with β ≡ 0 (mod π).
+            angles = mmax == cfg.lmax ? (0.25, 0.63, -0.42) : (0.25, π, -0.42)
+            rotation = SHTRotation(cfg.lmax, mmax; α=angles[1], β=angles[2], γ=angles[3],
+                                   norm, cs_phase, real_norm)
+            y, back = ChainRulesCore.rrule(shtns_rotation_apply_real, rotation, q, similar(q))
+            rotation_bar = back(y)[2]
+            @test collect(zgrad_rotation_angles_real(cfg, q, angles...)) ≈
+                  [rotation_bar.α, rotation_bar.β, rotation_bar.γ] rtol=1e-12 atol=1e-12
+        end
+    end
 end
 
 @testset "Axis-rotation pullbacks preserve primal coefficients" begin

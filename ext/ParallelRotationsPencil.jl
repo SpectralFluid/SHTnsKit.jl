@@ -39,29 +39,26 @@ function _record_rotation_payload!(sent::Int, maximum::Int)
 end
 
 """
-An angle as Float64, or NaN when it is not a real number. Every `Real` is
-accepted (`π`, integers, rationals), as in the serial rotations; checking the
-value instead of the type also lets ranks pass `0.5f0` and `0.5` alike.
+Normalize a real angle for phase arithmetic. Values must be finite when
+converted to Float64. Wider inputs retain their precision for the rotation.
+Return NaN on conversion failure so all ranks can report it collectively.
 """
 _rotation_angle_value(angle::Real) = try
-    Float64(angle)
+    value = SHTnsKit._rotation_phase_angle(angle)
+    isfinite(Float64(value)) ? value : NaN
 catch
     NaN
 end
 _rotation_angle_value(angle) = NaN
 
-"""Collectively require each angle to be finite and equal on every rank."""
+"""Check that all angles are finite and equal, and use rank zero's phase precision."""
 function _validate_rotation_angles!(comm, angles::Tuple, operation::Symbol)
-    flags = UInt32(0)
-    for angle in angles
-        value = _rotation_angle_value(angle)
-        isfinite(value) || (flags |= 0x8000)
-        reference = Ref(value)
-        MPI.Bcast!(reference, 0, comm)
-        isequal(value, reference[]) || (flags |= 0x8000)
-    end
+    values = map(_rotation_angle_value, angles)
+    reference = MPI.bcast(values, 0, comm)
+    valid = all(isfinite, values) && isequal(values, reference)
+    flags = valid ? UInt32(0) : UInt32(0x8000)
     _collective_validation_error(comm, flags, operation)
-    return nothing
+    return reference
 end
 
 function _validate_rotation_pencils!(cfg, input::PencilArray,
@@ -93,18 +90,16 @@ function _validate_rotation_pencils!(cfg, input::PencilArray,
         !SHTnsKit._rotation_exceeds_orders(cfg.lmax, cfg.mmax, mixing_beta) ||
         (flags |= 0x80000)
     _collective_validation_error(comm, flags, operation)
-    _validate_rotation_angles!(comm, angles, operation)
-    return comm
+    return comm, _validate_rotation_angles!(comm, angles, operation)
 end
 
 function _dist_zrotate_local!(cfg, input::PencilArray, angle::Real,
                               output::PencilArray)
     source = parent(input); destination = parent(output)
     orders = collect(Int, globalindices(input, 2))
-    RT = typeof(real(zero(eltype(input))))
     @inbounds for (local_m, m_index) in pairs(orders)
         m = m_index - 1
-        phase = cis(-RT(m) * RT(angle))
+        phase = cis(-m * angle)
         for local_l in axes(source, 1)
             destination[local_l, local_m] = phase * source[local_l, local_m]
         end
@@ -121,7 +116,7 @@ end
 function SHTnsKit.dist_SH_Zrotate(cfg::SHTnsKit.SHTConfig,
                                   input::PencilArray, angle::Real,
                                   output::PencilArray)
-    _validate_rotation_pencils!(
+    _, (angle,) = _validate_rotation_pencils!(
         cfg, input, output, (angle,), :dist_SH_Zrotate; general=false,
     )
     return _dist_zrotate_local!(cfg, input, angle, output)
@@ -209,7 +204,7 @@ end
 
 function _dist_yrotate!(cfg, input::PencilArray, beta::Real,
                         output::PencilArray, operation::Symbol)
-    comm = _validate_rotation_pencils!(
+    comm, (beta,) = _validate_rotation_pencils!(
         cfg, input, output, (beta,), operation; general=true, mixing_beta=beta,
     )
     return _dist_yrotate_rows!(cfg, input, beta, output, comm)
@@ -238,7 +233,7 @@ function SHTnsKit.dist_SH_rotate_euler(cfg::SHTnsKit.SHTConfig,
                                       input::PencilArray,
                                       alpha::Real, beta::Real, gamma::Real,
                                       output::PencilArray)
-    comm = _validate_rotation_pencils!(
+    comm, (alpha, beta, gamma) = _validate_rotation_pencils!(
         cfg, input, output, (alpha, beta, gamma),
         :dist_SH_rotate_euler; general=true, mixing_beta=beta,
     )
@@ -270,15 +265,14 @@ function _validate_packed_rotation!(cfg, coefficients, angles, prototype,
         (flags |= 0x0004)
     general && cfg.mres != 1 && (flags |= 0x10000)
     _collective_validation_error(comm, flags, operation)
-    _validate_rotation_angles!(comm, angles, operation)
-    return nothing
+    return _validate_rotation_angles!(comm, angles, operation)
 end
 
 function SHTnsKit.dist_SH_Zrotate_packed(cfg::SHTnsKit.SHTConfig,
                                          coefficients::AbstractVector{<:Complex},
                                          angle::Real;
                                          prototype_lm::PencilArray)
-    _validate_packed_rotation!(
+    (angle,) = _validate_packed_rotation!(
         cfg, coefficients, (angle,), prototype_lm,
         :dist_SH_Zrotate_packed; general=false,
     )
@@ -290,7 +284,7 @@ function SHTnsKit.dist_SH_Yrotate_packed(cfg::SHTnsKit.SHTConfig,
                                          coefficients::AbstractVector{<:Complex},
                                          beta::Real;
                                          prototype_lm::PencilArray)
-    _validate_packed_rotation!(
+    (beta,) = _validate_packed_rotation!(
         cfg, coefficients, (beta,), prototype_lm,
         :dist_SH_Yrotate_packed; general=true,
     )

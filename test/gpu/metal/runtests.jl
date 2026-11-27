@@ -1,6 +1,10 @@
 using Test, Random, SHTnsKit, Metal
 
 Metal.functional() || error("The Metal tests require a functional Apple GPU")
+# Shared storage, the default from Metal 1.12, ignores allowscalar(false), so a
+# silent host fallback would still pass. Project.toml selects private storage.
+MtlArray(zeros(Float32, 1)) isa MtlArray{Float32,1,Metal.PrivateStorage} ||
+    error("set Metal's default_storage preference to \"private\" for these tests")
 Metal.allowscalar(false)
 println("Metal ", pkgversion(Metal), " on ", Metal.device().name)
 
@@ -36,6 +40,21 @@ check_components(actual, expected) = foreach(check_device, actual, expected)
     SHTnsKit.@sht_loop dest[I] = 3f0 * d[I] over I ∈ CartesianIndices(dest)
     check_device(dest, 3f0 .* field)
     @test isnothing(gpu_clear_cache!(GPU(); prototype=d))
+end
+
+@testset "Point and latitude evaluation are unavailable" begin
+    cfg = create_gauss_config(4, 6)
+    dense = MtlArray(zeros(ComplexF32, cfg.lmax + 1, cfg.mmax + 1))
+    packed = MtlArray(zeros(ComplexF32, cfg.nlm))
+    for device in ((), (GPU(),))
+        @test_throws BackendUnavailableError synthesis_point(device..., cfg, dense, 0.3, 0.2)
+        @test_throws BackendUnavailableError synthesis_point_cplx(device..., cfg, packed, 0.3, 0.2)
+        @test_throws BackendUnavailableError SH_to_lat(device..., cfg, packed, 0.3)
+        @test_throws BackendUnavailableError SH_to_lat_cplx(device..., cfg, packed, 0.3)
+        @test_throws BackendUnavailableError SHqst_to_point(device..., cfg, packed, packed, packed, 0.3, 0.2)
+        @test_throws BackendUnavailableError SHqst_to_lat(device..., cfg, packed, packed, packed, 0.3)
+        @test_throws BackendUnavailableError SH_to_grad_point(device..., cfg, packed, packed, 0.3, 0.2)
+    end
 end
 
 @testset "Band-limited roundtrip" begin
@@ -152,6 +171,10 @@ end
         d = MtlArray(a)
         expected = op(cfg, a)
         check_device(op(GPU(), cfg, d), expected)
+        # CPU() is strict about storage, as for the transforms.
+        @test_throws ArgumentError op(CPU(), cfg, d)
+        @test_throws ArgumentError inplace(CPU(), cfg, similar(d), d)
+        @test_throws ArgumentError inplace(CPU(), cfg, similar(a), d)
         @test inplace(GPU(), cfg, d, d) === d
         check_device(d, expected)
     end
@@ -196,7 +219,9 @@ end
                 analysis_only = SHTPlan(cfg; use_rfft=true)
                 @test (Metal.@allocated analysis!(analysis_only, out, device[1])) <
                       length(f) * sizeof(ComplexF32)
-                # A warmed inverse must not allocate another complex Fourier grid.
+                # A warmed inverse must not allocate another complex Fourier
+                # grid, even after a collection.
+                GC.gc()
                 @test (Metal.@allocated synthesis!(plan, f, out)) < sizeof(f)
                 @test (Metal.@allocated synthesis_sphtor!(plan, vo, wo, so, to)) < sizeof(f)
                 # The next forward transform uses the prefix of the larger workspace.
@@ -289,5 +314,168 @@ end
             @test synthesis_batch!(GPU(), cfg, f, a; use_rfft=half, fft_batch=scratch) === f
             check_device(f, field)
         end
+    end
+end
+
+@testset "Degree-truncated, single-order and axisymmetric transforms" begin
+    rng = MersenneTwister(77)
+    grids = (
+        create_gauss_config(7, 10; nlon=16, mres=2, norm=:schmidt, cs_phase=false),
+        create_gauss_config(6, 9; nlon=13, robert_form=true, real_norm=true),
+    )
+    for cfg in grids
+        fields = ntuple(_ -> randn(rng, Float32, cfg.nlat, cfg.nlon), 3)
+        device = map(MtlArray, fields)
+        q, s, t = analysis_qst(cfg, fields...)
+        coeff = map(MtlArray, (q, s, t))
+        for ltr in (1, 4, cfg.lmax), placement in ((), (GPU(),))
+            check_components(analysis_sphtor_l(placement..., cfg, device[2], device[3], ltr),
+                             analysis_sphtor_l(cfg, fields[2], fields[3], ltr))
+            check_components(synthesis_sphtor_l(placement..., cfg, coeff[2], coeff[3], ltr),
+                             synthesis_sphtor_l(cfg, s, t, ltr))
+            check_components(synthesis_sphtor_l_cplx(placement..., cfg, coeff[2], coeff[3], ltr),
+                             synthesis_sphtor_l_cplx(cfg, s, t, ltr))
+            check_components(synthesis_sph_l(placement..., cfg, coeff[2], ltr), synthesis_sph_l(cfg, s, ltr))
+            check_components(synthesis_tor_l_cplx(placement..., cfg, coeff[3], ltr),
+                             synthesis_tor_l_cplx(cfg, t, ltr))
+            check_components(analysis_qst_l(placement..., cfg, device..., ltr),
+                             analysis_qst_l(cfg, fields..., ltr))
+            check_components(synthesis_qst_l(placement..., cfg, coeff..., ltr),
+                             synthesis_qst_l(cfg, q, s, t, ltr))
+            check_device(analysis_axisym_l(placement..., cfg, MtlArray(fields[1][:, 1]), ltr),
+                         analysis_axisym_l(cfg, fields[1][:, 1], ltr))
+            check_device(synthesis_axisym_l(placement..., cfg, MtlArray(q[:, 1]), ltr),
+                         synthesis_axisym_l(cfg, q[:, 1], ltr))
+        end
+        check_device(analysis_axisym(cfg, MtlArray(fields[1][:, 1])), analysis_axisym(cfg, fields[1][:, 1]))
+        check_device(synthesis_axisym(GPU(), cfg, MtlArray(q[:, 1])), synthesis_axisym(cfg, q[:, 1]))
+        for im in (0, 1, cfg.mmax ÷ cfg.mres)
+            m = im * cfg.mres
+            ltr = max(m, 5)
+            modes = ntuple(_ -> randn(rng, ComplexF32, cfg.nlat), 3)
+            coefficients = ntuple(_ -> randn(rng, ComplexF32, ltr - m + 1), 3)
+            mode_d, coefficients_d = map(MtlArray, modes), map(MtlArray, coefficients)
+            for placement in ((), (GPU(),))
+                check_device(analysis_packed_ml(placement..., cfg, im, mode_d[1], ltr),
+                             analysis_packed_ml(cfg, im, modes[1], ltr))
+                check_device(synthesis_packed_ml(placement..., cfg, im, coefficients_d[1], ltr),
+                             synthesis_packed_ml(cfg, im, coefficients[1], ltr))
+                check_components(analysis_sphtor_ml(placement..., cfg, im, mode_d[2], mode_d[3], ltr),
+                                 analysis_sphtor_ml(cfg, im, modes[2], modes[3], ltr))
+                check_components(synthesis_sphtor_ml(placement..., cfg, im, coefficients_d[2], coefficients_d[3], ltr),
+                                 synthesis_sphtor_ml(cfg, im, coefficients[2], coefficients[3], ltr))
+                check_components(synthesis_tor_ml(placement..., cfg, im, coefficients_d[3], ltr),
+                                 synthesis_tor_ml(cfg, im, coefficients[3], ltr))
+                check_components(analysis_qst_ml(placement..., cfg, im, mode_d..., ltr),
+                                 analysis_qst_ml(cfg, im, modes..., ltr))
+                check_components(synthesis_qst_ml(placement..., cfg, im, coefficients_d..., ltr),
+                                 synthesis_qst_ml(cfg, im, coefficients..., ltr))
+            end
+        end
+        @test_throws ArgumentError analysis_sphtor_l(cfg, device[2], device[3], cfg.lmax + 1)
+        @test_throws ArgumentError synthesis_axisym_l(cfg, MtlArray(q[1:2, 1]), 2)
+        @test_throws DimensionMismatch analysis_packed_ml(cfg, 0, MtlArray(zeros(ComplexF32, 2)), 3)
+    end
+end
+
+@testset "Mixed CPU and Metal operands run on the GPU" begin
+    cfg = create_gauss_config(5, 8; nlon=12)
+    rng = MersenneTwister(5)
+    host = ntuple(_ -> randn(rng, Float32, cfg.nlat, cfg.nlon, 2), 3)
+    dev = map(MtlArray, host)
+    expected = analysis_qst_batch(cfg, host...)
+    check_components(analysis_sphtor_batch(cfg, host[2], dev[3]), expected[2:3])
+    check_components(analysis_qst_batch(cfg, dev[1], host[2], dev[3]), expected)
+    check_components(synthesis_qst_batch(cfg, expected[1], MtlArray(expected[2]), expected[3]),
+                     synthesis_qst_batch(cfg, expected...))
+    check_components(synthesis_sphtor_batch_cplx(cfg, MtlArray(expected[2]), expected[3]),
+                     synthesis_sphtor_batch_cplx(cfg, expected[2:3]...))
+    v = ntuple(_ -> randn(rng, Float32, cfg.nlat, cfg.nlon), 3)
+    check_components(analysis_sphtor_l(cfg, v[1], MtlArray(v[2]), 3), analysis_sphtor_l(cfg, v[1], v[2], 3))
+    check_components(analysis_qst_l(cfg, MtlArray(v[1]), v[2], v[3], 3), analysis_qst_l(cfg, v..., 3))
+    modes = ntuple(_ -> randn(rng, ComplexF32, cfg.nlat), 2)
+    check_components(analysis_sphtor_ml(cfg, 1, MtlArray(modes[1]), modes[2], 4),
+                     analysis_sphtor_ml(cfg, 1, modes..., 4))
+end
+
+@testset "Nested device wrappers stay on the GPU" begin
+    cfg = create_gauss_config(4, 6; nlon=9)
+    host = randn(MersenneTwister(3), Float32, cfg.nlon, cfg.nlat)
+    A = MtlArray(host)
+    field = permutedims(host)
+    a = analysis(cfg, field)
+    s, t = analysis_sphtor(cfg, field, field)
+    for x in (view(PermutedDimsArray(A, (2, 1)), :, :), view(A', :, :))
+        @test on_device(x) isa GPU
+        for half in (false, true)
+            check_device(analysis(cfg, x; use_rfft=half), a)
+        end
+        check_components(analysis_sphtor(cfg, x, x), (s, t))
+        check_components(analysis_qst(cfg, x, x, x), (a, s, t))
+        # Families without an adapter route fail clearly instead of indexing device memory.
+        @test_throws BackendUnavailableError analysis_sphtor_l(cfg, x, x, 2)
+    end
+    B = MtlArray(permutedims(a))
+    y = view(PermutedDimsArray(B, (2, 1)), :, :)
+    check_device(synthesis(cfg, y), synthesis(cfg, a))
+    check_device(synthesis_cplx(cfg, y), synthesis_cplx(cfg, a))
+end
+
+@testset "Disjoint parts of one buffer are not aliases" begin
+    cfg = create_gauss_config(5, 8; nlon=12)
+    rng = MersenneTwister(21)
+    vt, vp = randn(rng, Float32, cfg.nlat, cfg.nlon), randn(rng, Float32, cfg.nlat, cfg.nlon)
+    s, t = analysis_sphtor(cfg, vt, vp)
+    plan = SHTPlan(cfg)
+    spectra = MtlArray{ComplexF32}(undef, cfg.lmax + 1, cfg.mmax + 1, 2)
+    so, to = view(spectra, :, :, 1), view(spectra, :, :, 2)
+    analysis_sphtor!(plan, so, to, MtlArray(vt), MtlArray(vp))
+    @test Array(so) ≈ s rtol=4f-5 atol=3f-6
+    @test Array(to) ≈ t rtol=4f-5 atol=3f-6
+    fields = MtlArray{Float32}(undef, cfg.nlat, cfg.nlon, 2)
+    vo, wo = view(fields, :, :, 1), view(fields, :, :, 2)
+    synthesis_sphtor!(plan, vo, wo, MtlArray(s), MtlArray(t))
+    expected = synthesis_sphtor(cfg, s, t)
+    @test Array(vo) ≈ expected[1] rtol=4f-5 atol=3f-6
+    @test Array(wo) ≈ expected[2] rtol=4f-5 atol=3f-6
+    # FFT scratch and output carved from one allocation.
+    nbins, nspec = cfg.nlat * (cfg.nlon ÷ 2 + 1), (cfg.lmax + 1) * (cfg.mmax + 1)
+    buffer = MtlArray{ComplexF32}(undef, nbins + nspec)
+    scratch = reshape(view(buffer, 1:nbins), cfg.nlat, cfg.nlon ÷ 2 + 1)
+    out = reshape(view(buffer, nbins+1:nbins+nspec), cfg.lmax + 1, cfg.mmax + 1)
+    @test analysis!(cfg, out, MtlArray(vt); fft_scratch=scratch, use_rfft=true) === out
+    @test Array(out) ≈ analysis(cfg, vt) rtol=4f-5 atol=3f-6
+    overlapping = reshape(view(buffer, 1:nspec), cfg.lmax + 1, cfg.mmax + 1)
+    @test_throws ArgumentError analysis!(cfg, overlapping, MtlArray(vt); fft_scratch=scratch, use_rfft=true)
+    # A complex field may be its own FFT scratch, as on the CPU.
+    z = complex.(vt, vp)
+    Z = MtlArray(z)
+    zout = MtlArray{ComplexF32}(undef, cfg.lmax + 1, cfg.mmax + 1)
+    analysis!(cfg, zout, Z; fft_scratch=Z)
+    @test Array(zout) ≈ analysis(cfg, z) rtol=4f-5 atol=3f-6
+end
+
+@testset "Plans follow a raised degree" begin
+    cfg = create_gauss_config(4, 8; mmax=4)
+    rng = MersenneTwister(9)
+    for half in (false, true)
+        plan = SHTPlan(cfg; use_rfft=half)
+        cfg.lmax = 6
+        f, g = randn(rng, Float32, cfg.nlat, cfg.nlon), randn(rng, Float32, cfg.nlat, cfg.nlon)
+        fd = MtlArray(f)
+        out = MtlArray{ComplexF32}(undef, cfg.lmax + 1, cfg.mmax + 1)
+        analysis!(plan, out, fd)
+        a = analysis(cfg, f)
+        check_device(out, a)
+        y = similar(fd)
+        synthesis!(plan, y, out)
+        check_device(y, synthesis(cfg, a))
+        so, to = similar(out), similar(out)
+        analysis_sphtor!(plan, so, to, fd, MtlArray(g))
+        check_components((so, to), analysis_sphtor(cfg, f, g))
+        vo, wo = similar(fd), similar(fd)
+        synthesis_sphtor!(plan, vo, wo, so, to)
+        check_components((vo, wo), synthesis_sphtor(cfg, analysis_sphtor(cfg, f, g)...))
+        cfg.lmax = 4
     end
 end

@@ -165,6 +165,20 @@ function _qst_gpu_operands(operation::Symbol, prototype, values::Tuple)
     return adapter, operands
 end
 
+# Generic methods run CPU loops, so GPU storage must not reach them. For a mix
+# of CPU and GPU operands, return all of them on that GPU so the caller can
+# dispatch again to the vendor method. GPU operands reach a generic method
+# only when no vendor method accepts them.
+function _rerouted_operands(operation::Symbol, values::Tuple)
+    any(value -> on_device(value) isa GPU, values) || return nothing
+    all(value -> on_device(value) isa GPU, values) && throw(BackendUnavailableError(
+        operation,
+        "no GPU method accepts $(join(map(typeof, values), ", ")); pass the " *
+        "backend's arrays or single views of them",
+    ))
+    return last(_qst_gpu_operands(operation, nothing, values))
+end
+
 function synthesis_qst(::GPU, cfg::SHTConfig, Qlm::AbstractMatrix,
                        Slm::AbstractMatrix, Tlm::AbstractMatrix;
                        prototype=nothing, real_output::Bool=true,
@@ -272,6 +286,8 @@ analysis_qst_cplx(::GPU, cfg::SHTConfig, Vr::AbstractMatrix{<:Complex},
 Degree-limited version of analysis_qst, computing coefficients only up to degree ltr.
 """
 function analysis_qst_l(cfg::SHTConfig, Vr::AbstractMatrix, Vt::AbstractMatrix, Vp::AbstractMatrix, ltr::Integer)
+    operands = _rerouted_operands(:analysis_qst_l, (Vr, Vt, Vp))
+    operands === nothing || return analysis_qst_l(cfg, operands..., ltr)
     ltr = _validate_degree_limit(cfg, ltr)
     validate_vector_spatial_dimensions(Vr, Vt, Vp, cfg)
     _validate_robert_analysis(cfg; ltr)
@@ -297,6 +313,8 @@ end
 Degree-limited version of synthesis_qst, using coefficients only up to degree ltr.
 """
 Base.@constprop :aggressive function synthesis_qst_l(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix, ltr::Integer; real_output::Bool=true)
+    operands = _rerouted_operands(:synthesis_qst_l, (Qlm, Slm, Tlm))
+    operands === nothing || return synthesis_qst_l(cfg, operands..., ltr; real_output)
     return _synthesis_qst_l(cfg, Qlm, Slm, Tlm, ltr, Val(real_output))
 end
 
@@ -310,6 +328,8 @@ function synthesis_qst_l(::CPU, cfg::SHTConfig, Qlm::AbstractMatrix,
 end
 
 function synthesis_qst_l_cplx(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix, ltr::Integer)
+    operands = _rerouted_operands(:synthesis_qst_l_cplx, (Qlm, Slm, Tlm))
+    operands === nothing || return synthesis_qst_l_cplx(cfg, operands..., ltr)
     # Dedicated helper mirrors `synthesis_qst_l(...; real_output=false)` while
     # keeping the output tuple concrete for inference-sensitive code.
     return _synthesis_qst_l(cfg, Qlm, Slm, Tlm, ltr, Val(false))
@@ -336,6 +356,8 @@ end
 Mode-limited transform for specific azimuthal mode mval.
 """
 function analysis_qst_ml(cfg::SHTConfig, mval::Integer, Vr_m::AbstractVector{<:Complex}, Vt_m::AbstractVector{<:Complex}, Vp_m::AbstractVector{<:Complex}, ltr::Integer)
+    operands = _rerouted_operands(:analysis_qst_ml, (Vr_m, Vt_m, Vp_m))
+    operands === nothing || return analysis_qst_ml(cfg, mval, operands..., ltr)
     stored_im, _, lcap = _validate_stored_order(cfg, mval, ltr)
     # Transform each component for this specific mode
     Ql = analysis_packed_ml(cfg, stored_im, Vr_m, lcap)
@@ -361,6 +383,8 @@ end
 Mode-limited synthesis for specific azimuthal mode mval.
 """
 function synthesis_qst_ml(cfg::SHTConfig, mval::Integer, Ql::AbstractVector{<:Complex}, Sl::AbstractVector{<:Complex}, Tl::AbstractVector{<:Complex}, ltr::Integer)
+    operands = _rerouted_operands(:synthesis_qst_ml, (Ql, Sl, Tl))
+    operands === nothing || return synthesis_qst_ml(cfg, mval, operands..., ltr)
     stored_im, _, lcap = _validate_stored_order(cfg, mval, ltr)
     # Each fixed-mode sub-transform converts its component to canonical once.
     Vr_m = synthesis_packed_ml(cfg, stored_im, Ql, lcap)

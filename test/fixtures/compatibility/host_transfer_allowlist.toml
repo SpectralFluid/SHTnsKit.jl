@@ -1,5 +1,5 @@
 [audit]
-entry_count = 691
+entry_count = 690
 scanner = "deterministic non-overlapping spelling scanner; longer transfer spellings win"
 scope = "src/device_utils.jl and every ext/*.jl file"
 
@@ -2429,14 +2429,6 @@ snippet_sha256 = "f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e105177
 token = "collect"
 [[entry]]
 classification = "metadata_or_storage_preserving"
-key = "ext/ParallelTransforms.jl|collect|f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797|4"
-path = "ext/ParallelTransforms.jl"
-reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
-same_snippet_ordinal = 4
-snippet_sha256 = "f3aaf91cfad3caefdf265198c80026716ffdb9a72f0cc513c656550e10517797"
-token = "collect"
-[[entry]]
-classification = "metadata_or_storage_preserving"
 key = "ext/ParallelTransforms.jl|collect|fb684b34b1ec73e503ba0f5faa044f9d57e2ac1574328097ee17081d6baaeff9|1"
 path = "ext/ParallelTransforms.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
@@ -2653,14 +2645,6 @@ snippet_sha256 = "12a9f3a5353d87ea25e175fdf876b6dbae68d7b2a463f74f3e6ca95c124ef0
 token = "copy"
 [[entry]]
 classification = "metadata_or_storage_preserving"
-key = "ext/ParallelTransforms.jl|copy|147c81efbd08b64a86372aac589ee87291b3eecefd1c295666ba577716b91388|1"
-path = "ext/ParallelTransforms.jl"
-reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
-same_snippet_ordinal = 1
-snippet_sha256 = "147c81efbd08b64a86372aac589ee87291b3eecefd1c295666ba577716b91388"
-token = "copy"
-[[entry]]
-classification = "metadata_or_storage_preserving"
 key = "ext/ParallelTransforms.jl|copy|2dbbe3fbc6a3a34979f43270c3074c5ce01db05d59cd11a5d78876e9598b3143|1"
 path = "ext/ParallelTransforms.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
@@ -2685,6 +2669,14 @@ snippet_sha256 = "b28409abbd80a2e819385d7b2d2142068193ac35d6d35127c1bb3522c7e601
 token = "copy"
 [[entry]]
 classification = "metadata_or_storage_preserving"
+key = "ext/ParallelTransforms.jl|copy|c99d8b13b9372c9778e0eed11e4634bcf9e3d7905c8ad8a7299cd262e320ef23|1"
+path = "ext/ParallelTransforms.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "c99d8b13b9372c9778e0eed11e4634bcf9e3d7905c8ad8a7299cd262e320ef23"
+token = "copy"
+[[entry]]
+classification = "metadata_or_storage_preserving"
 key = "ext/ParallelTransforms.jl|copy|cb36f0069e1b246db58c0e5e2e95535c8135090eed421136c1600b6e708e0930|1"
 path = "ext/ParallelTransforms.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
@@ -2693,27 +2685,11 @@ snippet_sha256 = "cb36f0069e1b246db58c0e5e2e95535c8135090eed421136c1600b6e708e09
 token = "copy"
 [[entry]]
 classification = "metadata_or_storage_preserving"
-key = "ext/ParallelTransforms.jl|copy|dc12ba4137696b079845998a6f49ea58dc5c232a02cc12bccb15dc192c9d46af|1"
-path = "ext/ParallelTransforms.jl"
-reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
-same_snippet_ordinal = 1
-snippet_sha256 = "dc12ba4137696b079845998a6f49ea58dc5c232a02cc12bccb15dc192c9d46af"
-token = "copy"
-[[entry]]
-classification = "metadata_or_storage_preserving"
 key = "ext/ParallelTransforms.jl|copy|f53a835c36d1a7cddadae9c66a924f3cca13dd65504320a34e6d8dd07fdedaab|1"
 path = "ext/ParallelTransforms.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
 snippet_sha256 = "f53a835c36d1a7cddadae9c66a924f3cca13dd65504320a34e6d8dd07fdedaab"
-token = "copy"
-[[entry]]
-classification = "metadata_or_storage_preserving"
-key = "ext/ParallelTransforms.jl|copy|f8f1b618eb949d68b6227c280350e7651a84710aba55cbd9d522856010147c8a|1"
-path = "ext/ParallelTransforms.jl"
-reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
-same_snippet_ordinal = 1
-snippet_sha256 = "f8f1b618eb949d68b6227c280350e7651a84710aba55cbd9d522856010147c8a"
 token = "copy"
 [[entry]]
 classification = "explicit_cpu_or_fallback"
@@ -2733,19 +2709,19 @@ snippet_sha256 = "558bfab5fb848b0aeef6f916379f7aeda03c85f2fa4957192bde520409bdae
 token = "fallback"
 [[entry]]
 classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|0a7c4699d5573073704fbde0bfe68fd4a9edfd012133bd0120425ae57f984139|1"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 1
+snippet_sha256 = "0a7c4699d5573073704fbde0bfe68fd4a9edfd012133bd0120425ae57f984139"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
 key = "ext/ParallelTransforms.jl|matrix|104b3b432d1a787e03171de068de6d0dacbc45035348b8c99a5e1c252dfb6dd2|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
 snippet_sha256 = "104b3b432d1a787e03171de068de6d0dacbc45035348b8c99a5e1c252dfb6dd2"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|11359199894d8610fd4109f60193d7ef80b7d83476a99125fe7dbbb8b293ba0f|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "11359199894d8610fd4109f60193d7ef80b7d83476a99125fe7dbbb8b293ba0f"
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
@@ -2765,11 +2741,11 @@ snippet_sha256 = "2058a77cc063344bea46220d8dcdf201657420e7601e6e69e15471152cb749
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|24c7eb4039de072d33e9734402eb6bf36a6cfc62c0f40f93a7a08a862b34ec64|1"
+key = "ext/ParallelTransforms.jl|matrix|393eea74ad65c4dcd4bfe75c11a12894b1553c8f4aaff369cd28e793d154aabc|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
-snippet_sha256 = "24c7eb4039de072d33e9734402eb6bf36a6cfc62c0f40f93a7a08a862b34ec64"
+snippet_sha256 = "393eea74ad65c4dcd4bfe75c11a12894b1553c8f4aaff369cd28e793d154aabc"
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
@@ -2845,6 +2821,14 @@ snippet_sha256 = "5245f8b7195bddab1a1b244787bf442cb38254016b6114940c3a0ea31c7d54
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|5e6f259814c7bc944fbdfeaeff204d1c551d0914669833ffc2cf22c9db2a934c|1"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 1
+snippet_sha256 = "5e6f259814c7bc944fbdfeaeff204d1c551d0914669833ffc2cf22c9db2a934c"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
 key = "ext/ParallelTransforms.jl|matrix|60c31dbf3497906854f6c279c77c758b815e388c7ca33bf4219c143d0d15d2c2|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
@@ -2861,22 +2845,6 @@ snippet_sha256 = "60c31dbf3497906854f6c279c77c758b815e388c7ca33bf4219c143d0d15d2
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|6177c193d240ee4b41de4b29bf3363cad355e22e60d0261b4860e740738e564f|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "6177c193d240ee4b41de4b29bf3363cad355e22e60d0261b4860e740738e564f"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|6177c193d240ee4b41de4b29bf3363cad355e22e60d0261b4860e740738e564f|2"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 2
-snippet_sha256 = "6177c193d240ee4b41de4b29bf3363cad355e22e60d0261b4860e740738e564f"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
 key = "ext/ParallelTransforms.jl|matrix|62153eaa71a27baffc1ed9c2353b0b8d9afaa5c5e8256b38d4f5d4ca02af0ca0|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
@@ -2890,14 +2858,6 @@ path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
 snippet_sha256 = "67a56611d75b8461cebea9e6d779f1c38fa1ac63b79b597936894f4ea4219622"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|7ac7d81df9c615e173d6e4262b4f66404e562daed76edd16fb6b4ecf69215886|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "7ac7d81df9c615e173d6e4262b4f66404e562daed76edd16fb6b4ecf69215886"
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
@@ -2933,19 +2893,27 @@ snippet_sha256 = "9a1eee8c30bd8410194d52ea38151074cdd1b8cfd3b9156f91112880e0d43f
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|a57c3aa6a771ebaf4c8d0bb47fac0ecfdd14d89df7b5b512f12edc566d179329|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "a57c3aa6a771ebaf4c8d0bb47fac0ecfdd14d89df7b5b512f12edc566d179329"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
 key = "ext/ParallelTransforms.jl|matrix|bf70639fb3ec7733c9661fb5960b52bc776891ee3eb5c9be9eccd66ce222cd49|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
 snippet_sha256 = "bf70639fb3ec7733c9661fb5960b52bc776891ee3eb5c9be9eccd66ce222cd49"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|bf70639fb3ec7733c9661fb5960b52bc776891ee3eb5c9be9eccd66ce222cd49|2"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 2
+snippet_sha256 = "bf70639fb3ec7733c9661fb5960b52bc776891ee3eb5c9be9eccd66ce222cd49"
+token = "matrix"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|matrix|cae74d307e1be82f958c02daba02da177b4cc5530d916032e5b0b9e1711f9f9f|1"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 1
+snippet_sha256 = "cae74d307e1be82f958c02daba02da177b4cc5530d916032e5b0b9e1711f9f9f"
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
@@ -2957,19 +2925,19 @@ snippet_sha256 = "d8766f9e78a9b4b942a1a940e97a4593c22a436b7c9b27c057c41d5d3d54fa
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|e6fb4f2b1f5c750fbe8ee9e2f9ab7a69fa70b2dcb2cc4ecdd9b14adb8f32e98e|1"
+key = "ext/ParallelTransforms.jl|matrix|e4db8f51abcf948c8017d2c06564d0d74015f1b82eff60b072b01faaf32f145f|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
-snippet_sha256 = "e6fb4f2b1f5c750fbe8ee9e2f9ab7a69fa70b2dcb2cc4ecdd9b14adb8f32e98e"
+snippet_sha256 = "e4db8f51abcf948c8017d2c06564d0d74015f1b82eff60b072b01faaf32f145f"
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|matrix|f4fcd01921c97c478739ececcd99ef53793a1bfd19ad22fe83ffa5a8ab14e52e|1"
+key = "ext/ParallelTransforms.jl|matrix|eb32e168bd40f85c4883339a8c5a4aae6afa9cb5c30fd3891055e27ed56b96dd|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
-snippet_sha256 = "f4fcd01921c97c478739ececcd99ef53793a1bfd19ad22fe83ffa5a8ab14e52e"
+snippet_sha256 = "eb32e168bd40f85c4883339a8c5a4aae6afa9cb5c30fd3891055e27ed56b96dd"
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
@@ -3477,11 +3445,11 @@ snippet_sha256 = "12bd3f91a08a084a6b4166e5c007e120127d02b6924fefc3612efc802feb7f
 token = "vector"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|vector|1d38931235dd5fb967ac20f8829524eedcea27509e90614eb29f0b9be04461a4|1"
+key = "ext/ParallelTransforms.jl|vector|4eeb1c3a560d6523947aac77431b10fdb8401810018c2fb7cd88036bdab2eebe|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
-snippet_sha256 = "1d38931235dd5fb967ac20f8829524eedcea27509e90614eb29f0b9be04461a4"
+snippet_sha256 = "4eeb1c3a560d6523947aac77431b10fdb8401810018c2fb7cd88036bdab2eebe"
 token = "vector"
 [[entry]]
 classification = "cpu_only"
@@ -3533,19 +3501,19 @@ snippet_sha256 = "5640877a3bf1660b3a5f42fe2351cc5e2cfa5d84b4027d2f59725c9b92268b
 token = "vector"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|vector|64d1733df6bf7c8d4d8de476659f5d8af79bbae51c65c6c75b40c280c7b79559|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "64d1733df6bf7c8d4d8de476659f5d8af79bbae51c65c6c75b40c280c7b79559"
-token = "vector"
-[[entry]]
-classification = "cpu_only"
 key = "ext/ParallelTransforms.jl|vector|72aa6d78e9b3cbef9176cd8a9decfc819b6159e76fc8f2fa0a61dce742971614|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
 snippet_sha256 = "72aa6d78e9b3cbef9176cd8a9decfc819b6159e76fc8f2fa0a61dce742971614"
+token = "vector"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|vector|7b9ec8a21aabf4c4dce3ffd99fb8b6baa54a7997e22601c9643f91f223dc1f14|1"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 1
+snippet_sha256 = "7b9ec8a21aabf4c4dce3ffd99fb8b6baa54a7997e22601c9643f91f223dc1f14"
 token = "vector"
 [[entry]]
 classification = "cpu_only"
@@ -3570,14 +3538,6 @@ path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 2
 snippet_sha256 = "836ca5a7e96e445e0eb4738f2f21bb589481b07847cc595c8543496f80929e14"
-token = "vector"
-[[entry]]
-classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|vector|8b0b32b993068ae85af34e38a5a808bf55b89c569b9e2d56b5a97b3cd83f9c24|1"
-path = "ext/ParallelTransforms.jl"
-reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
-same_snippet_ordinal = 1
-snippet_sha256 = "8b0b32b993068ae85af34e38a5a808bf55b89c569b9e2d56b5a97b3cd83f9c24"
 token = "vector"
 [[entry]]
 classification = "cpu_only"
@@ -3637,11 +3597,11 @@ snippet_sha256 = "abf4b7a736fc45315b46e35fc91cf1765e7bdf4aff57a32703b986fc217cc2
 token = "vector"
 [[entry]]
 classification = "cpu_only"
-key = "ext/ParallelTransforms.jl|vector|b207a4262cda37aee6cd9bf568407bfd0bc4d38ce72ae15be6144931c672e77a|1"
+key = "ext/ParallelTransforms.jl|vector|b46f658c88db09deea848d0a0ed870f7c73da75e9765f0831d9ca433e0ad924c|1"
 path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
-snippet_sha256 = "b207a4262cda37aee6cd9bf568407bfd0bc4d38ce72ae15be6144931c672e77a"
+snippet_sha256 = "b46f658c88db09deea848d0a0ed870f7c73da75e9765f0831d9ca433e0ad924c"
 token = "vector"
 [[entry]]
 classification = "cpu_only"
@@ -3650,6 +3610,14 @@ path = "ext/ParallelTransforms.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
 snippet_sha256 = "c468f565ac250e9b52e573cfa7ccc8fb8e653b8a09eeb58830b281a7b46d3552"
+token = "vector"
+[[entry]]
+classification = "cpu_only"
+key = "ext/ParallelTransforms.jl|vector|c7110b353320cc7133ce5524dab662d217a855e19fe45bf164ce9387191bba7f|1"
+path = "ext/ParallelTransforms.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 1
+snippet_sha256 = "c7110b353320cc7133ce5524dab662d217a855e19fe45bf164ce9387191bba7f"
 token = "vector"
 [[entry]]
 classification = "small_setup_table"
@@ -4333,14 +4301,6 @@ snippet_sha256 = "e6635435c94298537c1cef4c89e2f1d2a3688ac8d6865a1f73f659c496ecb9
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
-key = "ext/SHTnsKitAdvancedADExt.jl|matrix|e6635435c94298537c1cef4c89e2f1d2a3688ac8d6865a1f73f659c496ecb959|2"
-path = "ext/SHTnsKitAdvancedADExt.jl"
-reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
-same_snippet_ordinal = 2
-snippet_sha256 = "e6635435c94298537c1cef4c89e2f1d2a3688ac8d6865a1f73f659c496ecb959"
-token = "matrix"
-[[entry]]
-classification = "cpu_only"
 key = "ext/SHTnsKitAdvancedADExt.jl|typed_array|6a3f945a436cfadc7d0d88754bc5e5305471ff778353833a998abc86020f20a3|1"
 path = "ext/SHTnsKitAdvancedADExt.jl"
 reason = "CPU-only automatic-differentiation storage; vendor PencilArray inputs must be rejected before forward work or materialization"
@@ -4709,27 +4669,27 @@ snippet_sha256 = "b942add92c22db7eac41b54138d9861add04c30f72c832f6b94d7352e8807e
 token = "vector"
 [[entry]]
 classification = "metadata_or_storage_preserving"
-key = "ext/SHTnsKitMetalExt.jl|copy|6dd1d2577c82cb1a671f0d13b87531d489747012d7c48bc53f60daea0c49a44a|1"
+key = "ext/SHTnsKitMetalExt.jl|copy|a27bf5407f8df91f84fddb8f93ea256bacc62ebf243e82fbb1ef01ad6cb34e83|1"
 path = "ext/SHTnsKitMetalExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
-snippet_sha256 = "6dd1d2577c82cb1a671f0d13b87531d489747012d7c48bc53f60daea0c49a44a"
+snippet_sha256 = "a27bf5407f8df91f84fddb8f93ea256bacc62ebf243e82fbb1ef01ad6cb34e83"
 token = "copy"
 [[entry]]
 classification = "metadata_or_storage_preserving"
-key = "ext/SHTnsKitMetalExt.jl|copy|b5696e209ee408889fbcafc2a120d79a52d159473d1428408e05d0350f7b207b|1"
+key = "ext/SHTnsKitMetalExt.jl|copy|a4c46923581b553f2dbb5792efa61900e3503c43cd6e644b887b18aa82bca4eb|1"
 path = "ext/SHTnsKitMetalExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
-snippet_sha256 = "b5696e209ee408889fbcafc2a120d79a52d159473d1428408e05d0350f7b207b"
+snippet_sha256 = "a4c46923581b553f2dbb5792efa61900e3503c43cd6e644b887b18aa82bca4eb"
 token = "copy"
 [[entry]]
 classification = "metadata_or_storage_preserving"
-key = "ext/SHTnsKitMetalExt.jl|copy|ca03cf3c62586ca9f2e03b64df103146325b825e4d0555cb3b62358ace9524c0|1"
+key = "ext/SHTnsKitMetalExt.jl|copy|fbce7df240e865477ebca3588d62822875d22587116fcfddd6df375705b6b043|1"
 path = "ext/SHTnsKitMetalExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
-snippet_sha256 = "ca03cf3c62586ca9f2e03b64df103146325b825e4d0555cb3b62358ace9524c0"
+snippet_sha256 = "fbce7df240e865477ebca3588d62822875d22587116fcfddd6df375705b6b043"
 token = "copy"
 [[entry]]
 classification = "metadata_or_storage_preserving"
@@ -4739,6 +4699,30 @@ reason = "the CPU initializes fresh shared Metal basis tables in place before pu
 same_snippet_ordinal = 1
 snippet_sha256 = "ea1332f6328ca3d1e60ad73cd57fd379bb6e00f338a8ad706a10e6fbf2ac9f5c"
 token = "host_view"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitMetalExt.jl|parent|58b565686f9c42d536135b5c452b40c8b6303c1e7f84ff4bba57267dda1577ec|1"
+path = "ext/SHTnsKitMetalExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "58b565686f9c42d536135b5c452b40c8b6303c1e7f84ff4bba57267dda1577ec"
+token = "parent"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitMetalExt.jl|parent|5c95001402967e5f01d8804af20de61b60667fa9a16dca908d752160b7c8de0d|1"
+path = "ext/SHTnsKitMetalExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "5c95001402967e5f01d8804af20de61b60667fa9a16dca908d752160b7c8de0d"
+token = "parent"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitMetalExt.jl|parent|a3158a1f69fabdabbbe781cea1fdd22a551f32fd13f2544a21302b729a24eba3|1"
+path = "ext/SHTnsKitMetalExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "a3158a1f69fabdabbbe781cea1fdd22a551f32fd13f2544a21302b729a24eba3"
+token = "parent"
 [[entry]]
 classification = "cpu_only"
 key = "ext/SHTnsKitParallelADExt.jl|collect|3a2a9278eadf7357231906b39d457393b19d783b5590f87a7be08868bd535638|1"
@@ -5453,6 +5437,14 @@ snippet_sha256 = "ade43c800a30fbe5fc4f5ca5703b48f9e550779a49a242ec186df1564274ca
 token = "array"
 [[entry]]
 classification = "explicit_cpu_or_fallback"
+key = "src/device_utils.jl|cpu_constructor|03fc105b3ce65e1a98383ff53051a5703c528b761f9ef1835c1e90ed17474ad1|1"
+path = "src/device_utils.jl"
+reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
+same_snippet_ordinal = 1
+snippet_sha256 = "03fc105b3ce65e1a98383ff53051a5703c528b761f9ef1835c1e90ed17474ad1"
+token = "cpu_constructor"
+[[entry]]
+classification = "explicit_cpu_or_fallback"
 key = "src/device_utils.jl|cpu_constructor|098143bd54cff92ef7834d9aea81e4d3d4a6622f08a97edd75ecb407428bd870|1"
 path = "src/device_utils.jl"
 reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
@@ -5469,6 +5461,14 @@ snippet_sha256 = "1cb8dc5366d4f5862e9ccd3645e40d83d00d29d6dcd229b54c4f326ae0292c
 token = "cpu_constructor"
 [[entry]]
 classification = "explicit_cpu_or_fallback"
+key = "src/device_utils.jl|cpu_constructor|43d59314b5bd80c7ec771eaf73dfc25fe51aa86ab975b1452a564fef26180440|1"
+path = "src/device_utils.jl"
+reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
+same_snippet_ordinal = 1
+snippet_sha256 = "43d59314b5bd80c7ec771eaf73dfc25fe51aa86ab975b1452a564fef26180440"
+token = "cpu_constructor"
+[[entry]]
+classification = "explicit_cpu_or_fallback"
 key = "src/device_utils.jl|cpu_constructor|9cbe50e8315895f446adb1a807023200b52c480fce902048cf7d9e3ed4315e53|1"
 path = "src/device_utils.jl"
 reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
@@ -5476,21 +5476,13 @@ same_snippet_ordinal = 1
 snippet_sha256 = "9cbe50e8315895f446adb1a807023200b52c480fce902048cf7d9e3ed4315e53"
 token = "cpu_constructor"
 [[entry]]
-classification = "explicit_cpu_or_fallback"
-key = "src/device_utils.jl|cpu_constructor|b3e7133704dc284bfc5ffbffe80c8e07e58b8e76c78c669f33d77661b4c35f5e|1"
+classification = "metadata_or_storage_preserving"
+key = "src/device_utils.jl|parent|c60b627184d8740623278e0fb7c3f830f7e250f37493426e57e49fa626389ab3|1"
 path = "src/device_utils.jl"
-reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
-snippet_sha256 = "b3e7133704dc284bfc5ffbffe80c8e07e58b8e76c78c669f33d77661b4c35f5e"
-token = "cpu_constructor"
-[[entry]]
-classification = "explicit_cpu_or_fallback"
-key = "src/device_utils.jl|cpu_constructor|d1a2c5e011399de12c85f53b8eaa7f6cf5eeda403a531cebf4e0c268f2a47c27|1"
-path = "src/device_utils.jl"
-reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
-same_snippet_ordinal = 1
-snippet_sha256 = "d1a2c5e011399de12c85f53b8eaa7f6cf5eeda403a531cebf4e0c268f2a47c27"
-token = "cpu_constructor"
+snippet_sha256 = "c60b627184d8740623278e0fb7c3f830f7e250f37493426e57e49fa626389ab3"
+token = "parent"
 [[entry]]
 classification = "explicit_cpu_or_fallback"
 key = "src/device_utils.jl|to_cpu|7aae0594b2787929ac95997e42ebbc42f2427e1dbe904202764847d2d0956939|1"

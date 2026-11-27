@@ -13,7 +13,12 @@ function _cfg_fingerprint(cfg::SHTnsKit.SHTConfig)
         cfg.cphi, cfg.use_plm_tables,
     ))
     for values in (cfg.li, cfg.mi, cfg.θ, cfg.φ, cfg.x, cfg.w, cfg.st, cfg.Nlm)
-        fingerprint = hash(values, fingerprint)
+        # Julia's array hash samples large arrays. A change to any grid node
+        # or weight must invalidate plans that cached a copy of it.
+        fingerprint = hash(size(values), fingerprint)
+        for value in values
+            fingerprint = hash(value, fingerprint)
+        end
     end
     # The PLM arrays are derived caches.  Their enabled state and shapes affect
     # dispatch, while hashing all values would make every cached-plan call

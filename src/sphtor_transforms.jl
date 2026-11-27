@@ -758,11 +758,16 @@ function divergence_from_spheroidal(cfg::SHTConfig, Slm::AbstractMatrix)
     return divergence_from_spheroidal!(cfg, δ, Slm)
 end
 
-divergence_from_spheroidal(::CPU, cfg::SHTConfig, Slm::AbstractMatrix) =
-    divergence_from_spheroidal(cfg, Slm)
-divergence_from_spheroidal!(::CPU, cfg::SHTConfig, δ::AbstractMatrix,
-                            Slm::AbstractMatrix) =
-    divergence_from_spheroidal!(cfg, δ, Slm)
+function divergence_from_spheroidal(::CPU, cfg::SHTConfig, Slm::AbstractMatrix)
+    _require_cpu_storage(:divergence_from_spheroidal, Slm)
+    return divergence_from_spheroidal(cfg, Slm)
+end
+function divergence_from_spheroidal!(::CPU, cfg::SHTConfig, δ::AbstractMatrix,
+                                     Slm::AbstractMatrix)
+    _require_cpu_storage(:divergence_from_spheroidal!, δ)
+    _require_cpu_storage(:divergence_from_spheroidal!, Slm)
+    return divergence_from_spheroidal!(cfg, δ, Slm)
+end
 
 function divergence_from_spheroidal!(cfg::SHTConfig, δ::AbstractMatrix, Slm::AbstractMatrix)
     size(δ) == size(Slm) || throw(DimensionMismatch("divergence output dims"))
@@ -787,11 +792,16 @@ function spheroidal_from_divergence(cfg::SHTConfig, δlm::AbstractMatrix)
     return spheroidal_from_divergence!(cfg, Slm, δlm)
 end
 
-spheroidal_from_divergence(::CPU, cfg::SHTConfig, δlm::AbstractMatrix) =
-    spheroidal_from_divergence(cfg, δlm)
-spheroidal_from_divergence!(::CPU, cfg::SHTConfig, Slm::AbstractMatrix,
-                            δlm::AbstractMatrix) =
-    spheroidal_from_divergence!(cfg, Slm, δlm)
+function spheroidal_from_divergence(::CPU, cfg::SHTConfig, δlm::AbstractMatrix)
+    _require_cpu_storage(:spheroidal_from_divergence, δlm)
+    return spheroidal_from_divergence(cfg, δlm)
+end
+function spheroidal_from_divergence!(::CPU, cfg::SHTConfig, Slm::AbstractMatrix,
+                                     δlm::AbstractMatrix)
+    _require_cpu_storage(:spheroidal_from_divergence!, Slm)
+    _require_cpu_storage(:spheroidal_from_divergence!, δlm)
+    return spheroidal_from_divergence!(cfg, Slm, δlm)
+end
 
 function spheroidal_from_divergence!(cfg::SHTConfig, Slm::AbstractMatrix, δlm::AbstractMatrix)
     size(Slm) == size(δlm) || throw(DimensionMismatch("spheroidal output dims"))
@@ -818,11 +828,16 @@ function vorticity_from_toroidal(cfg::SHTConfig, Tlm::AbstractMatrix)
     return vorticity_from_toroidal!(cfg, ζ, Tlm)
 end
 
-vorticity_from_toroidal(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix) =
-    vorticity_from_toroidal(cfg, Tlm)
-vorticity_from_toroidal!(::CPU, cfg::SHTConfig, ζ::AbstractMatrix,
-                         Tlm::AbstractMatrix) =
-    vorticity_from_toroidal!(cfg, ζ, Tlm)
+function vorticity_from_toroidal(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix)
+    _require_cpu_storage(:vorticity_from_toroidal, Tlm)
+    return vorticity_from_toroidal(cfg, Tlm)
+end
+function vorticity_from_toroidal!(::CPU, cfg::SHTConfig, ζ::AbstractMatrix,
+                                  Tlm::AbstractMatrix)
+    _require_cpu_storage(:vorticity_from_toroidal!, ζ)
+    _require_cpu_storage(:vorticity_from_toroidal!, Tlm)
+    return vorticity_from_toroidal!(cfg, ζ, Tlm)
+end
 
 function vorticity_from_toroidal!(cfg::SHTConfig, ζ::AbstractMatrix, Tlm::AbstractMatrix)
     size(ζ) == size(Tlm) || throw(DimensionMismatch("vorticity output dims"))
@@ -847,11 +862,16 @@ function toroidal_from_vorticity(cfg::SHTConfig, ζlm::AbstractMatrix)
     return toroidal_from_vorticity!(cfg, Tlm, ζlm)
 end
 
-toroidal_from_vorticity(::CPU, cfg::SHTConfig, ζlm::AbstractMatrix) =
-    toroidal_from_vorticity(cfg, ζlm)
-toroidal_from_vorticity!(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix,
-                         ζlm::AbstractMatrix) =
-    toroidal_from_vorticity!(cfg, Tlm, ζlm)
+function toroidal_from_vorticity(::CPU, cfg::SHTConfig, ζlm::AbstractMatrix)
+    _require_cpu_storage(:toroidal_from_vorticity, ζlm)
+    return toroidal_from_vorticity(cfg, ζlm)
+end
+function toroidal_from_vorticity!(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix,
+                                  ζlm::AbstractMatrix)
+    _require_cpu_storage(:toroidal_from_vorticity!, Tlm)
+    _require_cpu_storage(:toroidal_from_vorticity!, ζlm)
+    return toroidal_from_vorticity!(cfg, Tlm, ζlm)
+end
 
 function toroidal_from_vorticity!(cfg::SHTConfig, Tlm::AbstractMatrix, ζlm::AbstractMatrix)
     size(Tlm) == size(ζlm) || throw(DimensionMismatch("toroidal output dims"))
@@ -869,10 +889,14 @@ function toroidal_from_vorticity!(cfg::SHTConfig, Tlm::AbstractMatrix, ζlm::Abs
 end
 
 Base.@constprop :aggressive function synthesis_sphtor_l(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatrix, ltr::Integer; real_output::Bool=true)
+    operands = _rerouted_operands(:synthesis_sphtor_l, (Slm, Tlm))
+    operands === nothing || return synthesis_sphtor_l(cfg, operands..., ltr; real_output)
     return _synthesis_sphtor_l(cfg, Slm, Tlm, ltr, Val(real_output))
 end
 
 function synthesis_sphtor_l_cplx(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatrix, ltr::Integer)
+    operands = _rerouted_operands(:synthesis_sphtor_l_cplx, (Slm, Tlm))
+    operands === nothing || return synthesis_sphtor_l_cplx(cfg, operands..., ltr)
     # Dedicated complex helper avoids inference depending on a runtime keyword.
     return _synthesis_sphtor_l(cfg, Slm, Tlm, ltr, Val(false))
 end
@@ -927,6 +951,8 @@ function _synthesis_sphtor_l(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractM
 end
 
 function analysis_sphtor_l(cfg::SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatrix, ltr::Integer)
+    operands = _rerouted_operands(:analysis_sphtor_l, (Vt, Vp))
+    operands === nothing || return analysis_sphtor_l(cfg, operands..., ltr)
     ltr = _validate_degree_limit(cfg, ltr)
     nlat, nlon = cfg.nlat, cfg.nlon
     size(Vt,1) == nlat && size(Vt,2) == nlon || throw(DimensionMismatch("Vt dims"))
@@ -1084,6 +1110,8 @@ end
 end
 
 function analysis_sphtor_ml(cfg::SHTConfig, stored_im::Integer, Vt_m::AbstractVector{<:Complex}, Vp_m::AbstractVector{<:Complex}, ltr::Integer)
+    operands = _rerouted_operands(:analysis_sphtor_ml, (Vt_m, Vp_m))
+    operands === nothing || return analysis_sphtor_ml(cfg, stored_im, operands..., ltr)
     mval, ltr = _validate_vector_fixed_order(cfg, stored_im, ltr)
     _validate_robert_analysis(cfg; m=mval, ltr)
     nlat = cfg.nlat
@@ -1158,6 +1186,8 @@ Julia's imaginary unit, and `1.0im` is juxtaposition (`1.0 * im`), so the
 coupling terms above silently became real. Do not rename it back.
 """
 function synthesis_sphtor_ml(cfg::SHTConfig, stored_im::Integer, Sl::AbstractVector{<:Complex}, Tl::AbstractVector{<:Complex}, ltr::Integer)
+    operands = _rerouted_operands(:synthesis_sphtor_ml, (Sl, Tl))
+    operands === nothing || return synthesis_sphtor_ml(cfg, stored_im, operands..., ltr)
     mval, ltr = _validate_vector_fixed_order(cfg, stored_im, ltr)
     nlat = cfg.nlat
     expected_len = ltr - mval + 1

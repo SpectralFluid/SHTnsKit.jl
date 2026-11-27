@@ -443,9 +443,24 @@ function Base.setproperty!(cfg::SHTConfig, name::Symbol, val)
 end
 
 """
+    _min_nlat(grid_type, lmax) -> Int
+
+Fewest latitudes a grid accepts for degree `lmax`: Gauss–Legendre is exact from
+`lmax+1` and Driscoll–Healy from `2(lmax+1)`; the equiangular grids take `lmax+1`
+latitudes with the poles and `lmax+2` without. Other grid types have no rule.
+"""
+function _min_nlat(grid_type::Symbol, lmax::Integer)
+    grid_type === :gauss && return lmax + 1
+    grid_type === :regular_poles && return lmax + 1
+    grid_type === :regular && return lmax + 2
+    grid_type === :driscoll_healy && return 2 * (lmax + 1)
+    return 1
+end
+
+"""
     _validate_spectral_layout(lmax, mmax, mres, nlat, nlon, grid_type)
 
-Check spectral truncation, longitude sampling and Gauss latitude resolution.
+Check spectral truncation, longitude sampling and the grid's latitude resolution.
 """
 function _validate_spectral_layout(lmax::Integer, mmax::Integer, mres::Integer,
                                    nlat::Integer, nlon::Integer, grid_type::Symbol)
@@ -454,8 +469,11 @@ function _validate_spectral_layout(lmax::Integer, mmax::Integer, mres::Integer,
     mmax <= lmax || throw(ArgumentError("mmax must be ≤ lmax, got mmax=$mmax, lmax=$lmax"))
     mres >= 1 || throw(ArgumentError("mres must be ≥ 1, got $mres"))
     nlat >= 1 || throw(ArgumentError("nlat must be ≥ 1, got $nlat"))
-    if grid_type === :gauss && lmax >= nlat
-        throw(ArgumentError("Gauss–Legendre quadrature requires nlat ≥ lmax+1, got nlat=$nlat and lmax=$lmax"))
+    min_nlat = _min_nlat(grid_type, lmax)
+    if nlat < min_nlat
+        grid_type === :gauss && throw(ArgumentError(
+            "Gauss–Legendre quadrature requires nlat ≥ lmax+1, got nlat=$nlat and lmax=$lmax"))
+        throw(ArgumentError("a $grid_type grid requires nlat ≥ $min_nlat for lmax=$lmax, got nlat=$nlat"))
     end
     nlon >= 2*mmax + 1 || throw(ArgumentError(
         "nlon must be ≥ 2*mmax+1 = $(2*mmax+1) to resolve every azimuthal order, got nlon=$nlon"))
@@ -1228,7 +1246,7 @@ function create_regular_config(lmax::Int, nlat::Int; mmax::Int=lmax, mres::Int=1
         "Driscoll-Healy weights require include_poles=true",
     ))
     # Regular grids benefit from a slight oversampling in latitude for accuracy
-    min_nlat = include_poles ? (lmax + 1) : (lmax + 2)
+    min_nlat = _min_nlat(include_poles ? :regular_poles : :regular, lmax)
     nlat ≥ min_nlat || throw(ArgumentError("nlat must be ≥ $(min_nlat) for regular grids"))
 
     θ = zeros(Float64, nlat)

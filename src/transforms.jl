@@ -484,12 +484,17 @@ end
     return nothing
 end
 
+# Exact coordinates (integers, rationals, π) carry no precision of their own, so
+# they take the coefficients' precision rather than the Float64 `float` gives them.
+_local_coordinate_type(::Type, x::Real) = typeof(float(x))
+_local_coordinate_type(::Type{RT}, ::Union{Integer,Rational,AbstractIrrational}) where {RT<:AbstractFloat} = RT
+
 # Return the basis, real output, and complex accumulation types. Keep the
 # supplied coordinate precision through the Legendre recurrence and phase.
 # For AD, only coordinate derivatives need to enter the basis.
 @inline function _local_eval_types(::Type{CT}, coordinates::Real...) where {CT<:Complex}
     RT = real(CT)
-    coord = promote_type(map(x -> typeof(float(x)), coordinates)...)
+    coord = promote_type(map(x -> _local_coordinate_type(RT, x), coordinates)...)
     AT = promote_type(RT, coord)
     if RT <: AbstractFloat && coord <: AbstractFloat
         return AT, RT, Complex{AT}
@@ -508,9 +513,7 @@ end
 end
 
 function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::Real, phi::Real)
-    on_device(Qlm) isa CPU || throw(ArgumentError(
-        "synthesis_point with GPU storage requires GPU() dispatch",
-    ))
+    _validate_local_storage(:synthesis_point, Qlm)
     lmax, mmax = cfg.lmax, cfg.mmax
     size(Qlm, 1) == lmax + 1 || throw(DimensionMismatch("Qlm first dim must be lmax+1"))
     size(Qlm, 2) == mmax + 1 || throw(DimensionMismatch("Qlm second dim must be mmax+1"))
@@ -553,5 +556,5 @@ function synthesis_point(::CPU, cfg::SHTConfig,
     return synthesis_point(cfg, Qlm, cost, phi)
 end
 
-synthesis_point(::GPU, ::SHTConfig, ::AbstractMatrix{<:Complex}, ::Real, ::Real) =
-    throw(ArgumentError("synthesis_point(GPU(), ...) requires one supported GPU vendor's storage"))
+synthesis_point(::GPU, ::SHTConfig, Qlm::AbstractMatrix{<:Complex}, ::Real, ::Real) =
+    throw(_local_gpu_fallback_error(:synthesis_point, Qlm))

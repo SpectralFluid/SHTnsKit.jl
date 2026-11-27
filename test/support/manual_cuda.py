@@ -175,7 +175,7 @@ def main():
     runner.set_defaults(function=run)
     reporter = commands.add_parser("report", help="preview a GitHub commit status, or publish it")
     reporter.add_argument("result", type=Path, help="result.json beside its cuda-test.log")
-    reporter.add_argument("--repository", default="subhk/SHTnsKit.jl", help="GitHub OWNER/REPO")
+    reporter.add_argument("--repository", default="SpectralFluid/SHTnsKit.jl", help="GitHub OWNER/REPO")
     reporter.add_argument("--target-url", help="optional URL to a separately uploaded log")
     reporter.add_argument("--gh", default="gh", help="GitHub CLI executable")
     reporter.add_argument("--publish", action="store_true", help="post the status using gh authentication")
