@@ -192,7 +192,10 @@ _qst_promoted(values::Tuple{AbstractArray{T},AbstractArray{T},AbstractArray{T}})
 
 function _qst_promoted(values::Tuple{AbstractArray,AbstractArray,AbstractArray})
     R = real(float(promote_type(map(eltype, values)...)))
-    return map(value -> _with_precision(value, R), values)
+    # Julia 1.10 and 1.11 lose the concrete type of R inside a map closure.
+    return (_with_precision(values[1], R),
+            _with_precision(values[2], R),
+            _with_precision(values[3], R))
 end
 
 # Widen `value` to precision `R`, keeping it real or complex. A CPU operand is
