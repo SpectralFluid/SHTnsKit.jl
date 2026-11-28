@@ -73,4 +73,5 @@ using MPI, PencilArrays, PencilFFTs, SHTnsKit
 
 **Older code no longer runs.** Version 2 removed ambiguous flags, device
 symbols, and compatibility plan signatures. See [Migrating to SHTnsKit
-v2.0](migration.md).
+v2.0](migration.md). Version 3 corrects several results and rejects some inputs
+that 2.0 processed silently; see [Migrating to SHTnsKit v3.0](migration_v3.md).

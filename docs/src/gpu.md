@@ -57,9 +57,8 @@ batch transform families follow the same storage-based dispatch.
 
 ## Apple Metal
 
-On Apple Silicon, load `Metal` 1.11 or later in the 1.x series. The SHTnsKit
-v2.0.3 tag predates this extension. To use the backend from a checkout, follow
-the development installation instructions in [Installation](installation.md).
+On Apple Silicon, load `Metal` 1.11 or later in the 1.x series. The Metal
+extension ships with SHTnsKit 3.0 and later.
 
 ```julia
 using SHTnsKit, Metal

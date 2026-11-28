@@ -143,6 +143,9 @@ gradient = fdgrad_scalar_energy(cfg, field)
 
 Zygote wrappers include `zgrad_scalar_energy`, `zgrad_vector_energy`, and
 `zgrad_enstrophy_Tlm`. For real packed coefficients and `mres == 1`,
-`zgrad_rotation_angles_real` differentiates half the squared norm of the
-rotated coefficients with respect to the three Euler angles, using the
-normalization and phase in `cfg`.
+`zgrad_rotation_angles_real` differentiates a loss of the rotated
+coefficients with respect to the three Euler angles, using the normalization
+and phase in `cfg`. The default loss is half their squared norm. With
+`norm=:orthonormal` and `real_norm=true` that is the field energy, which a
+rotation preserves. Pass `loss`, for example
+`rotated -> sum(abs2, rotated .- target) / 2`, to fit a rotation to a target.

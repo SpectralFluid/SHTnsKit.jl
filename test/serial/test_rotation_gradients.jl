@@ -74,6 +74,49 @@ if _HAS_ZYGOTE_ROT
                   [rotation_bar.α, rotation_bar.β, rotation_bar.γ] rtol=1e-12 atol=1e-12
         end
     end
+
+    @testset "Rotation angle gradients of a user loss" begin
+        # Here the packed norm is the field energy, which a rotation preserves, so
+        # only a loss that depends on orientation has a gradient to follow.
+        cfg = create_gauss_config(4, 6; norm=:orthonormal, real_norm=true)
+        rng = MersenneTwister(959)
+        q, target = randn(rng, ComplexF64, cfg.nlm), randn(rng, ComplexF64, cfg.nlm)
+        q[cfg.mi .== 0] .= real.(q[cfg.mi .== 0])
+        target[cfg.mi .== 0] .= real.(target[cfg.mi .== 0])
+        angles = [0.25, 0.63, -0.42]
+        distance(rotated) = sum(abs2, rotated .- target) / 2
+        function loss(angles)
+            r = SHTRotation(cfg.lmax, cfg.mmax; α=angles[1], β=angles[2], γ=angles[3],
+                            norm=cfg.norm, real_norm=cfg.real_norm, cs_phase=cfg.cs_phase)
+            return distance(shtns_rotation_apply_real(r, q, similar(q)))
+        end
+        @test maximum(abs, zgrad_rotation_angles_real(cfg, q, angles...)) < 1e-12
+        @test collect(zgrad_rotation_angles_real(cfg, q, angles...; loss=R -> sum(abs2, R) / 2)) ≈
+              collect(zgrad_rotation_angles_real(cfg, q, angles...)) atol=1e-12
+        gradients = zgrad_rotation_angles_real(cfg, q, angles...; loss=distance)
+        @test maximum(abs, gradients) > 1e-3
+        for i in eachindex(angles)
+            step = zeros(3)
+            step[i] = 1e-6
+            fd = (loss(angles + step) - loss(angles - step)) / (2 * step[i])
+            @test gradients[i] ≈ fd atol=2e-8 rtol=1e-7
+        end
+
+        nc = SHTnsKit.nlm_cplx_calc(cfg.lmax, cfg.mmax, 1)
+        z, ztarget = randn(rng, ComplexF64, nc), randn(rng, ComplexF64, nc)
+        zdistance(rotated) = sum(abs2, rotated .- ztarget) / 2
+        function zloss(angles)
+            r = SHTRotation(cfg.lmax, cfg.mmax; α=angles[1], β=angles[2], γ=angles[3])
+            return zdistance(shtns_rotation_apply_cplx(r, z, similar(z)))
+        end
+        zgradients = zgrad_rotation_angles_cplx(cfg.lmax, cfg.mmax, z, angles...; loss=zdistance)
+        for i in eachindex(angles)
+            step = zeros(3)
+            step[i] = 1e-6
+            fd = (zloss(angles + step) - zloss(angles - step)) / (2 * step[i])
+            @test zgradients[i] ≈ fd atol=2e-8 rtol=1e-7
+        end
+    end
 end
 
 @testset "Axis-rotation pullbacks preserve primal coefficients" begin

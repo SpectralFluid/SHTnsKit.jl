@@ -59,7 +59,8 @@ using SHTnsKit
     @testset "Breaking release uses a major version" begin
         package_root = dirname(dirname(pathof(SHTnsKit)))
         project = TOML.parsefile(joinpath(package_root, "Project.toml"))
-        @test VersionNumber(project["version"]).major == 2
+        # 3.0 changes results that 2.0 returned; see docs/src/migration_v3.md.
+        @test VersionNumber(project["version"]).major >= 3
     end
 
     @testset "CI correctness regressions use supported APIs" begin

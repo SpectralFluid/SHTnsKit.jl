@@ -126,14 +126,23 @@ function SHTnsKit.zgrad_enstrophy_Tlm(cfg::SHTnsKit.SHTConfig, Tlm::AbstractMatr
     return Zygote.gradient(loss, Tlm)[1]
 end
 
-"""
-    zgrad_rotation_angles_real(cfg, Qlm, α, β, γ) -> (∂L/∂α, ∂L/∂β, ∂L/∂γ)
+# The cotangent ∂L/∂R of a user loss of the rotated coefficients. A loss that
+# ignores them has a zero cotangent.
+function _rotation_loss_cotangent(loss, rotated)
+    cotangent = Zygote.gradient(loss, rotated)[1]
+    return cotangent === nothing ? zero(rotated) : cotangent
+end
 
-Gradient of half the squared Euclidean norm of the rotated packed coefficients
-with respect to the three Euler angles. The rotation uses `cfg.norm`,
-`cfg.cs_phase`, and `cfg.real_norm`, and requires `cfg.mres == 1`.
 """
-function SHTnsKit.zgrad_rotation_angles_real(cfg::SHTnsKit.SHTConfig, Qlm::AbstractVector, α::Real, β::Real, γ::Real)
+    zgrad_rotation_angles_real(cfg, Qlm, α, β, γ; loss=nothing) -> (∂L/∂α, ∂L/∂β, ∂L/∂γ)
+
+Gradient of `loss(R)` with respect to the three Euler angles, where `R` is the
+rotated packed coefficients. Without `loss`, `L` is half the squared Euclidean
+norm of `R`. The rotation uses `cfg.norm`, `cfg.cs_phase`, and `cfg.real_norm`,
+and requires `cfg.mres == 1`.
+"""
+function SHTnsKit.zgrad_rotation_angles_real(cfg::SHTnsKit.SHTConfig, Qlm::AbstractVector, α::Real, β::Real, γ::Real;
+                                             loss=nothing)
     cfg.mres == 1 || throw(ArgumentError("real rotation angle gradients require mres=1"))
     rotation = SHTnsKit.SHTRotation(cfg.lmax, cfg.mmax; α, β, γ, norm=cfg.norm,
                                     cs_phase=cfg.cs_phase, real_norm=cfg.real_norm)
@@ -141,21 +150,26 @@ function SHTnsKit.zgrad_rotation_angles_real(cfg::SHTnsKit.SHTConfig, Qlm::Abstr
     # The output cotangent of sum(abs2, rotated)/2 is rotated itself. Only the
     # angles are differentiated, so the rrule's coefficient adjoint is skipped;
     # a directly constructed rotation stores its angles in canonical ZYZ order.
+    cotangent = loss === nothing ? rotated : _rotation_loss_cotangent(loss, rotated)
     return SHTnsKit._rotation_apply_real_angle_gradients(
         rotation, SHTnsKit._internal_coefficients(Qlm, cfg),
-        SHTnsKit._analysis_cotangent_to_canonical(rotated, cfg))
+        SHTnsKit._analysis_cotangent_to_canonical(cotangent, cfg))
 end
 
 """
-    zgrad_rotation_angles_cplx(lmax, mmax, Zlm, α, β, γ) -> (∂L/∂α, ∂L/∂β, ∂L/∂γ)
+    zgrad_rotation_angles_cplx(lmax, mmax, Zlm, α, β, γ; loss=nothing) -> (∂L/∂α, ∂L/∂β, ∂L/∂γ)
 
-Gradient of L = 0.5 || R ||^2 where R = rotation_apply_cplx(lmax,mmax,Zlm; α,β,γ) using Zygote.
+Gradient of `loss(R)` with respect to the three Euler angles, where
+R = rotation_apply_cplx(lmax,mmax,Zlm; α,β,γ). Without `loss`, L = 0.5 || R ||^2.
 """
-function SHTnsKit.zgrad_rotation_angles_cplx(lmax::Integer, mmax::Integer, Zlm::AbstractVector, α::Real, β::Real, γ::Real)
+function SHTnsKit.zgrad_rotation_angles_cplx(lmax::Integer, mmax::Integer, Zlm::AbstractVector, α::Real, β::Real, γ::Real;
+                                             loss=nothing)
     lmax = Int(lmax); mmax = Int(mmax)
     R = similar(Zlm)
     r = SHTnsKit.SHTRotation(lmax, mmax; α=float(α), β=float(β), γ=float(γ))
     SHTnsKit.shtns_rotation_apply_cplx(r, Zlm, R)
+    # The default loss ½‖R‖² has R itself as its output cotangent.
+    loss === nothing || (R = _rotation_loss_cotangent(loss, R))
     # The loop below reimplements the Wigner engine, which works in the Y_l^m
     # basis, while the public transform is `ε ∘ engine ∘ ε` in the packed layout.
     # `|εx| = |x|`, so L is unchanged — but the intermediates must be the

@@ -73,9 +73,7 @@ using Pkg
 Pkg.add(["SHTnsKit", "CUDA", "GPUArrays", "GPUArraysCore", "KernelAbstractions"])   # NVIDIA
 Pkg.add(["SHTnsKit", "AMDGPU", "GPUArrays", "GPUArraysCore", "KernelAbstractions"]) # AMD
 
-# Apple Silicon, using a checkout that contains the Metal extension
-Pkg.develop(path="/path/to/SHTnsKit.jl")
-Pkg.add("Metal")
+Pkg.add(["SHTnsKit", "Metal"])                                                    # Apple Silicon
 ```
 
 Generic `analysis(cfg, device_array)` and `synthesis(cfg, coefficients)` calls

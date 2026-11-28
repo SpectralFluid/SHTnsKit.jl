@@ -650,26 +650,36 @@ Requires `using ForwardDiff`.
 fdgrad_vector_energy(::SHTConfig, ::Any, ::Any) = error("ForwardDiff extension not loaded")
 
 """
-    zgrad_rotation_angles_real(cfg, Qlm::AbstractVector, α, β, γ) -> (∂L/∂α, ∂L/∂β, ∂L/∂γ)
+    zgrad_rotation_angles_real(cfg, Qlm::AbstractVector, α, β, γ; loss=nothing) -> (∂L/∂α, ∂L/∂β, ∂L/∂γ)
 
-Gradient of `L = ½‖R(α, β, γ) Qlm‖²` with respect to the ZYZ Euler angles. `R`
+Gradient of `L = loss(R(α, β, γ) Qlm)` with respect to the ZYZ Euler angles. `R`
 rotates the packed real-field coefficients `Qlm` as an `SHTRotation` does,
 using `cfg`'s normalization and phase convention. Needs `cfg.mres == 1`.
 
+Without `loss`, `L = ½‖R(α, β, γ) Qlm‖²`. With `norm=:orthonormal` and
+`real_norm=true` that norm is the field energy, which a rotation preserves, so
+the gradient is zero. To fit a rotation, pass a loss that compares the rotated
+coefficients with a target:
+
+```julia
+loss = rotated -> sum(abs2, rotated .- target) / 2
+∂α, ∂β, ∂γ = zgrad_rotation_angles_real(cfg, Qlm, α, β, γ; loss)
+```
+
 Defined by the Zygote extension: requires `using Zygote`.
 """
-zgrad_rotation_angles_real(::SHTConfig, ::Any, ::Any, ::Any, ::Any) = error("Zygote extension not loaded")
+zgrad_rotation_angles_real(::SHTConfig, ::Any, ::Any, ::Any, ::Any; kwargs...) = error("Zygote extension not loaded")
 
 """
-    zgrad_rotation_angles_cplx(lmax, mmax, Zlm::AbstractVector, α, β, γ) -> (∂L/∂α, ∂L/∂β, ∂L/∂γ)
+    zgrad_rotation_angles_cplx(lmax, mmax, Zlm::AbstractVector, α, β, γ; loss=nothing) -> (∂L/∂α, ∂L/∂β, ∂L/∂γ)
 
 Complex counterpart of [`zgrad_rotation_angles_real`](@ref), for coefficients
 in the complex packed `LM_cplx` layout with degrees up to `lmax` and orders up
-to `mmax`.
+to `mmax`. It takes the same `loss` keyword.
 
 Defined by the Zygote extension: requires `using Zygote`.
 """
-zgrad_rotation_angles_cplx(::Any, ::Any, ::Any, ::Any, ::Any, ::Any) = error("Zygote extension not loaded")
+zgrad_rotation_angles_cplx(::Any, ::Any, ::Any, ::Any, ::Any, ::Any; kwargs...) = error("Zygote extension not loaded")
 """
     dist_analysis(cfg, fθφ::PencilArray; use_rfft=false, use_packed_storage=false) -> Matrix
 

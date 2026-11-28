@@ -18,7 +18,8 @@ packages that activate their extension.
 - A configuration's `norm`, `cs_phase`, `real_norm`, and `robert_form` options
   apply at every public transform boundary.
 
-See [Migrating to v2.0](../migration.md) for removed compatibility signatures
+See [Migrating to v3.0](../migration_v3.md) for changed results and
+[Migrating to v2.0](../migration.md) for removed compatibility signatures
 and numerical changes.
 
 ## Extension activation

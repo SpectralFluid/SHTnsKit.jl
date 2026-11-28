@@ -45,6 +45,7 @@ pages = Any[
         "Normalization and Phase" => "norms.md",
         "Package Architecture" => "architecture.md",
         "API Reference" => "api/index.md",
+        "Migrating to v3.0" => "migration_v3.md",
         "Migrating to v2.0" => "migration.md"
     ]
 ]
