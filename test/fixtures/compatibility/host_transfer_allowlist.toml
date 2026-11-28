@@ -1,5 +1,5 @@
 [audit]
-entry_count = 697
+entry_count = 698
 scanner = "deterministic non-overlapping spelling scanner; longer transfer spellings win"
 scope = "src/device_utils.jl and every ext/*.jl file"
 
@@ -629,6 +629,14 @@ snippet_sha256 = "b3f58b3cdb7c0d8dea7eb5bb4f6937eba84b08f4025b2a3cdf7ad02aa84288
 token = "copy"
 [[entry]]
 classification = "bounded_pinned_mpi_staging"
+key = "ext/ParallelGPU.jl|host_view|8c26d2f2b40fadb1e7bc8ab210fadf712f13bd999b9606fc66ff7c0fd90a86b3|1"
+path = "ext/ParallelGPU.jl"
+reason = "non-owning view of vendor-allocated pinned MPI staging memory released by the backing storage finalizer"
+same_snippet_ordinal = 1
+snippet_sha256 = "8c26d2f2b40fadb1e7bc8ab210fadf712f13bd999b9606fc66ff7c0fd90a86b3"
+token = "host_view"
+[[entry]]
+classification = "bounded_pinned_mpi_staging"
 key = "ext/ParallelGPU.jl|parent|004acae16f06de7b153e74d32e013355fdf40e76ba57df91c3f753004e0348d7|1"
 path = "ext/ParallelGPU.jl"
 reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
@@ -963,6 +971,14 @@ reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synch
 same_snippet_ordinal = 1
 snippet_sha256 = "dfaa956764bdeb80269a1a9319f6529abb65ae4e653189ae8ff91d8458789496"
 token = "similar_array"
+[[entry]]
+classification = "bounded_pinned_mpi_staging"
+key = "ext/ParallelGPU.jl|vector|8026ced75be30a4ee79eaebf4700cb65b918ed607e1bfffc62b034da6b1691de|1"
+path = "ext/ParallelGPU.jl"
+reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
+same_snippet_ordinal = 1
+snippet_sha256 = "8026ced75be30a4ee79eaebf4700cb65b918ed607e1bfffc62b034da6b1691de"
+token = "vector"
 [[entry]]
 classification = "unreachable_early_error_callback"
 key = "ext/ParallelGPUVendorFirewall.jl|cpu_constructor|4ebb302406e55f6fe1c6518366307bc01ad0f0d09fd79d86d7249cd8a4687333|1"
@@ -5133,14 +5149,6 @@ snippet_sha256 = "aff9d8b3ba318539f09e49021fe6572df5308b19bd054ac8e0b9f551dc0f25
 token = "parent"
 [[entry]]
 classification = "bounded_pinned_mpi_staging"
-key = "ext/SHTnsKitParallelAMDGPUExt.jl|vector|6f05a484ef43774be7bff89a73f86fd149ed1507d5f9d8a960fc3d0ff8ced705|1"
-path = "ext/SHTnsKitParallelAMDGPUExt.jl"
-reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
-same_snippet_ordinal = 1
-snippet_sha256 = "6f05a484ef43774be7bff89a73f86fd149ed1507d5f9d8a960fc3d0ff8ced705"
-token = "vector"
-[[entry]]
-classification = "bounded_pinned_mpi_staging"
 key = "ext/SHTnsKitParallelAMDGPUExt.jl|vector|8026ced75be30a4ee79eaebf4700cb65b918ed607e1bfffc62b034da6b1691de|1"
 path = "ext/SHTnsKitParallelAMDGPUExt.jl"
 reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
@@ -5299,14 +5307,6 @@ reason = "metadata collection or storage-preserving parent/copy operation; verif
 same_snippet_ordinal = 3
 snippet_sha256 = "aff9d8b3ba318539f09e49021fe6572df5308b19bd054ac8e0b9f551dc0f259c"
 token = "parent"
-[[entry]]
-classification = "bounded_pinned_mpi_staging"
-key = "ext/SHTnsKitParallelCUDAExt.jl|vector|6f05a484ef43774be7bff89a73f86fd149ed1507d5f9d8a960fc3d0ff8ced705|1"
-path = "ext/SHTnsKitParallelCUDAExt.jl"
-reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
-same_snippet_ordinal = 1
-snippet_sha256 = "6f05a484ef43774be7bff89a73f86fd149ed1507d5f9d8a960fc3d0ff8ced705"
-token = "vector"
 [[entry]]
 classification = "bounded_pinned_mpi_staging"
 key = "ext/SHTnsKitParallelCUDAExt.jl|vector|8026ced75be30a4ee79eaebf4700cb65b918ed607e1bfffc62b034da6b1691de|1"
@@ -5578,4 +5578,12 @@ path = "src/device_utils.jl"
 reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
 same_snippet_ordinal = 1
 snippet_sha256 = "1cb8dc5366d4f5862e9ccd3645e40d83d00d29d6dcd229b54c4f326ae0292cf6"
+token = "to_device_cpu"
+[[entry]]
+classification = "explicit_cpu_or_fallback"
+key = "src/device_utils.jl|to_device_cpu|c29e8f3101d73a15ab0c4cd1959aae9128e4728d48b9ef22e5c59dd9b7b15a37|1"
+path = "src/device_utils.jl"
+reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
+same_snippet_ordinal = 1
+snippet_sha256 = "c29e8f3101d73a15ab0c4cd1959aae9128e4728d48b9ef22e5c59dd9b7b15a37"
 token = "to_device_cpu"

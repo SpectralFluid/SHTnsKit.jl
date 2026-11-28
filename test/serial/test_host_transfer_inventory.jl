@@ -15,7 +15,8 @@ using .HostTransferInventory
     allowed = transfer_fixture["entry"]
     @test transfer_fixture["audit"]["entry_count"] == length(scanned)
     scanned_keys = Set(transfer_occurrence_key.(scanned))
-    allowed_keys = Set(entry["key"] for entry in allowed)
+    allowed_by_key = Dict(entry["key"] => entry for entry in allowed)
+    allowed_keys = keys(allowed_by_key)
     @test length(allowed_keys) == length(allowed)
     @test isempty(setdiff(scanned_keys, allowed_keys))
     @test isempty(setdiff(allowed_keys, scanned_keys))
@@ -29,6 +30,11 @@ using .HostTransferInventory
     @test all(entry -> entry["path"] == "ext/ParallelGPU.jl", similar_array_entries)
     @test all(entry -> entry["classification"] == "bounded_pinned_mpi_staging",
               similar_array_entries)
+    # The vendor owns the pinned allocation. An owning wrapper needs a new review.
+    @test isnothing(classify_transfer_occurrence((
+        path="ext/ParallelGPU.jl", token="host_view",
+        snippet="host = unsafe_wrap(Array, Ptr{T}(address), n; own=true)",
+    )))
     @test Set(entry["classification"] for entry in allowed) == Set((
         "bounded_pinned_mpi_staging", "cpu_only", "legacy_host_result",
         "metadata_or_storage_preserving", "small_setup_table",
@@ -40,13 +46,15 @@ using .HostTransferInventory
         "unreachable_early_error_callback",
     ))
     for occurrence in scanned
-        entry = only(filter(entry -> entry["key"] == transfer_occurrence_key(occurrence), allowed))
+        entry = get(allowed_by_key, transfer_occurrence_key(occurrence), nothing)
+        entry === nothing && continue  # Missing keys are reported above.
         @test entry["path"] == occurrence.path
         @test entry["token"] == occurrence.token
         @test entry["snippet_sha256"] == occurrence.snippet_sha256
         @test entry["same_snippet_ordinal"] == occurrence.same_snippet_ordinal
         expected_review = classify_transfer_occurrence(occurrence)
         @test expected_review !== nothing
+        expected_review === nothing && continue
         @test entry["classification"] == expected_review.classification
         @test entry["reason"] == expected_review.reason
     end

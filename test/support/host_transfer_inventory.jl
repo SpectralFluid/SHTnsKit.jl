@@ -85,6 +85,7 @@ end
     lower = lowercase(snippet)
     if path == "ext/ParallelGPU.jl"
         return token == "similar_array" ||
+               (token == "vector" && snippet == "n == 0 && return Vector{T}(undef, 0)") ||
                occursin("pinned", lower) || occursin("device_to_host!", snippet) ||
                occursin("host_to_device!", snippet) || occursin("host_parent", snippet) ||
                occursin("Array(result)", snippet)
@@ -110,11 +111,20 @@ function classify_transfer_occurrence(entry)
     path, token, snippet = entry.path, entry.token, entry.snippet
     if token == "allowscalar"
         return nothing
-    elseif token == "host_view" && path == "ext/SHTnsKitMetalExt.jl" && occursin("tables", snippet)
-        return (
-            classification="metadata_or_storage_preserving",
-            reason="the CPU initializes fresh shared Metal basis tables in place before publication",
-        )
+    elseif token == "host_view"
+        if path == "ext/ParallelGPU.jl" &&
+           snippet == "host = unsafe_wrap(Array, Ptr{T}(address), n; own=false)"
+            return (
+                classification="bounded_pinned_mpi_staging",
+                reason="non-owning view of vendor-allocated pinned MPI staging memory released by the backing storage finalizer",
+            )
+        elseif path == "ext/SHTnsKitMetalExt.jl" && occursin("tables", snippet)
+            return (
+                classification="metadata_or_storage_preserving",
+                reason="the CPU initializes fresh shared Metal basis tables in place before publication",
+            )
+        end
+        return nothing
     elseif path == "ext/ParallelGPUVendorFirewall.jl" &&
            token == "cpu_constructor"
         return (
