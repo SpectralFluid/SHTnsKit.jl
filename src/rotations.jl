@@ -142,6 +142,14 @@ SH_Zrotate(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real,
 # are both Float32. Wider inputs retain their precision.
 @inline _rotation_phase_angle(angle::Real) = first(promote(angle, 0.0))
 
+# The GPU Z rotation's per-coefficient phases, formed on the host as above and
+# rounded once to the coefficient type. In Float32, m*angle alone would be off
+# by up to 4e-4 radians at lmax = 1023.
+function _zrotation_phases(cfg::SHTConfig, alpha::Real, ::Type{CT}) where {CT<:Complex}
+    phase_angle = _rotation_phase_angle(alpha)
+    return CT[cis(-m * phase_angle) for m in cfg.mi]
+end
+
 """
     struct SHTRotation
 Holds Euler angles and target sizes for rotation.

@@ -170,19 +170,31 @@ function _qst_gpu_operands(operation::Symbol, prototype, values::Tuple)
     return adapter, operands
 end
 
-# Generic methods run CPU loops, so GPU storage must not reach them. For a mix
-# of CPU and GPU operands, return all of them on that GPU so the caller can
-# dispatch again to the vendor method. GPU operands reach a generic method
-# only when no vendor method accepts them.
+# Generic methods run CPU loops, so GPU storage must not reach them. Return
+# every operand on that GPU, with CPU operands copied there and deeper wrappers
+# copied into dense device arrays, so the caller can dispatch again to the
+# vendor method. Operands that need neither copy reached the generic method
+# because no vendor method accepts them.
 function _rerouted_operands(operation::Symbol, values::Tuple)
     any(value -> on_device(value) isa GPU, values) || return nothing
-    all(value -> on_device(value) isa GPU, values) && throw(BackendUnavailableError(
-        operation,
-        "no GPU method accepts $(join(map(typeof, values), ", ")); pass the " *
-        "backend's arrays or single views of them",
-    ))
-    return last(_qst_gpu_operands(operation, nothing, values))
+    adapter, placed = _qst_gpu_operands(operation, nothing, values)
+    operands = map(value -> _gpu_adapter_dense(adapter, value), placed)
+    all(map(===, operands, values)) && throw(_no_gpu_method_error(operation, values))
+    return operands
 end
+
+# In-place generic methods run CPU loops too, and must write their outputs
+# where they are, so GPU storage reaching one is an error.
+function _require_host_operands(operation::Symbol, values::Tuple)
+    any(value -> on_device(value) isa GPU, values) || return nothing
+    throw(_no_gpu_method_error(operation, values))
+end
+
+_no_gpu_method_error(operation::Symbol, values::Tuple) = BackendUnavailableError(
+    operation,
+    "no GPU method accepts $(join(map(typeof, values), ", ")); pass the " *
+    "backend's arrays or single views of them",
+)
 
 # The QST components share one precision, the one promoted across all three, as
 # in the batch transforms: a Float32 radial field with Float64 tangential

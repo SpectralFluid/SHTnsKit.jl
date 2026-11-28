@@ -173,6 +173,43 @@ end
 # Mixed Float32/Float64 operands promote as on the CPU: an S/T pair, and all
 # three QST components, take the widest precision among them. Values are
 # compared with the CPU transform of the promoted operands.
+function test_device_routing_fixes()
+    @testset "In-place, Laplacian, nested-wrapper and Z-rotation routing" begin
+        cfg = create_gauss_config(5, 8; nlon=12)
+        a = _variant_coefficients(cfg, Float32)
+        field = synthesis(cfg, a)
+        d = CuArray(field)
+        # The configuration-level in-place transforms run on the device.
+        out = CUDA.zeros(ComplexF32, size(a))
+        @test analysis!(cfg, out, d) === out
+        @test Array(out) ≈ a atol=2f-4 rtol=2f-4
+        grid = similar(d)
+        @test synthesis!(cfg, grid, out) === grid
+        @test Array(grid) ≈ field atol=2f-4 rtol=2f-4
+        # The Laplacian covers one field, so a batch is rejected.
+        batch = CuArray(cat(a, a; dims=3))
+        @test_throws DimensionMismatch gpu_apply_laplacian!(cfg, batch)
+        @test Array(batch)[:, :, 2] == a
+        # A view of a PermutedDimsArray is copied into a dense device array.
+        nested = view(PermutedDimsArray(CuArray(permutedims(field)), (2, 1)), :, :)
+        @test on_device(nested) isa SHTnsKit.GPU
+        result = analysis(cfg, nested)
+        @test result isa CUDA.AnyCuArray
+        @test Array(result) ≈ a atol=2f-4 rtol=2f-4
+        fields = cat(field, 2f0 .* field; dims=3)
+        stacked = view(PermutedDimsArray(CuArray(permutedims(fields, (2, 1, 3))), (2, 1, 3)), :, :, :)
+        @test Array(analysis_batch(cfg, stacked)) ≈ analysis_batch(cfg, fields) atol=2f-4 rtol=2f-4
+        @test to_device(SHTnsKit.CPU(), nested) == field
+        @test_throws SHTnsKit.BackendUnavailableError analysis!(cfg, out, nested)
+        # Float32 Z rotations keep the CPU's phase accuracy at high orders.
+        big = create_gauss_config(255, 257; nlon=512)
+        q = _rotation_real_spectrum(big, Float32)
+        expected = SH_Zrotate(SHTnsKit.CPU(), big, q, 6.18f0, similar(q))
+        rotated = SH_Zrotate(big, CuArray(q), 6.18f0, CUDA.zeros(ComplexF32, big.nlm))
+        @test maximum(abs, Array(rotated) - expected) < 1f-6 * maximum(abs, expected)
+    end
+end
+
 function test_mixed_precision_single_field()
     @testset "Mixed Float32/Float64 single-field vector and QST transforms" begin
         cfg = create_gauss_config(5, 8; nlon=14, norm=:schmidt,
@@ -767,6 +804,7 @@ SHTnsKit.synthesis(::SHTConfig, ::SafeFallbackArray; kwargs...) =
             synthesis_sphtor!(vector_plan, plan_Vt, plan_Vp, plan_S, plan_T)
         end
         test_mixed_precision_single_field()
+        test_device_routing_fixes()
         variant_cfg = create_gauss_config(
             5, 8; nlon=14, mres=2, norm=:schmidt,
             real_norm=true, cs_phase=false,

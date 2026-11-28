@@ -26,6 +26,15 @@ function _rand_real_alm(rng, lmax, mmax)
     return alm
 end
 
+# A matrix indexed from 0, standing in for OffsetArrays without the dependency.
+struct _ZeroBasedMatrix{T} <: AbstractMatrix{T}
+    parent::Matrix{T}
+end
+Base.size(a::_ZeroBasedMatrix) = size(a.parent)
+Base.axes(a::_ZeroBasedMatrix) = map(n -> 0:(n - 1), size(a.parent))
+Base.getindex(a::_ZeroBasedMatrix, i::Int, j::Int) = a.parent[i + 1, j + 1]
+Base.setindex!(a::_ZeroBasedMatrix, v, i::Int, j::Int) = (a.parent[i + 1, j + 1] = v)
+
 function _planned_sphtor_min_allocations(plan, Slm, Tlm, Vt, Vp)
     analysis_sphtor!(plan, Slm, Tlm, Vt, Vp)
     GC.gc()
@@ -177,6 +186,51 @@ end
 
         @test_throws DimensionMismatch synthesis_sphtor!(plan, zeros(1, cfg.nlon), Vp, S, T)
         @test_throws DimensionMismatch synthesis_sphtor!(plan, Vt, zeros(cfg.nlat, 1), S, T)
+    end
+
+    @testset "In-place transforms check axes and output aliasing" begin
+        cfg = create_gauss_config(4, 6; nlon=9)
+        rng = MersenneTwister(31)
+        S = _rand_real_alm(rng, cfg.lmax, cfg.mmax)
+        T = _rand_real_alm(rng, cfg.lmax, cfg.mmax)
+        Vt, Vp = synthesis_sphtor(cfg, S, T)
+        f = synthesis(cfg, S)
+        Sref, Tref = analysis_sphtor(cfg, Vt, Vp)
+        n = cfg.mmax + 1
+        for plan in (SHTPlan(cfg), SHTPlan(cfg; use_rfft=true))
+            # The planned loops index from 1 without bounds checks, so other
+            # axes are rejected before anything is written.
+            spectrum = _ZeroBasedMatrix(zeros(ComplexF64, size(S)))
+            grid = _ZeroBasedMatrix(zeros(cfg.nlat, cfg.nlon))
+            @test_throws ArgumentError analysis!(plan, spectrum, f)
+            @test_throws ArgumentError synthesis!(plan, grid, S)
+            @test_throws ArgumentError analysis_sphtor!(plan, spectrum, similar(S), Vt, Vp)
+            @test_throws ArgumentError synthesis_sphtor!(plan, grid, similar(Vt), S, T)
+            @test iszero(spectrum.parent) && iszero(grid.parent)
+
+            # One array cannot hold both vector outputs.
+            X = zeros(ComplexF64, size(S))
+            Y = zeros(size(Vt))
+            @test_throws ArgumentError analysis_sphtor!(plan, X, X, Vt, Vp)
+            @test_throws ArgumentError synthesis_sphtor!(plan, Y, Y, S, T)
+            @test iszero(X) && iszero(Y)
+
+            # Disjoint views of one parent are distinct outputs.
+            B = zeros(ComplexF64, cfg.lmax + 1, 2n)
+            analysis_sphtor!(plan, view(B, :, 1:n), view(B, :, (n + 1):2n), Vt, Vp)
+            @test B[:, 1:n] ≈ Sref rtol=1e-11 atol=1e-13
+            @test B[:, (n + 1):2n] ≈ Tref rtol=1e-11 atol=1e-13
+            G = zeros(2cfg.nlat, cfg.nlon)
+            synthesis_sphtor!(plan, view(G, 1:cfg.nlat, :), view(G, (cfg.nlat + 1):2cfg.nlat, :), S, T)
+            @test G[1:cfg.nlat, :] ≈ Vt rtol=1e-11 atol=1e-13
+            @test G[(cfg.nlat + 1):end, :] ≈ Vp rtol=1e-11 atol=1e-13
+        end
+        # The configuration-level in-place transforms check axes too.
+        spectrum = _ZeroBasedMatrix(zeros(ComplexF64, size(S)))
+        grid = _ZeroBasedMatrix(zeros(cfg.nlat, cfg.nlon))
+        @test_throws ArgumentError analysis!(cfg, spectrum, f)
+        @test_throws ArgumentError synthesis!(cfg, grid, S)
+        @test iszero(spectrum.parent) && iszero(grid.parent)
     end
 
     @testset "Noncanonical in-place synthesis reuses field storage" begin

@@ -36,6 +36,10 @@ function _gpu_adapter_adapt(adapter, value)
     throw(BackendUnavailableError(:to_device, "the selected GPU adapter cannot place this value"))
 end
 
+# Copy device storage in a deeper wrapper than the adapter's methods accept
+# into a dense array on the same device. Other values pass through unchanged.
+_gpu_adapter_dense(adapter, value) = value
+
 function _gpu_adapter_analysis(adapter, cfg, field; kwargs...)
     throw(BackendUnavailableError(:analysis, "the selected GPU adapter does not yet implement scalar analysis"))
 end
@@ -175,7 +179,14 @@ to_device(value) = to_device(get_device(), value)
 
 _to_cpu(value) = value
 _to_cpu(value::Array) = value
-_to_cpu(value::AbstractArray) = Array(value)
+function _to_cpu(value::AbstractArray)
+    # Gather wrapped device storage into a dense array on its device first, so
+    # the transfer is one bulk copy instead of per-element reads.
+    if on_device(value) isa GPU && parent(value) !== value
+        value = similar(value, eltype(value), size(value)) .= value
+    end
+    return Array(value)
+end
 
 """Return `CPU()` for ordinary arrays; vendor extensions specialize this.
 A wrapper reports the storage of the array it wraps."""

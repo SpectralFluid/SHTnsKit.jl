@@ -219,6 +219,9 @@ In-place vector analysis. Accumulates Slm/Tlm into preallocated outputs.
 Uses a two-pass strategy over φ FFTs to avoid extra buffers.
 """
 function analysis_sphtor!(plan::SHTPlan, Slm_out::AbstractMatrix, Tlm_out::AbstractMatrix, Vt::AbstractMatrix, Vp::AbstractMatrix)
+    foreach(value -> _require_cpu_storage(:analysis_sphtor!, value), (Slm_out, Tlm_out, Vt, Vp))
+    # The loops below index from 1 without bounds checks.
+    Base.require_one_based_indexing(Slm_out, Tlm_out, Vt, Vp)
     cfg = _checked_plan_config(plan)
     nlat, nlon = cfg.nlat, cfg.nlon
     
@@ -227,6 +230,8 @@ function analysis_sphtor!(plan::SHTPlan, Slm_out::AbstractMatrix, Tlm_out::Abstr
     size(Slm_out,1)==cfg.lmax+1 && size(Slm_out,2)==cfg.mmax+1 || throw(DimensionMismatch("Slm_out dims"))
     size(Tlm_out,1)==cfg.lmax+1 && size(Tlm_out,2)==cfg.mmax+1 || throw(DimensionMismatch("Tlm_out dims"))
     _validate_robert_analysis(cfg)
+    Base.mightalias(Slm_out, Tlm_out) &&
+        throw(ArgumentError("Slm_out and Tlm_out must not alias each other"))
     # Both spectra are cleared and accumulated before the second pass reads Vp,
     # so inputs that share memory with an output are read from copies.
     if Base.mightalias(Slm_out, Vt) || Base.mightalias(Slm_out, Vp) ||
@@ -318,6 +323,8 @@ end
 In-place vector synthesis. Streams m→k without forming (θ×m) intermediates; inverse FFT Vt then Vp.
 """
 function synthesis_sphtor!(plan::SHTPlan, Vt_out::AbstractMatrix, Vp_out::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix; real_output::Bool=true)
+    foreach(value -> _require_cpu_storage(:synthesis_sphtor!, value), (Vt_out, Vp_out, Slm, Tlm))
+    Base.require_one_based_indexing(Vt_out, Vp_out, Slm, Tlm)
     cfg = _checked_plan_config(plan)
     nlat, nlon = cfg.nlat, cfg.nlon
     
@@ -325,6 +332,8 @@ function synthesis_sphtor!(plan::SHTPlan, Vt_out::AbstractMatrix, Vp_out::Abstra
     size(Vp_out,1)==nlat && size(Vp_out,2)==nlon || throw(DimensionMismatch("Vp_out dims"))
     size(Slm,1)==cfg.lmax+1 && size(Slm,2)==cfg.mmax+1 || throw(DimensionMismatch("Slm dims"))
     size(Tlm,1)==cfg.lmax+1 && size(Tlm,2)==cfg.mmax+1 || throw(DimensionMismatch("Tlm dims"))
+    Base.mightalias(Vt_out, Vp_out) &&
+        throw(ArgumentError("Vt_out and Vp_out must not alias each other"))
     # The second pass reads the spectra again after Vt_out is written.
     if Base.mightalias(Vt_out, Slm) || Base.mightalias(Vt_out, Tlm)
         return synthesis_sphtor!(plan, Vt_out, Vp_out, copy(Slm), copy(Tlm); real_output)
@@ -437,6 +446,7 @@ In-place forward scalar SHT writing coefficients into `alm_out`.
 function analysis!(plan::SHTPlan, alm_out::AbstractMatrix, f::AbstractMatrix)
     _require_cpu_storage(:analysis!, alm_out)
     _require_cpu_storage(:analysis!, f)
+    Base.require_one_based_indexing(alm_out, f)
     cfg = _checked_plan_config(plan)
     nlat, nlon = cfg.nlat, cfg.nlon
     size(f,1)==nlat || throw(DimensionMismatch("f first dim must be nlat"))
@@ -492,6 +502,7 @@ Streams m→k directly without building a (θ×m) intermediate.
 function synthesis!(plan::SHTPlan, f_out::AbstractMatrix, alm::AbstractMatrix; real_output::Bool=true)
     _require_cpu_storage(:synthesis!, f_out)
     _require_cpu_storage(:synthesis!, alm)
+    Base.require_one_based_indexing(f_out, alm)
     cfg = _checked_plan_config(plan)
     nlat, nlon = cfg.nlat, cfg.nlon
 

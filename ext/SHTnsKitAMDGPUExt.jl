@@ -78,7 +78,8 @@ import SHTnsKit: analysis, synthesis, synthesis_cplx, on_device,
                  _gpu_adapter_matches, _gpu_adapter_adapt,
                  _gpu_adapter_analysis, _gpu_adapter_synthesis,
                  _gpu_adapter_analysis_sphtor,
-                 _gpu_adapter_synthesis_sphtor, _gpu_adapter_clear_cache!
+                 _gpu_adapter_synthesis_sphtor, _gpu_adapter_clear_cache!,
+                 _gpu_adapter_dense
 import SHTnsKit: _enable_gpu_loops!
 
 import SHTnsKit: gpu_apply_laplacian!
@@ -94,6 +95,15 @@ end
 
 _gpu_adapter_functional(::AMDGPUAdapter) = AMDGPU.functional()
 _gpu_adapter_matches(::AMDGPUAdapter, ::AMDGPU.AnyROCArray) = true
+# A wrapper of a wrapper (a view of a PermutedDimsArray, say) is ROCm storage too.
+_gpu_adapter_matches(adapter::AMDGPUAdapter, a::AbstractArray) =
+    (p = parent(a)) !== a && _gpu_adapter_matches(adapter, p)
+
+# Broadcasting gives deeper wrappers the CPU's style, but a dense destination
+# keeps the copy on the device. The methods below take AMDGPU.AnyROCArray.
+_amdgpu_device_array(a::AMDGPU.AnyROCArray) = a
+_amdgpu_device_array(a::AbstractArray) = similar(a, eltype(a), size(a)) .= a
+_gpu_adapter_dense(::AMDGPUAdapter, value::AbstractArray) = _amdgpu_device_array(value)
 
 function _gpu_adapter_adapt(::AMDGPUAdapter, value)
     AMDGPU.functional() || throw(SHTnsKit.BackendUnavailableError(
@@ -202,9 +212,9 @@ function SH_Zrotate(::SHTnsKit.GPU, cfg::SHTConfig,
     RT = _amdgpu_validate_rotation(:SH_Zrotate, input, output, cfg.nlm)
     isfinite(angle) || throw(ArgumentError("rotation angle must be finite"))
     source = Base.mightalias(input, output) ? copy(input) : input
-    orders = ROCArray(Int32.(cfg.mi))
+    phases = ROCArray(SHTnsKit._zrotation_phases(cfg, angle, Complex{RT}))
     rotation_z_real_kernel!(ROCBackend())(
-        output, source, RT(angle), orders; ndrange=cfg.nlm,
+        output, source, phases; ndrange=cfg.nlm,
     )
     AMDGPU.synchronize()
     return output
@@ -785,13 +795,13 @@ function _amdgpu_scalar_synthesis(cfg::SHTConfig,
 end
 
 function _gpu_adapter_analysis(::AMDGPUAdapter, cfg::SHTConfig,
-                               field::AMDGPU.AnyROCArray; kwargs...)
-    return _amdgpu_scalar_analysis(cfg, field; kwargs...)
+                               field::AbstractArray; kwargs...)
+    return _amdgpu_scalar_analysis(cfg, _amdgpu_device_array(field); kwargs...)
 end
 
 function _gpu_adapter_synthesis(::AMDGPUAdapter, cfg::SHTConfig,
-                                coefficients::AMDGPU.AnyROCArray; kwargs...)
-    return _amdgpu_scalar_synthesis(cfg, coefficients; kwargs...)
+                                coefficients::AbstractArray; kwargs...)
+    return _amdgpu_scalar_synthesis(cfg, _amdgpu_device_array(coefficients); kwargs...)
 end
 
 on_device(::AMDGPU.AnyROCArray) = SHTnsKit.GPU()
@@ -945,13 +955,11 @@ function _amdgpu_vector_synthesis_direct!(owner, cfg::SHTConfig,
 end
 
 _gpu_adapter_analysis_sphtor(::AMDGPUAdapter, cfg::SHTConfig,
-                             Vt::AMDGPU.AnyROCArray,
-                             Vp::AMDGPU.AnyROCArray; kwargs...) =
-    _amdgpu_vector_analysis(cfg, Vt, Vp; kwargs...)
+                             Vt::AbstractArray, Vp::AbstractArray; kwargs...) =
+    _amdgpu_vector_analysis(cfg, _amdgpu_device_array(Vt), _amdgpu_device_array(Vp); kwargs...)
 _gpu_adapter_synthesis_sphtor(::AMDGPUAdapter, cfg::SHTConfig,
-                              Slm::AMDGPU.AnyROCArray,
-                              Tlm::AMDGPU.AnyROCArray; kwargs...) =
-    _amdgpu_vector_synthesis(cfg, Slm, Tlm; kwargs...)
+                              Slm::AbstractArray, Tlm::AbstractArray; kwargs...) =
+    _amdgpu_vector_synthesis(cfg, _amdgpu_device_array(Slm), _amdgpu_device_array(Tlm); kwargs...)
 
 analysis_sphtor(cfg::SHTConfig, Vt::AMDGPU.AnyROCArray{T,2},
                  Vp::AMDGPU.AnyROCArray{R,2}; kwargs...) where {T,R} =
@@ -1959,6 +1967,28 @@ synthesis!(plan::SHTPlan, output::AMDGPU.AnyROCArray{T,2},
            coefficients::AMDGPU.AnyROCArray{R,2};
            real_output::Bool=true) where {T<:Number,R<:Complex} =
     synthesis!(SHTnsKit.GPU(), plan, output, coefficients; real_output)
+
+# Without a plan, the configuration owns the cached workspace, as in the
+# batch transforms. The direct kernels validate element types and shapes.
+function analysis!(cfg::SHTConfig, output::AMDGPU.AnyROCArray{T,2},
+                   field::AMDGPU.AnyROCArray{R,2};
+                   fft_scratch=nothing, use_rfft::Bool=false) where {T,R}
+    fft_scratch === nothing || throw(ArgumentError(
+        "AMDGPU scalar transforms do not accept fft_scratch",
+    ))
+    return _amdgpu_scalar_analysis_direct!(cfg, cfg, output, field; use_rfft)
+end
+function synthesis!(cfg::SHTConfig, output::AMDGPU.AnyROCArray{T,2},
+                    coefficients::AMDGPU.AnyROCArray{R,2};
+                    real_output::Bool=true, fft_scratch=nothing,
+                    use_rfft::Bool=false) where {T,R}
+    fft_scratch === nothing || throw(ArgumentError(
+        "AMDGPU scalar transforms do not accept fft_scratch",
+    ))
+    return _amdgpu_scalar_synthesis_direct!(
+        cfg, cfg, output, coefficients; real_output, use_rfft,
+    )
+end
 synthesis_batch!(cfg::SHTConfig, output::AMDGPU.AnyROCArray{T,3},
                  coefficients::AMDGPU.AnyROCArray{R,3}; kwargs...) where {T<:Real,R<:Complex} =
     synthesis_batch!(SHTnsKit.GPU(), cfg, output, coefficients; kwargs...)

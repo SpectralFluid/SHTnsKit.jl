@@ -280,6 +280,7 @@ the packed layout and are left untouched in `A` (pass a zeroed `A`, or use
 [`unpack_lm`](@ref), if those entries must be zero).
 """
 function unpack_lm!(A::AbstractMatrix, cfg, Qlm::AbstractVector)
+    _require_host_operands(:unpack_lm!, (A, Qlm))
     lmax, mmax, mres = cfg.lmax, cfg.mmax, cfg.mres
     size(A, 1) == lmax + 1 || throw(DimensionMismatch("A must have $(lmax+1) rows"))
     size(A, 2) == mmax + 1 || throw(DimensionMismatch("A must have $(mmax+1) columns"))
@@ -299,8 +300,11 @@ end
 Allocating form of [`unpack_lm!`](@ref); entries with no packed counterpart are
 zero. Element type follows `Qlm`.
 """
-unpack_lm(cfg, Qlm::AbstractVector) =
-    unpack_lm!(zeros(eltype(Qlm), cfg.lmax + 1, cfg.mmax + 1), cfg, Qlm)
+function unpack_lm(cfg, Qlm::AbstractVector)
+    operands = _rerouted_operands(:unpack_lm, (Qlm,))
+    operands === nothing || return unpack_lm(cfg, operands...)
+    return unpack_lm!(zeros(eltype(Qlm), cfg.lmax + 1, cfg.mmax + 1), cfg, Qlm)
+end
 
 """
     pack_lm!(Qlm::AbstractVector, cfg, A::AbstractMatrix) -> Qlm
@@ -309,6 +313,7 @@ Gather the dense `(lmax+1, mmax+1)` matrix `A` into the packed LM-order vector
 `Qlm`, skipping orders with `m % cfg.mres != 0`. Inverse of [`unpack_lm!`](@ref).
 """
 function pack_lm!(Qlm::AbstractVector, cfg, A::AbstractMatrix)
+    _require_host_operands(:pack_lm!, (Qlm, A))
     lmax, mmax, mres = cfg.lmax, cfg.mmax, cfg.mres
     size(A, 1) == lmax + 1 || throw(DimensionMismatch("A must have $(lmax+1) rows"))
     size(A, 2) == mmax + 1 || throw(DimensionMismatch("A must have $(mmax+1) columns"))
@@ -327,4 +332,8 @@ end
 
 Allocating form of [`pack_lm!`](@ref). Element type follows `A`.
 """
-pack_lm(cfg, A::AbstractMatrix) = pack_lm!(zeros(eltype(A), cfg.nlm), cfg, A)
+function pack_lm(cfg, A::AbstractMatrix)
+    operands = _rerouted_operands(:pack_lm, (A,))
+    operands === nothing || return pack_lm(cfg, operands...)
+    return pack_lm!(zeros(eltype(A), cfg.nlm), cfg, A)
+end

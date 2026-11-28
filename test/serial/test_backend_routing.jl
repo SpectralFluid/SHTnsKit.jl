@@ -211,6 +211,64 @@ end
     end
 end
 
+# Views of test device storage: the test adapter recognizes them and copies
+# them into dense test storage, which a stand-in vendor method accepts.
+_gpu_adapter_matches(adapter::RoutingTestAdapter,
+                     array::SubArray{<:Any,<:Any,<:RoutingTestArray}) =
+    _gpu_adapter_matches(adapter, parent(array))
+SHTnsKit._gpu_adapter_dense(adapter::RoutingTestAdapter,
+                            array::SubArray{<:Any,<:Any,<:RoutingTestArray}) =
+    RoutingTestArray(collect(array), adapter.vendor)
+SHTnsKit.analysis_axisym(::SHTConfig, field::RoutingTestArray{<:Real,1}) = (:vendor, field)
+
+@testset "Generic CPU methods never loop over GPU storage" begin
+    saved_adapters = _test_adapter_state()
+    cfg = create_gauss_config(3, 6; nlon=8)
+    field = [sin(i / 3) + cos(j / 4) for i in 1:cfg.nlat, j in 1:cfg.nlon]
+    coefficients = analysis(cfg, field)
+    device(x) = RoutingTestArray(x, :only)
+    try
+        _test_restore_adapters!(Dict{Symbol,WeakRef}())
+        SHTnsKit._register_gpu_adapter!(:only, RoutingTestAdapter(:only))
+
+        # A deeper wrapper is copied into dense device storage and dispatched again.
+        profile = field[:, 1]
+        routed = analysis_axisym(cfg, view(device(profile), :))
+        @test routed[1] === :vendor && routed[2] == profile
+        # Without a vendor method for the dense operands either, the call fails
+        # rather than running the CPU loop.
+        @test_throws BackendUnavailableError analysis_axisym_l(cfg, view(device(profile), :), 2)
+        @test_throws BackendUnavailableError analysis_batch(cfg, device(reshape(field, size(field)..., 1)))
+        @test_throws BackendUnavailableError synthesis_packed_ml(cfg, 1, device(complex.(profile[1:3])), 3)
+        @test_throws BackendUnavailableError SHTnsKit.pack_lm(cfg, device(coefficients))
+
+        # In-place generic methods must write outputs where they are, so they
+        # refuse GPU storage before changing anything.
+        out = fill(1.0 + 0im, size(coefficients))
+        grid = fill(1.0, size(field))
+        @test_throws BackendUnavailableError analysis!(cfg, out, device(field))
+        @test_throws BackendUnavailableError synthesis!(cfg, grid, device(coefficients))
+        @test_throws BackendUnavailableError analysis_batch!(cfg, reshape(out, size(out)..., 1),
+                                                             device(reshape(field, size(field)..., 1)))
+        @test_throws BackendUnavailableError SHTnsKit.unpack_lm!(
+            out, cfg, device(SHTnsKit.pack_lm(cfg, coefficients)))
+        @test all(isone, out) && all(isone, grid)
+
+        # Planned vector transforms check storage before clearing their outputs.
+        S, T = fill(1.0 + 0im, size(coefficients)), fill(1.0 + 0im, size(coefficients))
+        V = zeros(size(field))
+        plan = SHTPlan(cfg)
+        @test_throws ArgumentError analysis_sphtor!(plan, S, T, device(V), device(V))
+        @test_throws ArgumentError synthesis_sphtor!(plan, device(V), device(V), S, T)
+        @test all(isone, S) && all(isone, T)
+
+        # Wrapped device storage reaches the host through one dense copy.
+        @test to_device(CPU(), view(device(field), :, 2:3)) == field[:, 2:3]
+    finally
+        _test_restore_adapters!(saved_adapters)
+    end
+end
+
 @testset "Device argument orders are unambiguous" begin
     ambiguities = Test.detect_ambiguities(SHTnsKit; recursive=true)
     device_ambiguities = filter(ambiguities) do methods

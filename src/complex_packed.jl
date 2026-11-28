@@ -143,6 +143,8 @@ function _synthesis_packed_cplx(cfg::SHTConfig,
 end
 
 function synthesis_packed_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex})
+    operands = _rerouted_operands(:synthesis_packed_cplx, (alm_packed,))
+    operands === nothing || return synthesis_packed_cplx(cfg, operands...)
     return _synthesis_packed_cplx(cfg, alm_packed, cfg.lmax)
 end
 
@@ -155,6 +157,8 @@ degrees `l > ltr` ignored. The input retains the full packed storage shape.
 function synthesis_packed_cplx_l(cfg::SHTConfig,
                                  alm_packed::AbstractVector{<:Complex},
                                  ltr::Integer)
+    operands = _rerouted_operands(:synthesis_packed_cplx_l, (alm_packed,))
+    operands === nothing || return synthesis_packed_cplx_l(cfg, operands..., ltr)
     return _synthesis_packed_cplx(cfg, alm_packed, _complex_packed_lcap(cfg, ltr))
 end
 
@@ -210,6 +214,8 @@ end
 
 
 function analysis_packed_cplx(cfg::SHTConfig, z::AbstractMatrix{<:Complex})
+    operands = _rerouted_operands(:analysis_packed_cplx, (z,))
+    operands === nothing || return analysis_packed_cplx(cfg, operands...)
     return _analysis_packed_cplx(cfg, z, cfg.lmax)
 end
 
@@ -221,6 +227,8 @@ degrees `l ≤ ltr`; entries above the limit are zero.
 """
 function analysis_packed_cplx_l(cfg::SHTConfig, z::AbstractMatrix{<:Complex},
                                 ltr::Integer)
+    operands = _rerouted_operands(:analysis_packed_cplx_l, (z,))
+    operands === nothing || return analysis_packed_cplx_l(cfg, operands..., ltr)
     return _analysis_packed_cplx(cfg, z, _complex_packed_lcap(cfg, ltr))
 end
 

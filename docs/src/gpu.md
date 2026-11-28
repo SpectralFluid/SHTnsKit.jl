@@ -128,8 +128,11 @@ array as the prototype when a transfer needs to select one vendor.
 
 Vector and QST calls whose operands mix CPU and GPU storage copy the CPU
 operands to that GPU and run there. Pass device arrays directly or wrapped
-once, by a view, reshape or adjoint. Metal's full-grid transforms also accept
-deeper wrappers, such as a view of a `PermutedDimsArray`.
+once, by a view, reshape or adjoint. Transforms that return new arrays also
+accept deeper wrappers, such as a view of a `PermutedDimsArray`, and copy them
+into a dense array on the same device first. In-place transforms write their
+outputs where they are, so they raise `BackendUnavailableError` for deeper
+wrappers.
 
 ## Troubleshooting
 

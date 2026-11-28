@@ -298,7 +298,7 @@ function run_shared_rotation_kernel_reference(common, backend)
             q = _rotation_real_spectrum(cfg, T)
             z = similar(q)
             common.rotation_z_real_kernel!(backend)(
-                z, q, T(0.37), Int32.(cfg.mi); ndrange=cfg.nlm,
+                z, q, SHTnsKit._zrotation_phases(cfg, T(0.37), Complex{T}); ndrange=cfg.nlm,
             )
             expected = similar(q)
             SH_Zrotate(SHTnsKit.CPU(), cfg, q, T(0.37), expected)
@@ -329,5 +329,16 @@ function run_shared_rotation_kernel_reference(common, backend)
             shtns_rotation_apply_cplx(SHTnsKit.CPU(), rot, c, cref)
             @test cout ≈ cref atol=tol rtol=tol
         end
+
+        # High orders keep the CPU's phase accuracy in Float32. Forming m*angle
+        # in Float32 put these coefficients about 1e-4 off at lmax = 255.
+        cfg = create_gauss_config(255, 257; nlon=512)
+        q = _rotation_real_spectrum(cfg, Float32)
+        z = similar(q)
+        common.rotation_z_real_kernel!(backend)(
+            z, q, SHTnsKit._zrotation_phases(cfg, 6.18f0, ComplexF32); ndrange=cfg.nlm,
+        )
+        expected = SH_Zrotate(SHTnsKit.CPU(), cfg, q, 6.18f0, similar(q))
+        @test maximum(abs, z - expected) < 1f-6 * maximum(abs, expected)
     end
 end

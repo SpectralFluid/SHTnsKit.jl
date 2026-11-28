@@ -85,7 +85,8 @@ import SHTnsKit: analysis, synthesis, synthesis_cplx, on_device,
                  _gpu_adapter_matches, _gpu_adapter_adapt,
                  _gpu_adapter_analysis, _gpu_adapter_synthesis,
                  _gpu_adapter_analysis_sphtor,
-                 _gpu_adapter_synthesis_sphtor, _gpu_adapter_clear_cache!
+                 _gpu_adapter_synthesis_sphtor, _gpu_adapter_clear_cache!,
+                 _gpu_adapter_dense
 import SHTnsKit: _enable_gpu_loops!
 
 # ============================================================================
@@ -103,6 +104,15 @@ end
 
 _gpu_adapter_functional(::CUDAAdapter) = CUDA.functional()
 _gpu_adapter_matches(::CUDAAdapter, ::CUDA.AnyCuArray) = true
+# A wrapper of a wrapper (a view of a PermutedDimsArray, say) is CUDA storage too.
+_gpu_adapter_matches(adapter::CUDAAdapter, a::AbstractArray) =
+    (p = parent(a)) !== a && _gpu_adapter_matches(adapter, p)
+
+# Broadcasting gives deeper wrappers the CPU's style, but a dense destination
+# keeps the copy on the device. The methods below take CUDA.AnyCuArray.
+_cuda_device_array(a::CUDA.AnyCuArray) = a
+_cuda_device_array(a::AbstractArray) = similar(a, eltype(a), size(a)) .= a
+_gpu_adapter_dense(::CUDAAdapter, value::AbstractArray) = _cuda_device_array(value)
 
 function _require_cuda(operation::Symbol, device)
     CUDA.functional() || throw(SHTnsKit.BackendUnavailableError(
@@ -203,9 +213,9 @@ function SH_Zrotate(::SHTnsKit.GPU, cfg::SHTConfig,
     RT = _cuda_validate_rotation(:SH_Zrotate, input, output, cfg.nlm)
     isfinite(angle) || throw(ArgumentError("rotation angle must be finite"))
     source = Base.mightalias(input, output) ? copy(input) : input
-    orders = CuArray(Int32.(cfg.mi))
+    phases = CuArray(SHTnsKit._zrotation_phases(cfg, angle, Complex{RT}))
     rotation_z_real_kernel!(CUDABackend())(
-        output, source, RT(angle), orders; ndrange=cfg.nlm,
+        output, source, phases; ndrange=cfg.nlm,
     )
     CUDA.synchronize()
     return output
@@ -783,14 +793,14 @@ function _cuda_scalar_synthesis(cfg::SHTConfig, coefficients::CUDA.AnyCuArray;
     return real_output ? real.(fourier) : fourier
 end
 
-function _gpu_adapter_analysis(::CUDAAdapter, cfg::SHTConfig, field::CUDA.AnyCuArray; kwargs...)
+function _gpu_adapter_analysis(::CUDAAdapter, cfg::SHTConfig, field::AbstractArray; kwargs...)
     _require_cuda(:analysis, SHTnsKit.GPU())
-    return _cuda_scalar_analysis(cfg, field; kwargs...)
+    return _cuda_scalar_analysis(cfg, _cuda_device_array(field); kwargs...)
 end
 
-function _gpu_adapter_synthesis(::CUDAAdapter, cfg::SHTConfig, coefficients::CUDA.AnyCuArray; kwargs...)
+function _gpu_adapter_synthesis(::CUDAAdapter, cfg::SHTConfig, coefficients::AbstractArray; kwargs...)
     _require_cuda(:synthesis, SHTnsKit.GPU())
-    return _cuda_scalar_synthesis(cfg, coefficients; kwargs...)
+    return _cuda_scalar_synthesis(cfg, _cuda_device_array(coefficients); kwargs...)
 end
 
 analysis(cfg::SHTConfig, field::CUDA.AnyCuArray{T,2}; kwargs...) where {T} =
@@ -942,11 +952,11 @@ function _cuda_vector_synthesis_direct!(owner, cfg::SHTConfig,
 end
 
 _gpu_adapter_analysis_sphtor(::CUDAAdapter, cfg::SHTConfig,
-                             Vt::CUDA.AnyCuArray, Vp::CUDA.AnyCuArray; kwargs...) =
-    _cuda_vector_analysis(cfg, Vt, Vp; kwargs...)
+                             Vt::AbstractArray, Vp::AbstractArray; kwargs...) =
+    _cuda_vector_analysis(cfg, _cuda_device_array(Vt), _cuda_device_array(Vp); kwargs...)
 _gpu_adapter_synthesis_sphtor(::CUDAAdapter, cfg::SHTConfig,
-                              Slm::CUDA.AnyCuArray, Tlm::CUDA.AnyCuArray; kwargs...) =
-    _cuda_vector_synthesis(cfg, Slm, Tlm; kwargs...)
+                              Slm::AbstractArray, Tlm::AbstractArray; kwargs...) =
+    _cuda_vector_synthesis(cfg, _cuda_device_array(Slm), _cuda_device_array(Tlm); kwargs...)
 
 analysis_sphtor(cfg::SHTConfig, Vt::CUDA.AnyCuArray{T,2},
                  Vp::CUDA.AnyCuArray{R,2}; kwargs...) where {T,R} =
@@ -1943,6 +1953,28 @@ synthesis!(plan::SHTPlan, output::CUDA.AnyCuArray{T,2},
            coefficients::CUDA.AnyCuArray{R,2};
            real_output::Bool=true) where {T<:Number,R<:Complex} =
     synthesis!(SHTnsKit.GPU(), plan, output, coefficients; real_output)
+
+# Without a plan, the configuration owns the cached workspace, as in the
+# batch transforms. The direct kernels validate element types and shapes.
+function analysis!(cfg::SHTConfig, output::CUDA.AnyCuArray{T,2},
+                   field::CUDA.AnyCuArray{R,2};
+                   fft_scratch=nothing, use_rfft::Bool=false) where {T,R}
+    fft_scratch === nothing || throw(ArgumentError(
+        "CUDA scalar transforms do not accept fft_scratch",
+    ))
+    return _cuda_scalar_analysis_direct!(cfg, cfg, output, field; use_rfft)
+end
+function synthesis!(cfg::SHTConfig, output::CUDA.AnyCuArray{T,2},
+                    coefficients::CUDA.AnyCuArray{R,2};
+                    real_output::Bool=true, fft_scratch=nothing,
+                    use_rfft::Bool=false) where {T,R}
+    fft_scratch === nothing || throw(ArgumentError(
+        "CUDA scalar transforms do not accept fft_scratch",
+    ))
+    return _cuda_scalar_synthesis_direct!(
+        cfg, cfg, output, coefficients; real_output, use_rfft,
+    )
+end
 synthesis_batch!(cfg::SHTConfig, output::CUDA.AnyCuArray{T,3},
                  coefficients::CUDA.AnyCuArray{R,3}; kwargs...) where {T<:Real,R<:Complex} =
     synthesis_batch!(SHTnsKit.GPU(), cfg, output, coefficients; kwargs...)
@@ -2285,10 +2317,12 @@ function gpu_apply_laplacian!(cfg::SHTConfig, coeffs::CUDA.AnyCuArray;
                               device=SHTnsKit.GPU())
     _require_cuda(:gpu_apply_laplacian!, device)
 
-    # Validate input dimensions
+    # Validate input dimensions. The kernel covers one (lmax+1, mmax+1) field,
+    # so a batch would have its later fields silently left unchanged.
     lmax, mmax = cfg.lmax, cfg.mmax
-    size(coeffs, 1) == lmax + 1 || throw(DimensionMismatch("coeffs must have $(lmax+1) rows (lmax+1), got $(size(coeffs, 1))"))
-    size(coeffs, 2) == mmax + 1 || throw(DimensionMismatch("coeffs must have $(mmax+1) columns (mmax+1), got $(size(coeffs, 2))"))
+    size(coeffs) == (lmax + 1, mmax + 1) || throw(DimensionMismatch(
+        "coeffs must have size $((lmax + 1, mmax + 1)), got $(size(coeffs))",
+    ))
 
     laplacian_kernel!(CUDABackend())(
         coeffs, coeffs, lmax, mmax, cfg.mres; ndrange=(lmax+1, mmax+1),

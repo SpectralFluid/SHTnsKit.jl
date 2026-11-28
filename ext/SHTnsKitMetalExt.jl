@@ -34,6 +34,7 @@ _device_array(a::WrappedMtlArray) = a
 _device_array(a::AbstractArray) = (dense = similar(_storage_root(a), eltype(a), size(a))) .= a
 _storage_root(a::MtlArray) = a
 _storage_root(a::AbstractArray) = _storage_root(parent(a))
+SHT._gpu_adapter_dense(::MetalAdapter, value::AbstractArray) = _device_array(value)
 
 function SHT._gpu_adapter_adapt(::MetalAdapter, value)
     # MtlArray preserves precision. Metal.mtl would silently downcast doubles.
@@ -125,6 +126,10 @@ end
 _byte_span(a::AbstractArray) = (p = parent(a)) === a ? nothing : _byte_span(p)
 
 function _overlaps(a, b)
+    # Views of one parent whose index ranges are disjoint, such as interleaved
+    # columns or separate row blocks, cannot overlap though their spans do.
+    a isa SubArray && b isa SubArray && parent(a) === parent(b) &&
+        !Base.mightalias(a, b) && return false
     sa, sb = _byte_span(a), _byte_span(b)
     (sa === nothing || sb === nothing) && return Base.mightalias(a, b)
     return sa[1] == sb[1] && !isdisjoint(sa[2], sb[2])
@@ -366,8 +371,16 @@ SHT.analysis_packed_cplx_l(cfg::SHTConfig, f::WrappedMtlMatrix{<:Complex}, ltr::
 SHT.synthesis_packed_cplx_l(cfg::SHTConfig, a::WrappedMtlVector{<:Complex}, ltr::Integer) =
     SHT.synthesis_packed_cplx_l(GPU(), cfg, a, ltr)
 
+# Mixed components promote as on the CPU. Metal's only mix is Float16 with
+# Float32, so the Float16 component is widened before the kernels run.
+function _promoted_pair(a, b)
+    R = real(float(promote_type(eltype(a), eltype(b))))
+    return SHT._with_precision(a, R), SHT._with_precision(b, R)
+end
+
 function _vector_analysis(cfg, vt, vp; use_rfft=false, buffers=(nothing, nothing), out=nothing,
                           lcap=cfg.lmax)
+    vt, vp = _promoted_pair(vt, vp)
     _check_field(vt, _spatial(cfg))
     _check_field(vp, _spatial(cfg))
     size(vt) == size(vp) || throw(DimensionMismatch("vector components must have the same shape"))
@@ -399,6 +412,7 @@ end
 function _vector_synthesis(cfg, s, t; real_output=true, use_rfft=false,
                            buffers=(nothing, nothing), out=(nothing, nothing),
                            half=use_rfft && iseven(cfg.nlon), lcap=cfg.lmax)
+    s, t = _promoted_pair(s, t)
     _check_field(s, _spectral(cfg))
     _check_field(t, _spectral(cfg))
     size(s) == size(t) || throw(DimensionMismatch("vector spectra must have the same shape"))
@@ -550,6 +564,7 @@ SHT.synthesis_sphtor_batch_cplx(cfg::SHTConfig, s::ComplexBatch, t::ComplexBatch
 
 function SHT.analysis_qst_batch(::GPU, cfg::SHTConfig, vr::RealBatch, vt::RealBatch, vp::RealBatch)
     GPUCommon.qst_batch_precision(vr, vt, vp)
+    vr, vt, vp = SHT._qst_promoted((vr, vt, vp))
     q = _scalar_analysis(cfg, vr; use_rfft=_graph_buffer(vr))
     s, t = _batch_vector_analysis(cfg, vt, vp)
     return _completed((q, s, t))
@@ -559,6 +574,7 @@ SHT.analysis_qst_batch(cfg::SHTConfig, vr::RealBatch, vt::RealBatch, vp::RealBat
 function SHT.synthesis_qst_batch(::GPU, cfg::SHTConfig, q::ComplexBatch, s::ComplexBatch,
                                  t::ComplexBatch; real_output=true)
     GPUCommon.qst_batch_precision(q, s, t)
+    q, s, t = SHT._qst_promoted((q, s, t))
     vr = _scalar_synthesis(cfg, q; real_output, use_rfft=real_output)
     vt, vp = _vector_synthesis(cfg, s, t; real_output, use_rfft=real_output)
     return _completed((vr, vt, vp))
@@ -683,6 +699,7 @@ end
 function _vector_mode_analysis(cfg, stored_im, vt, vp, ltr)
     m, lcap = SHT._validate_vector_fixed_order(cfg, stored_im, ltr)
     SHT._validate_robert_analysis(cfg; m, ltr=lcap)
+    vt, vp = _promoted_pair(vt, vp)
     _check_mode(vt, cfg.nlat)
     _check_mode(vp, cfg.nlat)
     tables = _tables(cfg, true)
@@ -698,6 +715,7 @@ end
 
 function _vector_mode_synthesis(cfg, stored_im, s, t, ltr)
     m, lcap = SHT._validate_vector_fixed_order(cfg, stored_im, ltr)
+    s, t = _promoted_pair(s, t)
     _check_mode(s, lcap - m + 1)
     _check_mode(t, lcap - m + 1)
     tables = _tables(cfg, true)

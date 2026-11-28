@@ -213,6 +213,7 @@ In-place forward transform. Writes coefficients into `alm_out`, which must have
 size `(lmax+1, mmax+1)` and may overlap `f`.
 """
 Base.@constprop :aggressive function analysis!(cfg::SHTConfig, alm_out::AbstractMatrix, f::AbstractMatrix; fft_scratch::Union{Nothing,AbstractMatrix{<:Complex}}=nothing, use_rfft::Bool=false)
+    _require_host_operands(:analysis!, (alm_out, f))
     # Function barrier: `Val(use_rfft)` makes the scratch shape and FFT branch
     # compile-time constants for callers that pass a literal keyword.
     return _analysis!(cfg, alm_out, f, fft_scratch, Val(use_rfft))
@@ -221,6 +222,8 @@ end
 function _analysis!(cfg::SHTConfig, alm_out::AbstractMatrix, f::AbstractMatrix,
                     fft_scratch::Union{Nothing,AbstractMatrix{<:Complex}},
                     ::Val{use_rfft}) where {use_rfft}
+    # The m-loop writes alm_out from index 1 without bounds checks.
+    Base.require_one_based_indexing(alm_out, f)
     size(alm_out, 1) == cfg.lmax + 1 || throw(DimensionMismatch("alm_out first dim must be lmax+1=$(cfg.lmax+1)"))
     size(alm_out, 2) == cfg.mmax + 1 || throw(DimensionMismatch("alm_out second dim must be mmax+1=$(cfg.mmax+1)"))
     nlat, nlon = cfg.nlat, cfg.nlon
@@ -370,6 +373,7 @@ end
 In-place inverse transform. Writes the spatial field into `f_out`.
 """
 Base.@constprop :aggressive function synthesis!(cfg::SHTConfig, f_out::AbstractMatrix, alm::AbstractMatrix; real_output::Bool=true, fft_scratch::Union{Nothing,AbstractMatrix{<:Complex}}=nothing, use_rfft::Bool=false)
+    _require_host_operands(:synthesis!, (f_out, alm))
     # Same Val barrier as out-of-place synthesis, but preserving the caller's
     # output buffer contract.
     return _synthesis!(cfg, f_out, alm, Val(real_output), fft_scratch, Val(use_rfft))
@@ -379,6 +383,7 @@ function _synthesis!(cfg::SHTConfig, f_out::AbstractMatrix, alm::AbstractMatrix,
                      ::Val{real_output},
                      fft_scratch::Union{Nothing,AbstractMatrix{<:Complex}},
                      ::Val{use_rfft}) where {real_output, use_rfft}
+    Base.require_one_based_indexing(f_out, alm)
     size(f_out, 1) == cfg.nlat || throw(DimensionMismatch("f_out first dim must be nlat=$(cfg.nlat)"))
     size(f_out, 2) == cfg.nlon || throw(DimensionMismatch("f_out second dim must be nlon=$(cfg.nlon)"))
     lmax, mmax = cfg.lmax, cfg.mmax

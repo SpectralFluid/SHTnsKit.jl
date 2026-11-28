@@ -429,6 +429,25 @@ end
     for x in (r, nested)
         check_components(analysis_qst(cfg, x, MtlArray(v[2]), MtlArray(v[3])), expected)
     end
+    # Batches, and the vector transforms' two components, widen the same way.
+    batch = ntuple(_ -> randn(rng, Float32, cfg.nlat, cfg.nlon, 2), 3)
+    spectra = analysis_qst_batch(cfg, batch...)
+    for narrow in 1:3
+        fields = ntuple(i -> i == narrow ? Float16.(batch[i]) : batch[i], 3)
+        check_components(analysis_qst_batch(cfg, map(MtlArray, fields)...),
+                         analysis_qst_batch(cfg, fields...))
+        coefficients = ntuple(i -> i == narrow ? ComplexF16.(spectra[i]) : spectra[i], 3)
+        check_components(synthesis_qst_batch(cfg, map(MtlArray, coefficients)...),
+                         synthesis_qst_batch(cfg, coefficients...))
+        check_components(synthesis_qst_batch_cplx(cfg, map(MtlArray, coefficients)...),
+                         synthesis_qst_batch_cplx(cfg, coefficients...))
+    end
+    h, hb = Float16.(v[2]), Float16.(batch[2])
+    check_components(analysis_sphtor(cfg, MtlArray(h), MtlArray(v[3])), analysis_sphtor(cfg, h, v[3]))
+    check_components(analysis_sphtor_batch(cfg, MtlArray(hb), MtlArray(batch[3])),
+                     analysis_sphtor_batch(cfg, hb, batch[3]))
+    s16 = ComplexF16.(a[2])
+    check_components(synthesis_sphtor(cfg, MtlArray(s16), MtlArray(a[3])), synthesis_sphtor(cfg, s16, a[3]))
 end
 
 @testset "Nested device wrappers stay on the GPU" begin
@@ -445,13 +464,41 @@ end
         end
         check_components(analysis_sphtor(cfg, x, x), (s, t))
         check_components(analysis_qst(cfg, x, x, x), (a, s, t))
-        # Families without an adapter route fail clearly instead of indexing device memory.
-        @test_throws BackendUnavailableError analysis_sphtor_l(cfg, x, x, 2)
+        # The other allocating families copy the wrapper into a dense device array.
+        check_components(analysis_sphtor_l(cfg, x, x, 2), analysis_sphtor_l(cfg, field, field, 2))
+        @test to_device(CPU(), x) == field
+        # In-place transforms write outputs where they are, so they refuse it.
+        out = MtlArray{ComplexF32}(undef, size(a))
+        @test_throws BackendUnavailableError analysis!(cfg, out, x)
+        @test_throws ArgumentError analysis!(SHTPlan(cfg), out, x)
     end
     B = MtlArray(permutedims(a))
     y = view(PermutedDimsArray(B, (2, 1)), :, :)
     check_device(synthesis(cfg, y), synthesis(cfg, a))
     check_device(synthesis_cplx(cfg, y), synthesis_cplx(cfg, a))
+    @test_throws BackendUnavailableError synthesis!(cfg, MtlArray(field), y)
+
+    # Batches, packed and single-order transforms, axisymmetric profiles.
+    nested(h, perm) = view(PermutedDimsArray(MtlArray(permutedims(h, perm)), perm),
+                           ntuple(_ -> Colon(), ndims(h))...)
+    column(h) = view(PermutedDimsArray(MtlArray(reshape(h, 1, :)), (2, 1)), :, 1)
+    fields = cat(field, 2f0 .* field; dims=3)
+    spectra = analysis_batch(cfg, fields)
+    check_device(analysis_batch(cfg, nested(fields, (2, 1, 3))), spectra)
+    check_device(synthesis_batch(cfg, nested(spectra, (2, 1, 3))), synthesis_batch(cfg, spectra))
+    check_device(synthesis_batch_cplx(cfg, nested(spectra, (2, 1, 3))), synthesis_batch_cplx(cfg, spectra))
+    profile = field[:, 2]
+    check_device(analysis_axisym(cfg, column(profile)), analysis_axisym(cfg, profile))
+    check_device(analysis_axisym_l(cfg, column(profile), 2), analysis_axisym_l(cfg, profile, 2))
+    q = analysis_axisym(cfg, profile)
+    check_device(synthesis_axisym(cfg, column(q)), synthesis_axisym(cfg, q))
+    mode = complex.(field[:, 3], field[:, 4])
+    check_device(analysis_packed_ml(cfg, 1, column(mode), 3), analysis_packed_ml(cfg, 1, mode, 3))
+    flat = vec(field)
+    packed = analysis_packed_l(cfg, flat, 3)
+    check_device(analysis_packed_l(cfg, column(flat), 3), packed)
+    check_device(synthesis_packed_l(cfg, column(packed), 3), synthesis_packed_l(cfg, packed, 3))
+    check_device(synthesis_packed(cfg, column(packed)), synthesis_packed(cfg, packed))
 end
 
 @testset "Disjoint parts of one buffer are not aliases" begin
@@ -471,6 +518,24 @@ end
     expected = synthesis_sphtor(cfg, s, t)
     @test Array(vo) ≈ expected[1] rtol=4f-5 atol=3f-6
     @test Array(wo) ≈ expected[2] rtol=4f-5 atol=3f-6
+    # Interleaved columns and separate row blocks, which span the same bytes.
+    n, L = cfg.mmax + 1, cfg.lmax + 1
+    interleaved = MtlArray{ComplexF32}(undef, L, 2n)
+    rows = MtlArray{ComplexF32}(undef, 2L, n)
+    for (so, to) in ((view(interleaved, :, 1:2:2n), view(interleaved, :, 2:2:2n)),
+                     (view(rows, 1:L, :), view(rows, (L + 1):2L, :)))
+        analysis_sphtor!(plan, so, to, MtlArray(vt), MtlArray(vp))
+        @test Array(so) ≈ s rtol=4f-5 atol=3f-6
+        @test Array(to) ≈ t rtol=4f-5 atol=3f-6
+    end
+    grids = MtlArray{Float32}(undef, cfg.nlat, 2cfg.nlon)
+    vo, wo = view(grids, :, 1:2:2cfg.nlon), view(grids, :, 2:2:2cfg.nlon)
+    synthesis_sphtor!(plan, vo, wo, MtlArray(s), MtlArray(t))
+    @test Array(vo) ≈ expected[1] rtol=4f-5 atol=3f-6
+    @test Array(wo) ≈ expected[2] rtol=4f-5 atol=3f-6
+    # Views that share entries are still aliases.
+    @test_throws ArgumentError analysis_sphtor!(plan, view(rows, 1:L, :), view(rows, 2:(L + 1), :),
+                                                MtlArray(vt), MtlArray(vp))
     # FFT scratch and output carved from one allocation.
     nbins, nspec = cfg.nlat * (cfg.nlon ÷ 2 + 1), (cfg.lmax + 1) * (cfg.mmax + 1)
     buffer = MtlArray{ComplexF32}(undef, nbins + nspec)

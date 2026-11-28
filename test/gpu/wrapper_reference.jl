@@ -78,6 +78,8 @@ function wrapper_module(vendor)
         "_local_tables", "_local_precision", "_validate_local_arrays",
         "_local_scalar", "_local_qst", "_lcap", "_mode_synthesis",
         "_coefficient_scales", "_safe_required_memory",
+        "_device_array", "_scalar_analysis", "_scalar_synthesis",
+        "_vector_analysis", "_vector_synthesis",
     ]))
     # Public wrappers are defined as sandbox-local functions:
     # the sandbox evaluates the extension's `using` lines but not its
@@ -89,10 +91,14 @@ function wrapper_module(vendor)
                        :analysis_qst_batch, :synthesis_qst_batch, :synthesis_qst_batch_cplx,
                        :synthesis_point, :synthesis_point_cplx, :SHqst_to_point, :SH_to_grad_point,
                        :SH_to_lat, :SH_to_lat_cplx, :SHqst_to_lat,
-                       :estimate_memory_usage, :_legendre_table_bytes])
+                       :estimate_memory_usage, :_legendre_table_bytes,
+                       :analysis!, :synthesis!, :gpu_apply_laplacian!,
+                       :_gpu_adapter_matches, :_gpu_adapter_dense,
+                       :_gpu_adapter_analysis, :_gpu_adapter_synthesis,
+                       :_gpu_adapter_analysis_sphtor, :_gpu_adapter_synthesis_sphtor])
     typeprefix = vendor === :AMDGPU ? "AMDGPU" : "CUDA"
     structs = Set(Symbol.(typeprefix .* [
-        "ScalarTables", "VectorTables", "RotationBlocks", "LocalTables",
+        "ScalarTables", "VectorTables", "RotationBlocks", "LocalTables", "Adapter",
     ]))
     constants = Set(Symbol.("_" .* typeprefix .* [
         "_SCALAR_CACHE", "_VECTOR_CACHE", "_WORKSPACE_CACHE", "_LOCAL_CACHE",
@@ -404,6 +410,50 @@ end
         # Float32 input needs Float32 tables, which are not resident yet.
         @test cuda._cuda_safe_required_memory(cfg, :analysis, Float32.(field)) ==
               analysis_bytes
+    end
+    @testset "In-place, Laplacian and nested-wrapper routing" begin
+        for (wrapper, prefix, Adapter) in ((rocm, "amdgpu", rocm.AMDGPUAdapter),
+                                           (cuda, "cuda", cuda.CUDAAdapter)),
+            T in (Float32, Float64)
+            cfg = create_gauss_config(3, 8; nlon=10)
+            coeff = zeros(Complex{T}, 4, 4)
+            coeff[2, 1] = T(0.25)
+            coeff[3, 3] = Complex{T}(0.1, 0.2)
+            field = synthesis(cfg, coeff)
+            tol = T === Float32 ? 3e-5 : 2e-12
+            # The configuration-level in-place transforms run the planned kernels.
+            output = similar(coeff)
+            @test wrapper.analysis!(cfg, output, field) === output
+            @test output ≈ coeff atol=tol rtol=tol
+            rebuilt = similar(field)
+            @test wrapper.synthesis!(cfg, rebuilt, coeff) === rebuilt
+            @test rebuilt ≈ field atol=tol rtol=tol
+            @test_throws ArgumentError wrapper.analysis!(cfg, output, field;
+                                                         fft_scratch=complex.(field))
+            # The Laplacian kernel covers one field, so a batch is rejected.
+            lap = copy(coeff)
+            wrapper.gpu_apply_laplacian!(cfg, view(lap, :, :))
+            @test lap ≈ [-l * (l + 1) * coeff[l + 1, m + 1] for l in 0:3, m in 0:3]
+            batch = cat(coeff, coeff; dims=3)
+            @test_throws DimensionMismatch wrapper.gpu_apply_laplacian!(cfg, batch)
+            @test batch[:, :, 2] == coeff
+            # A deeper wrapper matches the adapter and is copied into a dense
+            # array before the kernels run.
+            adapter = Adapter()
+            nest(x) = view(PermutedDimsArray(permutedims(x), (2, 1)), :, :)
+            @test wrapper._gpu_adapter_matches(adapter, nest(field))
+            dense = wrapper._gpu_adapter_dense(adapter, nest(field))
+            @test dense isa Matrix && dense == field
+            @test wrapper._gpu_adapter_analysis(adapter, cfg, nest(field)) ≈ coeff atol=tol rtol=tol
+            @test wrapper._gpu_adapter_synthesis(adapter, cfg, nest(coeff)) ≈ field atol=tol rtol=tol
+            vt, vp = synthesis_sphtor(cfg, coeff, 2coeff)
+            s, t = wrapper._gpu_adapter_analysis_sphtor(adapter, cfg, nest(vt), vp)
+            @test s ≈ coeff atol=tol rtol=tol
+            @test t ≈ 2coeff atol=tol rtol=tol
+            v = wrapper._gpu_adapter_synthesis_sphtor(adapter, cfg, nest(coeff), 2coeff)
+            @test v[1] ≈ vt atol=tol rtol=tol
+            @test v[2] ≈ vp atol=tol rtol=tol
+        end
     end
     @testset "Vector batch synthesis clears unused Fourier bins" begin
         for (vendor, call) in ((:AMDGPU, rocm._amdgpu_vector_batch_synthesis),

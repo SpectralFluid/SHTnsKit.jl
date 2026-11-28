@@ -310,6 +310,8 @@ Batch processing is more efficient than processing fields individually because:
 3. Better cache utilization from contiguous memory access patterns
 """
 function analysis_batch(cfg::SHTConfig, fields::AbstractArray{<:Real,3}; use_rfft::Bool=false)
+    operands = _rerouted_operands(:analysis_batch, (fields,))
+    operands === nothing || return analysis_batch(cfg, operands...; use_rfft)
     nlat, nlon, nfields = size(fields)
     nlat == cfg.nlat || throw(DimensionMismatch("first dim must be nlat=$(cfg.nlat)"))
     nlon == cfg.nlon || throw(DimensionMismatch("second dim must be nlon=$(cfg.nlon)"))
@@ -336,6 +338,7 @@ function analysis_batch!(cfg::SHTConfig, alm_out::AbstractArray{<:Complex,3},
                          fields::AbstractArray{<:Real,3};
                          fft_batch::Union{Nothing,AbstractArray{<:Complex,3}}=nothing,
                          use_rfft::Bool=false)
+    _require_host_operands(:analysis_batch!, (alm_out, fields))
     nlat, nlon, nfields = size(fields)
     nlat == cfg.nlat || throw(DimensionMismatch("first dim must be nlat=$(cfg.nlat)"))
     nlon == cfg.nlon || throw(DimensionMismatch("second dim must be nlon=$(cfg.nlon)"))
@@ -451,6 +454,8 @@ Batch inverse transform for multiple spectral coefficient sets.
 """
 Base.@constprop :aggressive function synthesis_batch(cfg::SHTConfig, alm_batch::AbstractArray{<:Complex,3};
                          real_output::Bool=true, use_rfft::Bool=false)
+    operands = _rerouted_operands(:synthesis_batch, (alm_batch,))
+    operands === nothing || return synthesis_batch(cfg, operands...; real_output, use_rfft)
     # Preserve the ergonomic keyword API while giving literal keyword callers
     # a concrete return type through the Val-dispatched implementation.
     return _synthesis_batch(cfg, alm_batch, Val(real_output), Val(use_rfft))
@@ -470,6 +475,8 @@ Complex-output batch inverse transform. Equivalent to
 type for inference-sensitive callers.
 """
 function synthesis_batch_cplx(cfg::SHTConfig, alm_batch::AbstractArray{<:Complex,3})
+    operands = _rerouted_operands(:synthesis_batch_cplx, (alm_batch,))
+    operands === nothing || return synthesis_batch_cplx(cfg, operands...)
     return _synthesis_batch(cfg, alm_batch, Val(false), Val(false))
 end
 
@@ -602,6 +609,7 @@ function synthesis_batch!(cfg::SHTConfig, f_out::AbstractArray,
                           real_output::Bool=true,
                           fft_batch::Union{Nothing,AbstractArray{<:Complex,3}}=nothing,
                           use_rfft::Bool=false)
+    _require_host_operands(:synthesis_batch!, (f_out, alm_batch))
     lmax, mmax = cfg.lmax, cfg.mmax
     size(alm_batch, 1) == lmax + 1 || throw(DimensionMismatch("first dim must be lmax+1=$(lmax+1)"))
     size(alm_batch, 2) == mmax + 1 || throw(DimensionMismatch("second dim must be mmax+1=$(mmax+1)"))

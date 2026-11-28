@@ -1,5 +1,5 @@
 [audit]
-entry_count = 690
+entry_count = 695
 scanner = "deterministic non-overlapping spelling scanner; longer transfer spellings win"
 scope = "src/device_utils.jl and every ext/*.jl file"
 
@@ -4196,6 +4196,14 @@ same_snippet_ordinal = 3
 snippet_sha256 = "94c9adf4830687bd14201553608e77bfe70d84ecee6f0d24f7cce7d69a32a6b9"
 token = "copy"
 [[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitAMDGPUExt.jl|parent|bb638d37784a75bd4a6ddcb1433d14df768ba26793f23e6e5596c3c6f5ba96fa|1"
+path = "ext/SHTnsKitAMDGPUExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "bb638d37784a75bd4a6ddcb1433d14df768ba26793f23e6e5596c3c6f5ba96fa"
+token = "parent"
+[[entry]]
 classification = "cpu_only"
 key = "ext/SHTnsKitAdvancedADExt.jl|collect|4e32115e11d5347f2190b6b542c4974ce36dd01c9eca123060dbc7f96fe3eef5|1"
 path = "ext/SHTnsKitAdvancedADExt.jl"
@@ -4588,6 +4596,14 @@ same_snippet_ordinal = 1
 snippet_sha256 = "d09be9cb0a7ff49f5b5d11688cfe49bb918e2f63ed4f09047289df9eb767ffaa"
 token = "fallback"
 [[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitGPUExt.jl|parent|bb638d37784a75bd4a6ddcb1433d14df768ba26793f23e6e5596c3c6f5ba96fa|1"
+path = "ext/SHTnsKitGPUExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "bb638d37784a75bd4a6ddcb1433d14df768ba26793f23e6e5596c3c6f5ba96fa"
+token = "parent"
+[[entry]]
 classification = "cpu_only"
 key = "ext/SHTnsKitLoopVecExt.jl|matrix|0678e972f4053722b1aa5d0b265619b74a559c977aeda46711ae43d0c07bac8c|1"
 path = "ext/SHTnsKitLoopVecExt.jl"
@@ -4722,6 +4738,22 @@ path = "ext/SHTnsKitMetalExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
 snippet_sha256 = "a3158a1f69fabdabbbe781cea1fdd22a551f32fd13f2544a21302b729a24eba3"
+token = "parent"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitMetalExt.jl|parent|fd00679aa27a52ccdb39d2f12b7fcea5328c7850aeb403607583c01630f12b67|1"
+path = "ext/SHTnsKitMetalExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "fd00679aa27a52ccdb39d2f12b7fcea5328c7850aeb403607583c01630f12b67"
+token = "parent"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitMetalExt.jl|parent|fd00679aa27a52ccdb39d2f12b7fcea5328c7850aeb403607583c01630f12b67|2"
+path = "ext/SHTnsKitMetalExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 2
+snippet_sha256 = "fd00679aa27a52ccdb39d2f12b7fcea5328c7850aeb403607583c01630f12b67"
 token = "parent"
 [[entry]]
 classification = "cpu_only"
@@ -5429,11 +5461,11 @@ snippet_sha256 = "ea8335a96441744247067b762ff405f7bd8280d46e3021c5fe4a409d66b81c
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
-key = "src/device_utils.jl|array|ade43c800a30fbe5fc4f5ca5703b48f9e550779a49a242ec186df1564274ca31|1"
+key = "src/device_utils.jl|array|e1837b100cd2264e6644875f445ce3d9adf377b968bf38091d80a2bdc0058079|1"
 path = "src/device_utils.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
 same_snippet_ordinal = 1
-snippet_sha256 = "ade43c800a30fbe5fc4f5ca5703b48f9e550779a49a242ec186df1564274ca31"
+snippet_sha256 = "e1837b100cd2264e6644875f445ce3d9adf377b968bf38091d80a2bdc0058079"
 token = "array"
 [[entry]]
 classification = "explicit_cpu_or_fallback"
@@ -5477,12 +5509,28 @@ snippet_sha256 = "9cbe50e8315895f446adb1a807023200b52c480fce902048cf7d9e3ed4315e
 token = "cpu_constructor"
 [[entry]]
 classification = "metadata_or_storage_preserving"
+key = "src/device_utils.jl|parent|606ff6d414fb60837d348dc9f0a92893dd0088451657ebf5f969a20dda12ab71|1"
+path = "src/device_utils.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "606ff6d414fb60837d348dc9f0a92893dd0088451657ebf5f969a20dda12ab71"
+token = "parent"
+[[entry]]
+classification = "metadata_or_storage_preserving"
 key = "src/device_utils.jl|parent|c60b627184d8740623278e0fb7c3f830f7e250f37493426e57e49fa626389ab3|1"
 path = "src/device_utils.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
 snippet_sha256 = "c60b627184d8740623278e0fb7c3f830f7e250f37493426e57e49fa626389ab3"
 token = "parent"
+[[entry]]
+classification = "explicit_cpu_or_fallback"
+key = "src/device_utils.jl|to_cpu|45fb4e9e7d03ed9ec89a7fffa94abbc45c404fc543ded16951d18b3187877eae|1"
+path = "src/device_utils.jl"
+reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
+same_snippet_ordinal = 1
+snippet_sha256 = "45fb4e9e7d03ed9ec89a7fffa94abbc45c404fc543ded16951d18b3187877eae"
+token = "to_cpu"
 [[entry]]
 classification = "explicit_cpu_or_fallback"
 key = "src/device_utils.jl|to_cpu|7aae0594b2787929ac95997e42ebbc42f2427e1dbe904202764847d2d0956939|1"
@@ -5498,14 +5546,6 @@ path = "src/device_utils.jl"
 reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
 same_snippet_ordinal = 1
 snippet_sha256 = "89395e2a6fa1659f4ce6d59cc68a026c7aea0bb9ef62fe1c932ae4fc788e6a01"
-token = "to_cpu"
-[[entry]]
-classification = "explicit_cpu_or_fallback"
-key = "src/device_utils.jl|to_cpu|ade43c800a30fbe5fc4f5ca5703b48f9e550779a49a242ec186df1564274ca31|1"
-path = "src/device_utils.jl"
-reason = "explicit CPU dispatch/conversion or fallback marker; callers must opt into this storage transition and strict GPU paths must reject it"
-same_snippet_ordinal = 1
-snippet_sha256 = "ade43c800a30fbe5fc4f5ca5703b48f9e550779a49a242ec186df1564274ca31"
 token = "to_cpu"
 [[entry]]
 classification = "explicit_cpu_or_fallback"

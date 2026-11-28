@@ -1282,11 +1282,12 @@ end
     return values[offset + (m + l) * n + (mp + l)]
 end
 
-"""Local diagonal Z rotation for packed real-field coefficients."""
-@kernel function rotation_z_real_kernel!(output, input, angle, orders)
+"""Local diagonal Z rotation for packed real-field coefficients. The callers
+form `phases` on the host with `SHTnsKit._zrotation_phases`."""
+@kernel function rotation_z_real_kernel!(output, input, phases)
     k = @index(Global, Linear)
     if k <= length(input)
-        output[k] = input[k] * cis(-typeof(angle)(orders[k]) * angle)
+        output[k] = input[k] * phases[k]
     end
 end
 

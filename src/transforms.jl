@@ -82,6 +82,8 @@ Input `Vr` should contain values at Gauss latitudes for a specific longitude mod
 Returns coefficients Q_l for l = 0..lmax.
 """
 function analysis_axisym(cfg::SHTConfig, Vr::AbstractVector{<:Real})
+    operands = _rerouted_operands(:analysis_axisym, (Vr,))
+    operands === nothing || return analysis_axisym(cfg, operands...)
     nlat, lmax = cfg.nlat, cfg.lmax
     length(Vr) == nlat || throw(DimensionMismatch("Vr length must be nlat=$(nlat)"))
     
@@ -169,6 +171,8 @@ Scalar analysis truncated to degrees `l ≤ ltr`. The returned packed coefficien
 vector has length `cfg.nlm`; coefficients with `l > ltr` are set to zero.
 """
 function analysis_packed_l(cfg::SHTConfig, Vr::AbstractVector{<:Real}, ltr::Integer)
+    operands = _rerouted_operands(:analysis_packed_l, (Vr,))
+    operands === nothing || return analysis_packed_l(cfg, operands..., ltr)
     length(Vr) == cfg.nspat || throw(DimensionMismatch("Vr must have length $(cfg.nspat)"))
     lcap = _validate_degree_limit(cfg, ltr)
     f = reshape(Vr, cfg.nlat, cfg.nlon)
@@ -193,6 +197,8 @@ Scalar synthesis truncated to degrees `l ≤ ltr`. Contributions from higher
 degrees are ignored.
 """
 function synthesis_packed_l(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, ltr::Integer)
+    operands = _rerouted_operands(:synthesis_packed_l, (Qlm,))
+    operands === nothing || return synthesis_packed_l(cfg, operands..., ltr)
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm must have length $(cfg.nlm)"))
     lcap = _validate_degree_limit(cfg, ltr)
     alm_mat = zeros(eltype(Qlm), cfg.lmax+1, cfg.mmax+1)
@@ -218,6 +224,8 @@ Input `Qlm` should contain coefficients Q_l for l = 0..lmax.
 Returns spatial values at Gauss latitudes.
 """
 function synthesis_axisym(cfg::SHTConfig, Qlm::AbstractVector{<:Complex})
+    operands = _rerouted_operands(:synthesis_axisym, (Qlm,))
+    operands === nothing || return synthesis_axisym(cfg, operands...)
     nlat, lmax = cfg.nlat, cfg.lmax
     length(Qlm) == lmax + 1 || throw(DimensionMismatch("Qlm length must be lmax+1=$(lmax+1)"))
     
@@ -253,6 +261,8 @@ end
 Axisymmetric degree-limited transform up to degree ltr.
 """
 function analysis_axisym_l(cfg::SHTConfig, Vr::AbstractVector{<:Real}, ltr::Integer)
+    operands = _rerouted_operands(:analysis_axisym_l, (Vr,))
+    operands === nothing || return analysis_axisym_l(cfg, operands..., ltr)
     nlat = cfg.nlat
     length(Vr) == nlat || throw(DimensionMismatch("Vr length must be nlat=$(nlat)"))
     ltr = _validate_degree_limit(cfg, ltr)
@@ -288,6 +298,8 @@ end
 Axisymmetric degree-limited synthesis using degrees up to ltr.
 """
 function synthesis_axisym_l(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, ltr::Integer)
+    operands = _rerouted_operands(:synthesis_axisym_l, (Qlm,))
+    operands === nothing || return synthesis_axisym_l(cfg, operands..., ltr)
     nlat = cfg.nlat
     ltr_qlm = length(Qlm) - 1  # Convert length to max degree
     ltr = _validate_degree_limit(cfg, ltr)
@@ -327,6 +339,8 @@ is `m = mval * cfg.mres`. `Vr_m` contains complex spatial values for that mode.
 Returns coefficients Q_l for degrees l = m..ltr.
 """
 function analysis_packed_ml(cfg::SHTConfig, mval::Int, Vr_m::AbstractVector{<:Complex}, ltr::Integer)
+    operands = _rerouted_operands(:analysis_packed_ml, (Vr_m,))
+    operands === nothing || return analysis_packed_ml(cfg, mval, operands..., ltr)
     nlat = cfg.nlat
     length(Vr_m) == nlat || throw(DimensionMismatch("Vr_m length must be nlat=$(nlat)"))
     mval >= 0 || throw(ArgumentError("mval must be >= 0"))
@@ -368,6 +382,8 @@ contains coefficients for degrees l = m..ltr.
 Returns complex spatial values for that azimuthal mode.
 """
 function synthesis_packed_ml(cfg::SHTConfig, mval::Int, Ql::AbstractVector{<:Complex}, ltr::Integer)
+    operands = _rerouted_operands(:synthesis_packed_ml, (Ql,))
+    operands === nothing || return synthesis_packed_ml(cfg, mval, operands..., ltr)
     nlat = cfg.nlat
     mval >= 0 || throw(ArgumentError("mval must be >= 0"))
     mval <= cfg.mmax ÷ cfg.mres || throw(ArgumentError("mval must be <= mmax/mres=$(cfg.mmax ÷ cfg.mres)"))
