@@ -762,6 +762,12 @@ function divergence_from_spheroidal!(::CPU, cfg::SHTConfig, δ::AbstractMatrix,
     return divergence_from_spheroidal!(cfg, δ, Slm)
 end
 
+"""
+    divergence_from_spheroidal!(cfg, δ, Slm) -> δ
+
+In-place form of `divergence_from_spheroidal`. Writes the divergence
+coefficients into `δ`, which may be `Slm` itself.
+"""
 function divergence_from_spheroidal!(cfg::SHTConfig, δ::AbstractMatrix, Slm::AbstractMatrix)
     _require_host_operands(:divergence_from_spheroidal!, (δ, Slm))
     size(δ) == size(Slm) || throw(DimensionMismatch("divergence output dims"))
@@ -802,6 +808,12 @@ function spheroidal_from_divergence!(::CPU, cfg::SHTConfig, Slm::AbstractMatrix,
     return spheroidal_from_divergence!(cfg, Slm, δlm)
 end
 
+"""
+    spheroidal_from_divergence!(cfg, Slm, δlm) -> Slm
+
+In-place form of `spheroidal_from_divergence`. Writes the spheroidal
+coefficients into `Slm`, which may be `δlm` itself.
+"""
 function spheroidal_from_divergence!(cfg::SHTConfig, Slm::AbstractMatrix, δlm::AbstractMatrix)
     _require_host_operands(:spheroidal_from_divergence!, (Slm, δlm))
     size(Slm) == size(δlm) || throw(DimensionMismatch("spheroidal output dims"))
@@ -844,6 +856,12 @@ function vorticity_from_toroidal!(::CPU, cfg::SHTConfig, ζ::AbstractMatrix,
     return vorticity_from_toroidal!(cfg, ζ, Tlm)
 end
 
+"""
+    vorticity_from_toroidal!(cfg, ζ, Tlm) -> ζ
+
+In-place form of `vorticity_from_toroidal`. Writes the vorticity coefficients
+into `ζ`, which may be `Tlm` itself.
+"""
 function vorticity_from_toroidal!(cfg::SHTConfig, ζ::AbstractMatrix, Tlm::AbstractMatrix)
     _require_host_operands(:vorticity_from_toroidal!, (ζ, Tlm))
     size(ζ) == size(Tlm) || throw(DimensionMismatch("vorticity output dims"))
@@ -884,6 +902,12 @@ function toroidal_from_vorticity!(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix,
     return toroidal_from_vorticity!(cfg, Tlm, ζlm)
 end
 
+"""
+    toroidal_from_vorticity!(cfg, Tlm, ζlm) -> Tlm
+
+In-place form of `toroidal_from_vorticity`. Writes the toroidal coefficients
+into `Tlm`, which may be `ζlm` itself.
+"""
 function toroidal_from_vorticity!(cfg::SHTConfig, Tlm::AbstractMatrix, ζlm::AbstractMatrix)
     _require_host_operands(:toroidal_from_vorticity!, (Tlm, ζlm))
     size(Tlm) == size(ζlm) || throw(DimensionMismatch("toroidal output dims"))
@@ -900,12 +924,24 @@ function toroidal_from_vorticity!(cfg::SHTConfig, Tlm::AbstractMatrix, ζlm::Abs
     return Tlm
 end
 
+"""
+    synthesis_sphtor_l(cfg, Slm, Tlm, ltr; real_output=true) -> (Vt, Vp)
+
+Degree-limited version of `synthesis_sphtor`, using coefficients only up to
+degree `ltr`. Higher degrees in `Slm` and `Tlm` are ignored.
+"""
 Base.@constprop :aggressive function synthesis_sphtor_l(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatrix, ltr::Integer; real_output::Bool=true)
     operands = _rerouted_operands(:synthesis_sphtor_l, (Slm, Tlm))
     operands === nothing || return synthesis_sphtor_l(cfg, operands..., ltr; real_output)
     return _synthesis_sphtor_l(cfg, Slm, Tlm, ltr, Val(real_output))
 end
 
+"""
+    synthesis_sphtor_l_cplx(cfg, Slm, Tlm, ltr) -> (Vt, Vp)
+
+Complex-output form of `synthesis_sphtor_l`. It is equivalent to
+`real_output=false`, with a concrete return type for inference-sensitive code.
+"""
 function synthesis_sphtor_l_cplx(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractMatrix, ltr::Integer)
     operands = _rerouted_operands(:synthesis_sphtor_l_cplx, (Slm, Tlm))
     operands === nothing || return synthesis_sphtor_l_cplx(cfg, operands..., ltr)
@@ -962,6 +998,12 @@ function _synthesis_sphtor_l(cfg::SHTConfig, Slm::AbstractMatrix, Tlm::AbstractM
     return Vt, Vp
 end
 
+"""
+    analysis_sphtor_l(cfg, Vt, Vp, ltr) -> (Slm, Tlm)
+
+Degree-limited version of `analysis_sphtor`. It computes the spheroidal and
+toroidal coefficients up to degree `ltr` and leaves the higher degrees zero.
+"""
 function analysis_sphtor_l(cfg::SHTConfig, Vt::AbstractMatrix, Vp::AbstractMatrix, ltr::Integer)
     operands = _rerouted_operands(:analysis_sphtor_l, (Vt, Vp))
     operands === nothing || return analysis_sphtor_l(cfg, operands..., ltr)
@@ -1017,6 +1059,12 @@ function synthesis_sph_l(::CPU, cfg::SHTConfig, Slm::AbstractMatrix,
     return synthesis_sph_l(cfg, Slm, ltr; kwargs...)
 end
 
+"""
+    synthesis_sph_l_cplx(cfg, Slm, ltr) -> (Vt, Vp)
+
+Complex-output form of `synthesis_sph_l`: the degree-limited synthesis of the
+spheroidal part alone.
+"""
 function synthesis_sph_l_cplx(cfg::SHTConfig, Slm::AbstractMatrix, ltr::Integer)
     operands = _rerouted_operands(:synthesis_sph_l_cplx, (Slm,))
     operands === nothing || return synthesis_sph_l_cplx(cfg, operands..., ltr)
@@ -1049,6 +1097,12 @@ function synthesis_tor_l(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix,
     return synthesis_tor_l(cfg, Tlm, ltr; kwargs...)
 end
 
+"""
+    synthesis_tor_l_cplx(cfg, Tlm, ltr) -> (Vt, Vp)
+
+Complex-output form of `synthesis_tor_l`: the degree-limited synthesis of the
+toroidal part alone.
+"""
 function synthesis_tor_l_cplx(cfg::SHTConfig, Tlm::AbstractMatrix, ltr::Integer)
     operands = _rerouted_operands(:synthesis_tor_l_cplx, (Tlm,))
     operands === nothing || return synthesis_tor_l_cplx(cfg, operands..., ltr)
@@ -1099,17 +1153,6 @@ function synthesis_tor_ml(::CPU, cfg::SHTConfig, mval::Integer,
     return synthesis_tor_ml(cfg, mval, Tl, ltr)
 end
 
-"""
-    analysis_sphtor_ml(cfg, mval, Vt_m, Vp_m, ltr) -> (Sl, Tl)
-
-Mode-limited transform for a single azimuthal order `mval` (named `mval`, not
-`im`, so it cannot shadow Julia's imaginary unit — see `synthesis_sphtor_ml`).
-Input vectors contain Fourier coefficients for mode m at all latitudes.
-Implements the proper spheroidal-toroidal decomposition using the adjoint of
-the synthesis formulas:
-    Vθ = ∂S/∂θ - (im/sinθ) * T
-    Vφ = (im/sinθ) * S + ∂T/∂θ
-"""
 @inline function _validate_stored_order(cfg::SHTConfig, stored_im::Integer,
                                         ltr::Integer)
     im_value, representable = _degree_limit_candidate(stored_im)
@@ -1131,6 +1174,17 @@ end
     return physical_m, lcap
 end
 
+"""
+    analysis_sphtor_ml(cfg, mval, Vt_m, Vp_m, ltr) -> (Sl, Tl)
+
+Mode-limited transform for a single azimuthal order `mval` (named `mval`, not
+`im`, so it cannot shadow Julia's imaginary unit — see `synthesis_sphtor_ml`).
+Input vectors contain Fourier coefficients for mode m at all latitudes.
+Implements the proper spheroidal-toroidal decomposition using the adjoint of
+the synthesis formulas:
+    Vθ = ∂S/∂θ - (im/sinθ) * T
+    Vφ = (im/sinθ) * S + ∂T/∂θ
+"""
 function analysis_sphtor_ml(cfg::SHTConfig, stored_im::Integer, Vt_m::AbstractVector{<:Complex}, Vp_m::AbstractVector{<:Complex}, ltr::Integer)
     operands = _rerouted_operands(:analysis_sphtor_ml, (Vt_m, Vp_m))
     operands === nothing || return analysis_sphtor_ml(cfg, stored_im, operands..., ltr)

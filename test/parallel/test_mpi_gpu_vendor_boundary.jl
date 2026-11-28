@@ -239,12 +239,15 @@ function transpose_outcome(call)
     end
 end
 
-"""Wrap a pinned stage and return only a reshaped mirror of it."""
-@noinline function pinned_stage_mirror(allocate, release)
+# Only `holder` references the mirror, so no test frame keeps it alive.
+@noinline function hold_pinned_stage_mirror!(holder, allocate, release)
     host = ParExt._vendor_pinned_vector(ComplexF32, 6, allocate, release)
     host .= ComplexF32.(1:6)
-    return reshape(host, 2, 3)
+    holder[] = reshape(host, 2, 3)
+    return nothing
 end
+
+@noinline held_mirror(holder) = (typeof(holder[]), collect(vec(holder[])))
 
 ParExt._register_parallel_gpu_adapter!(MOCK_ADAPTER)
 try
@@ -701,17 +704,17 @@ try
             @test_throws ArgumentError ParExt._vendor_pinned_vector(
                 Vector{Int}, 1, allocate, release,
             )
-            mirror = pinned_stage_mirror(allocate, release)
+            holder = Ref{Any}(nothing)
+            hold_pinned_stage_mirror!(holder, allocate, release)
             @test allocations == [6 * sizeof(ComplexF32)]
-            @test mirror isa Matrix{ComplexF32}
             for _ in 1:3
                 GC.gc(true)
             end
             # The vendor allocation outlives the wrapped Vector while any
             # reshaped mirror of its storage is alive, and is released once.
             @test released[] == 0
-            @test vec(mirror) == ComplexF32.(1:6)
-            mirror = nothing
+            @test held_mirror(holder) == (Matrix{ComplexF32}, ComplexF32.(1:6))
+            holder[] = nothing
             for _ in 1:3
                 GC.gc(true)
             end

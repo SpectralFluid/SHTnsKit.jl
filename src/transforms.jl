@@ -477,15 +477,6 @@ function synthesis_packed_ml(::CPU, cfg::SHTConfig, mval::Int,
     return synthesis_packed_ml(cfg, mval, coefficients, ltr)
 end
 
-"""
-    synthesis_point(cfg, Qlm, cost, phi) -> Real
-
-Evaluate spherical harmonic expansion at a single point (θ,φ) for a real-valued field.
-`cost` = cos(θ), `phi` is the azimuthal angle.
-`Qlm` should be a matrix of size (lmax+1, mmax+1) with standard indexing
-(only m ≥ 0 stored; negative-m reconstructed via Hermitian symmetry).
-Returns the real field value at the specified point.
-"""
 @inline function _validate_local_cost(cost::Real, operation::Symbol)
     isfinite(cost) && -one(cost) <= cost <= one(cost) || throw(ArgumentError(
         "$operation requires a finite cost in [-1, 1]",
@@ -538,6 +529,15 @@ end
     return @inbounds _scale_local_coefficient(a, scales[l+1, m+1])
 end
 
+"""
+    synthesis_point(cfg, Qlm, cost, phi) -> Real
+
+Evaluate spherical harmonic expansion at a single point (θ,φ) for a real-valued field.
+`cost` = cos(θ), `phi` is the azimuthal angle.
+`Qlm` should be a matrix of size (lmax+1, mmax+1) with standard indexing
+(only m ≥ 0 stored; negative-m reconstructed via Hermitian symmetry).
+Returns the real field value at the specified point.
+"""
 function synthesis_point(cfg::SHTConfig, Qlm::AbstractMatrix{<:Complex}, cost::Real, phi::Real)
     _validate_local_storage(:synthesis_point, Qlm)
     lmax, mmax = cfg.lmax, cfg.mmax

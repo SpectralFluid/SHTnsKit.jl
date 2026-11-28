@@ -82,12 +82,6 @@ function LM_cplx(cfg::SHTConfig, l::Integer, m::Integer)
     return LM_cplx_index(cfg.lmax, cfg.mmax, Int(l), Int(m))
 end
 
-"""
-    synthesis_packed_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex}) -> Matrix{ComplexF64}
-
-Synthesize complex spatial field from packed complex coefficients (LM_cplx order).
-Returns an `nlat × nlon` complex array.
-"""
 @inline function _complex_packed_lcap(cfg::SHTConfig, ltr::Integer)
     return _validate_degree_limit(cfg, ltr)
 end
@@ -142,6 +136,13 @@ function _synthesis_packed_cplx(cfg::SHTConfig,
     return z
 end
 
+"""
+    synthesis_packed_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex}) -> Matrix{ComplexF64}
+
+Synthesize a complex spatial field from packed complex coefficients in
+`LM_cplx` order, which stores both signs of `m`. Returns an `nlat × nlon`
+complex array. Requires `cfg.mres == 1`.
+"""
 function synthesis_packed_cplx(cfg::SHTConfig, alm_packed::AbstractVector{<:Complex})
     operands = _rerouted_operands(:synthesis_packed_cplx, (alm_packed,))
     operands === nothing || return synthesis_packed_cplx(cfg, operands...)
@@ -162,12 +163,6 @@ function synthesis_packed_cplx_l(cfg::SHTConfig,
     return _synthesis_packed_cplx(cfg, alm_packed, _complex_packed_lcap(cfg, ltr))
 end
 
-"""
-    analysis_packed_cplx(cfg::SHTConfig, z::AbstractMatrix{<:Complex}) -> Vector{ComplexF64}
-
-Analyze complex spatial field into packed complex coefficients (LM_cplx order).
-Input `z` must be `nlat × nlon` complex.
-"""
 function _analysis_packed_cplx(cfg::SHTConfig, z::AbstractMatrix{<:Complex},
                                lcap::Int)
     size(z,1) == cfg.nlat || throw(DimensionMismatch("z first dim must be nlat"))
@@ -213,6 +208,12 @@ function _analysis_packed_cplx(cfg::SHTConfig, z::AbstractMatrix{<:Complex},
 end
 
 
+"""
+    analysis_packed_cplx(cfg::SHTConfig, z::AbstractMatrix{<:Complex}) -> Vector{ComplexF64}
+
+Analyze a complex `nlat × nlon` spatial field into packed complex coefficients
+in `LM_cplx` order, which stores both signs of `m`. Requires `cfg.mres == 1`.
+"""
 function analysis_packed_cplx(cfg::SHTConfig, z::AbstractMatrix{<:Complex})
     operands = _rerouted_operands(:analysis_packed_cplx, (z,))
     operands === nothing || return analysis_packed_cplx(cfg, operands...)

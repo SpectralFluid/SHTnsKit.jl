@@ -173,6 +173,13 @@ function fft_plan_cache_max!(n::Int)
     return prev
 end
 
+"""
+    fft_phi_backend() -> Symbol
+
+Report the backend of the most recent longitude FFT: `:fftw`, or `:dft` for
+the plain discrete Fourier transform used for element types FFTW cannot
+handle, such as ForwardDiff duals. Returns `:unknown` before any transform.
+"""
 function fft_phi_backend()
     v = _FFT_BACKEND[]
     v == _FFT_BACKEND_FFTW && return :fftw

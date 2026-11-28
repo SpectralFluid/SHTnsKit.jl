@@ -348,6 +348,12 @@ function synthesis_qst_l(::CPU, cfg::SHTConfig, Qlm::AbstractMatrix,
     return synthesis_qst_l(cfg, Qlm, Slm, Tlm, ltr; kwargs...)
 end
 
+"""
+    synthesis_qst_l_cplx(cfg, Qlm, Slm, Tlm, ltr) -> (Vr, Vt, Vp)
+
+Complex-output form of `synthesis_qst_l`. It is equivalent to
+`real_output=false`, with a concrete return type for inference-sensitive code.
+"""
 function synthesis_qst_l_cplx(cfg::SHTConfig, Qlm::AbstractMatrix, Slm::AbstractMatrix, Tlm::AbstractMatrix, ltr::Integer)
     operands = _rerouted_operands(:synthesis_qst_l_cplx, (Qlm, Slm, Tlm))
     operands === nothing || return synthesis_qst_l_cplx(cfg, operands..., ltr)

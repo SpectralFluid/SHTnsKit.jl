@@ -99,7 +99,11 @@ Each component must have a consistent element type across ranks. QST and
 gradient evaluations promote the precision of the supplied components, so
 combining `ComplexF32` and `ComplexF64` spectra returns `Float64` components.
 
-CUDA and ROCm support transforms on GPU-backed pencils with GPU-aware MPI.
+On CUDA- and ROCm-backed pencils, transform through a `DistTransposePlan` with
+`dist_analysis!`, `dist_synthesis!` and their `_sphtor!` and `_qst!` forms.
+Other distributed calls raise `BackendUnavailableError` for GPU-backed pencils,
+so run them on CPU storage. With GPU-aware MPI, ranks exchange device buffers
+directly. Otherwise each transform stages its data through pinned host memory.
 Apple Metal supports the single-GPU workflows in [GPU Acceleration](gpu.md).
 
 ## Practical rules

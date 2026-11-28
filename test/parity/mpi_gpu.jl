@@ -632,13 +632,22 @@ function run_mpi_gpu_full_parity(vendor::Symbol, array_type::Type,
         )
         send = array_type(Float32.(100rank .+ (1:nranks)))
         receive = array_type(zeros(Float32, nranks))
-        extension.exchange!(
-            send, receive, comm; adapter=exchange_adapter,
-            collective=(send, receive, comm) -> MPI.Alltoall!(
-                MPI.UBuffer(send, 1), MPI.UBuffer(receive, 1), comm,
-            ),
-        )
+        # The default collective splits both buffers evenly across ranks.
+        extension.exchange!(send, receive, comm; adapter=exchange_adapter)
         @test Array(receive) == Float32.(100 .* (0:nranks-1) .+ rank .+ 1)
+        extension.parallel_gpu_clear_caches!()
+        # Stages are vendor host allocations, so many small ones can be pinned
+        # at once; registering small Julia arrays could pin a shared page twice.
+        stages = [staged_adapter.allocate_pinned(Float32, 3) for _ in 1:8]
+        is_pinned = vendor === :cuda ? CUDA.is_pinned : AMDGPU.Mem.is_pinned
+        @test all(stage -> stage isa Vector{Float32} && length(stage) == 3,
+                  stages)
+        @test all(stage -> is_pinned(pointer(stage)), stages)
+        small = [array_type(Float32[n, n + 1]) for n in 1:8]
+        foreach(value -> extension.allreduce!(
+            value, +, comm; adapter=staged_adapter,
+        ), small)
+        @test all(n -> Array(small[n]) == nranks .* Float32[n, n + 1], 1:8)
         extension.parallel_gpu_clear_caches!()
     end
 
@@ -771,6 +780,41 @@ function run_mpi_gpu_full_parity(vendor::Symbol, array_type::Type,
                       forced_before + 6
             end
             @test extension.parallel_gpu_stats().staged_calls >= staged_before + 18
+        end
+
+        @testset "vector transposes accept aliased read-only inputs" begin
+            # As on the CPU path, one field may be passed as both components.
+            plan = SHTnsKit.DistTransposePlan(
+                cfg; comm, nlev=1, array_type, real_type=RT, with_vector=true,
+            )
+            refs = _mpi_gpu_native_references(cfg, RT, 1)
+            Vt = SHTnsKit.allocate_spatial(plan)
+            _mpi_gpu_fill_native_spatial!(Vt, refs.Vt)
+            Vt_copy = SHTnsKit.allocate_spatial(plan)
+            copyto!(parent(Vt_copy), parent(Vt))
+            shared = (SHTnsKit.allocate_spectral(plan),
+                      SHTnsKit.allocate_spectral(plan))
+            separate = (SHTnsKit.allocate_spectral(plan),
+                        SHTnsKit.allocate_spectral(plan))
+            @test SHTnsKit.dist_analysis_sphtor!(
+                plan, shared..., Vt, Vt,
+            ) === shared
+            SHTnsKit.dist_analysis_sphtor!(plan, separate..., Vt, Vt_copy)
+            @test all(map((A, B) -> Array(parent(A)) ≈ Array(parent(B)),
+                          shared, separate))
+            S = first(separate)
+            S_copy = SHTnsKit.allocate_spectral(plan)
+            copyto!(parent(S_copy), parent(S))
+            outputs = (SHTnsKit.allocate_spatial(plan),
+                       SHTnsKit.allocate_spatial(plan))
+            expected = (SHTnsKit.allocate_spatial(plan),
+                        SHTnsKit.allocate_spatial(plan))
+            @test SHTnsKit.dist_synthesis_sphtor!(
+                plan, outputs..., S, S,
+            ) === outputs
+            SHTnsKit.dist_synthesis_sphtor!(plan, expected..., S, S_copy)
+            @test all(map((A, B) -> Array(parent(A)) ≈ Array(parent(B)),
+                          outputs, expected))
         end
 
         @testset "repeated-plan cache and residency" begin

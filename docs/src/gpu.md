@@ -52,8 +52,8 @@ batch transform families follow the same storage-based dispatch.
 | Packed scalar `LM` and signed `LM_cplx` transforms, including degree truncation | Supported | Supported |
 | Degree-truncated (`_l`), single-order (`_ml`) and axisymmetric scalar, vector and QST transforms | Supported | Supported |
 | Spectral Laplacian and conversions between divergence/vorticity and vector coefficients | Supported | Supported |
-| Point and latitude evaluation, rotations | Supported | Unavailable |
-| Distributed transforms on GPU-backed MPI pencils | Supported with GPU-aware MPI | Unavailable |
+| Point and latitude evaluation, rotations, and the `mul_ct_matrix`, `st_dt_matrix` and `SH_mul_mx` coupling operators | Supported | Unavailable |
+| Distributed transforms on GPU-backed MPI pencils, through a `DistTransposePlan` | Supported | Unavailable |
 
 ## Apple Metal
 
@@ -113,7 +113,12 @@ synthesis!(plan, recovered, coefficients)
 ```
 
 Output arguments come before inputs. Plans own mutable workspace, so use one
-plan per concurrent task.
+plan per concurrent task. On a GPU, a plan keeps its device workspace for as
+long as the plan lives.
+
+On CUDA and ROCm, in-place scalar `analysis!` and `synthesis!` compute at the
+wider of the input and output precision. A `ComplexF64` output for a `Float32`
+field therefore gets Float64 coefficients.
 
 ## Explicit placement
 
@@ -146,16 +151,22 @@ between the buffer and the view on the GPU.
 ## Troubleshooting
 
 - Check `CUDA.functional()`, `AMDGPU.functional()`, or `Metal.functional()` for your backend.
+- On AMD, the transforms also need rocFFT, reported by `AMDGPU.functional(:rocfft)`.
+  Local evaluation, the spectral operators and the Laplacian run without it.
 - Keep inputs, outputs, scratch, and prototypes on one vendor.
 - Load every package listed for the selected backend in [Installation](installation.md).
 - Avoid host/device copies inside a time-stepping loop; transfer once, compute,
   then copy back only the final result.
 - Device tables are cached per configuration and precision. The scalar table
   holds `nlat × (lmax+1) × (mmax+1)` values, 8.6 GB in Float64 at
-  `nlat = lmax + 1 = mmax + 1 = 1024`. A later cache access drops entries
+  `nlat = lmax + 1 = mmax + 1 = 1024`. Vector transforms cache two more tables
+  of that size. A later cache access drops entries
   whose configurations have been garbage-collected. To clear the selected
   backend's cache explicitly, call `gpu_clear_cache!(GPU(); prototype=field)`.
 
 For multi-rank arrays, first establish the CPU workflow in [Distributed
-Computing](distributed.md), then use CUDA- or ROCm-backed `PencilArray` storage
-with a GPU-aware MPI stack.
+Computing](distributed.md). On CUDA- or ROCm-backed `PencilArray` storage, run
+the transforms through a `DistTransposePlan`. Other distributed calls raise
+`BackendUnavailableError` for GPU-backed pencils. A GPU-aware MPI stack lets
+ranks exchange device buffers directly. Without one, the transforms stage data
+through pinned host memory.

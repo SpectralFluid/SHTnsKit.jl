@@ -626,11 +626,6 @@ function _lmcplx_ybasis_signs(lmax::Integer, mmax::Integer)
     return v
 end
 
-"""
-    shtns_rotation_apply_cplx(r::SHTRotation, Zlm::AbstractVector{<:Complex}, Rlm::AbstractVector{<:Complex})
-
-Apply rotation with Euler angles (ZYZ/ZXZ) to complex SH coefficients in LM_cplx packing (mres==1).
-"""
 @inline function _rotation_zyz_angles(r::SHTRotation, ::Type{T}) where {T<:AbstractFloat}
     all(isfinite, (r.α, r.β, r.γ)) ||
         throw(ArgumentError("rotation angles must be finite"))
@@ -813,6 +808,11 @@ function _rotation_apply_cplx_canonical!(r::SHTRotation,
     return Rlm
 end
 
+"""
+    shtns_rotation_apply_cplx(r::SHTRotation, Zlm::AbstractVector{<:Complex}, Rlm::AbstractVector{<:Complex})
+
+Apply rotation with Euler angles (ZYZ/ZXZ) to complex SH coefficients in LM_cplx packing (mres==1).
+"""
 function shtns_rotation_apply_cplx(::CPU, r::SHTRotation,
                                    Zlm::AbstractVector{<:Complex},
                                    Rlm::AbstractVector{<:Complex})

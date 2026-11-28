@@ -198,6 +198,19 @@ function set_device!(device::ComputeDevice)
     return device
 end
 
+"""
+    to_device(device::ComputeDevice, value)
+    to_device(GPU(), value, prototype)
+    to_device(value)
+
+Return `value` on `device`. `to_device(CPU(), x)` copies device storage into a
+host `Array`, first gathering a wrapped array on its device, and returns host
+values unchanged. `to_device(GPU(), x)` copies host data to the one functional
+GPU backend and returns device arrays unchanged. With a `prototype` device
+array it uses that array's backend and device. `to_device(value)` uses
+[`get_device`](@ref). The value-first forms `to_device(value, device)` and
+`to_device(value, device, prototype)` are equivalent.
+"""
 to_device(::CPU, value) = _to_cpu(value)
 
 function to_device(::GPU, value)
