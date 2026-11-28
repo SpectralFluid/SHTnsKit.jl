@@ -18,17 +18,15 @@ using SHTnsKit
         Qlm = randn(rng, ComplexF64, cfg.nlm)
         Qlm[1:lmax+1] .= real.(Qlm[1:lmax+1])  # m=0 real
 
-        # Rotation angle
-        α = π/4
         Rlm = similar(Qlm)
-        SH_Zrotate(cfg, Qlm, α, Rlm)
-
-        # SHTns coefficient convention: an active Z-rotation multiplies by exp(-imα).
-        for m in 0:cfg.mmax
-            for l in m:cfg.lmax
-                idx = LM_index(cfg.lmax, cfg.mres, l, m) + 1
-                expected = Qlm[idx] * cis(-m * α)
-                @test isapprox(Rlm[idx], expected; rtol=1e-12, atol=1e-14)
+        for α in (π/4, 100_000 * 2π, -BigFloat(floatmax(Float64) / 2))
+            SH_Zrotate(cfg, Qlm, α, Rlm)
+            for m in 0:cfg.mmax
+                phase = ComplexF64(cis(-m * BigFloat(α)))
+                for l in m:cfg.lmax
+                    idx = LM_index(cfg.lmax, cfg.mres, l, m) + 1
+                    @test isapprox(Rlm[idx], Qlm[idx] * phase; rtol=1e-12, atol=1e-14)
+                end
             end
         end
     end

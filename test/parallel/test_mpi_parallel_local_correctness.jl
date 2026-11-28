@@ -337,15 +337,25 @@ end
     end
 
     @testset "Z rotation phase precision ($CT)" for CT in (ComplexF32, ComplexF64)
+        m = 5
+        mode_index = LM_index(cfg.lmax, cfg.mres, m, m) + 1
         spectrum = zeros(CT, spectral_dims)
-        spectrum[6, 6] = 1
+        spectrum[m + 1, m + 1] = 1
         source = scatter_spectral(pen_m, spectrum)
         packed = SHTnsKit.pack_lm(cfg, spectrum)
-        for angle in (1.234567f0, 2π, 100_000 * 2π, 1_000_000 * 2π + 0.125, big(2)^55 + big"0.125")
+        rtol = 4eps(real(CT))
+        for angle in (1.234567f0, 2π, 100_000 * 2π, 1_000_000 * 2π + 0.125,
+                      big(2)^55 + big"0.125", BigFloat(floatmax(Float64) / 2))
+            # Widen before multiplying. Near a whole turn, the small imaginary
+            # residual needs its own relative tolerance.
+            phase = CT(cis(-m * BigFloat(angle)))
+            rotated_packed = SH_Zrotate(cfg, packed, angle, similar(packed))
+            @test real(rotated_packed[mode_index]) ≈ real(phase) rtol=rtol
+            @test imag(rotated_packed[mode_index]) ≈ imag(phase) rtol=rtol
+            @test count(!iszero, rotated_packed) == 1
+
             rotated = SHTnsKit.dist_SH_Zrotate(cfg, source, angle)
-            reference = copy(spectrum)
-            reference[6, 6] = cis(-5 * (angle isa BigFloat ? angle : Float64(angle)))
-            @test SH_Zrotate(cfg, packed, angle, similar(packed)) == SHTnsKit.pack_lm(cfg, reference)
+            reference = SHTnsKit.unpack_lm(cfg, rotated_packed)
             @test eltype(rotated) === CT
             @test parent(rotated) == reference[PencilArrays.range_local(pen_m)...]
         end

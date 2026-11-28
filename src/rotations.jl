@@ -146,6 +146,9 @@ SH_Zrotate(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real,
 # angle. Keep generic real arithmetic available to automatic differentiation.
 @inline function _reduced_rotation_angle(angle::Real)
     a = _rotation_phase_angle(angle)
+    # BigFloat's rem2pi uses a rounded 2π. For large exponents, recover the
+    # principal angle with MPFR's trigonometric argument reduction instead.
+    a isa BigFloat && return atan(sincos(a)...)
     return a isa AbstractFloat ? rem2pi(a, RoundNearest) : a
 end
 
