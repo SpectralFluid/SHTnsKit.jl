@@ -1,6 +1,6 @@
 name = "SHTnsKit"
 uuid = "1b9d0af0-2e90-4fb0-9eae-4a2e2cdf5320"
-version = "2.0.3"
+version = "2.0.4"
 authors = ["Subhajit Kar <subhajitkar19@gmail.com>"]
 
 [deps]
