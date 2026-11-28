@@ -6,6 +6,7 @@ using GPUArraysCore
 import KernelAbstractions
 
 include("../wrapper_reference.jl")
+include("../test_transform_storage.jl")
 
 include("../../parity/scalar_full.jl")
 include("../../parity/scalar_variants.jl")
@@ -313,6 +314,7 @@ end
     )
     test_angle_axis_pi_singularity()
     if AMDGPU.functional()
+        test_transform_storage(AMDGPU, ROCArray)
         loop_values = AMDGPU.zeros(Int32, 8)
         @sht_loop loop_values[i] = Int32(i) over i ∈ eachindex(loop_values)
         @test Array(loop_values) == Int32.(1:8)
@@ -504,13 +506,13 @@ end
         @test !occursin("dtheta", scalar_table_builder)
     end
     vector_pipeline = split(
-        split(source, "function _amdgpu_vector_analysis"; limit=2)[2],
+        split(source, r"(?m)^_amdgpu_vector_analysis\("; limit=2)[2],
         "@inline function _amdgpu_lcap"; limit=2,
     )[1]
     @test !occursin(r"\bArray\s*\(", vector_pipeline)
     @test !occursin(r"\bcollect\s*\(", vector_pipeline)
     ordinary_pipeline = split(
-        split(source, "function _amdgpu_scalar_analysis"; limit=2)[2],
+        split(source, r"(?m)^_amdgpu_scalar_analysis_direct!\("; limit=2)[2],
         "function _gpu_adapter_analysis"; limit=2,
     )[1]
     @test !occursin(r"\bArray\s*\(", ordinary_pipeline)

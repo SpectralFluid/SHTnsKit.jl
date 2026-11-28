@@ -6,6 +6,8 @@ isdefined(@__MODULE__, :ScalarParityAdapter) || include("scalar_full.jl")
 isdefined(@__MODULE__, :VectorParityAdapter) || include("sphtor_full.jl")
 isdefined(@__MODULE__, :QSTParityAdapter) || include("qst_full.jl")
 isdefined(@__MODULE__, :SHTNS37_MANIFEST_PATH) || include("shtns37_fixtures.jl")
+isdefined(@__MODULE__, :firewall_dispatch_probe) ||
+    include(joinpath(@__DIR__, "..", "parallel", "mpi_gpu_firewall_probe.jl"))
 
 """A CPU-backed stand-in that exercises the MPI/GPU policy without GPU hardware."""
 mutable struct MockMPIArray{T,N} <: AbstractArray{T,N}
@@ -593,6 +595,51 @@ function run_mpi_gpu_full_parity(vendor::Symbol, array_type::Type,
             MPI.Barrier(comm)
         end
         close(distributed_plan_2d)
+    end
+
+    @testset "staged collectives use vendor bulk copies" begin
+        # Pinned host stages are views into reusable buffers. The vendor
+        # transfers must copy through their parent Array rather than fall back
+        # to element-wise copies that index device memory.
+        staged_adapter = extension.ParallelGPUAdapter(
+            Symbol(vendor, :_staged_collectives), adapter.matches,
+            adapter.array_type, adapter.device, adapter.with_device,
+            _ -> false, adapter.synchronize, adapter.allocate_pinned,
+            adapter.device_to_host!, adapter.host_to_device!,
+        )
+        extension.parallel_gpu_clear_caches!()
+        buffer = array_type(Float32[1, 2, 3])
+        @test extension.allreduce!(
+            buffer, +, comm; adapter=staged_adapter,
+        ) === buffer
+        @test Array(buffer) == nranks .* Float32[1, 2, 3]
+        matrix = array_type(reshape(Float32.(1:6), 2, 3))
+        result = compound._internal_staged_vendor_call_with_adapter(
+            staged_adapter, comm, :staged_vendor_bulk_copies,
+            host -> (host .*= 2; host .+ 1), matrix; mutated=(1,),
+        )
+        @test Array(matrix) == 2 .* reshape(Float32.(1:6), 2, 3)
+        @test is_vendor(result)
+        @test Array(result) == 2 .* reshape(Float32.(1:6), 2, 3) .+ 1
+        # exchange! requires the registered vendor name; clearing the caches
+        # keeps this adapter's awareness verdict from reaching later calls.
+        extension.parallel_gpu_clear_caches!()
+        exchange_adapter = extension.ParallelGPUAdapter(
+            adapter.name, adapter.matches, adapter.array_type, adapter.device,
+            adapter.with_device, _ -> false, adapter.synchronize,
+            adapter.allocate_pinned, adapter.device_to_host!,
+            adapter.host_to_device!,
+        )
+        send = array_type(Float32.(100rank .+ (1:nranks)))
+        receive = array_type(zeros(Float32, nranks))
+        extension.exchange!(
+            send, receive, comm; adapter=exchange_adapter,
+            collective=(send, receive, comm) -> MPI.Alltoall!(
+                MPI.UBuffer(send, 1), MPI.UBuffer(receive, 1), comm,
+            ),
+        )
+        @test Array(receive) == Float32.(100 .* (0:nranks-1) .+ rank .+ 1)
+        extension.parallel_gpu_clear_caches!()
     end
 
     for RT in (Float32, Float64)
@@ -3163,6 +3210,24 @@ function test_mpi_gpu_source_contract(root::AbstractString, vendor::Symbol,
     @test isempty(Test.detect_ambiguities(
         SHTnsKit, compound_extension; recursive=true,
     ))
+    # detect_ambiguities does not report the ambiguities a vendor alias that
+    # is not a PencilArray subtype causes, so probe dispatch directly.
+    @test compound_extension.VendorPencilArray <: PencilArrays.PencilArray
+    probe = firewall_dispatch_probe(
+        compound_extension, (T, N) -> compound_extension.VendorArrayType{T,N},
+    )
+    for failure in first(probe.failures, 5)
+        @error "firewall dispatch probe failed" failure
+    end
+    @test probe.probes > 1000
+    @test length(probe.failures) == 0
+    vendor_adapter = vendor === :cuda ?
+        compound_extension.CUDA_PARALLEL_ADAPTER :
+        compound_extension.AMDGPU_PARALLEL_ADAPTER
+    @test vendor_adapter.device_to_host! ===
+          parallel_extension._bulk_device_to_host!
+    @test vendor_adapter.host_to_device! ===
+          parallel_extension._bulk_host_to_device!
     for api in MPI_GPU_FIREWALL_GROUPS
         function_object = getfield(SHTnsKit, api)
         owned = filter(method -> method.module === compound_extension,

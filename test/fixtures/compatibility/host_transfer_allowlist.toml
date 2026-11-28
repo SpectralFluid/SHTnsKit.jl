@@ -1,5 +1,5 @@
 [audit]
-entry_count = 695
+entry_count = 697
 scanner = "deterministic non-overlapping spelling scanner; longer transfer spellings win"
 scope = "src/device_utils.jl and every ext/*.jl file"
 
@@ -580,6 +580,22 @@ same_snippet_ordinal = 1
 snippet_sha256 = "02e28b4d88c464bf70e477bcc9200285e3539d5386cdbf8c079333cd81767032"
 token = "array"
 [[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/ParallelGPU.jl|copyto|4579822dd188cfaa14c37300c5e7b10e800862249f3501d0b34f07432260cd52|1"
+path = "ext/ParallelGPU.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "4579822dd188cfaa14c37300c5e7b10e800862249f3501d0b34f07432260cd52"
+token = "copyto"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/ParallelGPU.jl|copyto|7f09910f411dd536505a97b2807b965da2eff40a4555fbf7f093851d63ef8de4|1"
+path = "ext/ParallelGPU.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "7f09910f411dd536505a97b2807b965da2eff40a4555fbf7f093851d63ef8de4"
+token = "copyto"
+[[entry]]
 classification = "bounded_pinned_mpi_staging"
 key = "ext/ParallelGPU.jl|copyto|b60880da18537a302f77619fd255e1c6abf5547c456022c8d2c7a52f054a49b5|1"
 path = "ext/ParallelGPU.jl"
@@ -898,6 +914,22 @@ path = "ext/ParallelGPU.jl"
 reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
 same_snippet_ordinal = 1
 snippet_sha256 = "cd11ff0547a5aaecfeedeae875feb1536edcacaf25e9eb4d27e1112b99963f4f"
+token = "parent"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/ParallelGPU.jl|parent|d57a3bdd432bce0a1ab8efa26bf9137ce3f1a8a9b57c25520ce5e685039f3582|1"
+path = "ext/ParallelGPU.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "d57a3bdd432bce0a1ab8efa26bf9137ce3f1a8a9b57c25520ce5e685039f3582"
+token = "parent"
+[[entry]]
+classification = "bounded_pinned_mpi_staging"
+key = "ext/ParallelGPU.jl|parent|f22f058da9232815d04897963d9e1fc8eac3f156092562bd998df42e29f95af6|1"
+path = "ext/ParallelGPU.jl"
+reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
+same_snippet_ordinal = 1
+snippet_sha256 = "f22f058da9232815d04897963d9e1fc8eac3f156092562bd998df42e29f95af6"
 token = "parent"
 [[entry]]
 classification = "metadata_or_storage_preserving"
@@ -4069,11 +4101,11 @@ snippet_sha256 = "8a49044ba8615c5631c0f1ba99fb456d1baf032e5045e9ec4832f5c466c783
 token = "vector"
 [[entry]]
 classification = "metadata_or_storage_preserving"
-key = "ext/SHTnsKitAMDGPUExt.jl|copyto|37eab0ae7d653b1452cd07d7ca17a3a1c0c9c6171b89027b7009b6cb34f9d44e|1"
+key = "ext/SHTnsKitAMDGPUExt.jl|copyto|3a83c209c62b112b5475dfd9eda6fd6c96cba3fbc2912a0e5bd378dd175cbbe3|1"
 path = "ext/SHTnsKitAMDGPUExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
-snippet_sha256 = "37eab0ae7d653b1452cd07d7ca17a3a1c0c9c6171b89027b7009b6cb34f9d44e"
+snippet_sha256 = "3a83c209c62b112b5475dfd9eda6fd6c96cba3fbc2912a0e5bd378dd175cbbe3"
 token = "copyto"
 [[entry]]
 classification = "metadata_or_storage_preserving"
@@ -4090,14 +4122,6 @@ path = "ext/SHTnsKitAMDGPUExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
 snippet_sha256 = "41d7dd1bb74bed330586e3eca50dce35fa8fbca1c92c28f7ae317ff837a5d456"
-token = "copyto"
-[[entry]]
-classification = "metadata_or_storage_preserving"
-key = "ext/SHTnsKitAMDGPUExt.jl|copyto|8505935315b91ae4cf3bfcb0954278f12e5d6ceaf721265707fe6c38136f282c|1"
-path = "ext/SHTnsKitAMDGPUExt.jl"
-reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
-same_snippet_ordinal = 1
-snippet_sha256 = "8505935315b91ae4cf3bfcb0954278f12e5d6ceaf721265707fe6c38136f282c"
 token = "copyto"
 [[entry]]
 classification = "metadata_or_storage_preserving"
@@ -4162,6 +4186,14 @@ path = "ext/SHTnsKitAMDGPUExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
 snippet_sha256 = "bd8604414353cf714ee566498fe20c1f000a32c5653f81cdadbe0ea7104c1ea1"
+token = "copyto"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitAMDGPUExt.jl|copyto|daac7858f6fdb3ae4701c66b7f84619cdcdb7eed7745cbbadd9f9fa51145bef1|1"
+path = "ext/SHTnsKitAMDGPUExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "daac7858f6fdb3ae4701c66b7f84619cdcdb7eed7745cbbadd9f9fa51145bef1"
 token = "copyto"
 [[entry]]
 classification = "metadata_or_storage_preserving"
@@ -4389,11 +4421,11 @@ snippet_sha256 = "dc77dd86a4c91bd15a16046881983102becf7dd482b9b729a0e37e5f645536
 token = "array"
 [[entry]]
 classification = "metadata_or_storage_preserving"
-key = "ext/SHTnsKitGPUExt.jl|copyto|37eab0ae7d653b1452cd07d7ca17a3a1c0c9c6171b89027b7009b6cb34f9d44e|1"
+key = "ext/SHTnsKitGPUExt.jl|copyto|3a83c209c62b112b5475dfd9eda6fd6c96cba3fbc2912a0e5bd378dd175cbbe3|1"
 path = "ext/SHTnsKitGPUExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
-snippet_sha256 = "37eab0ae7d653b1452cd07d7ca17a3a1c0c9c6171b89027b7009b6cb34f9d44e"
+snippet_sha256 = "3a83c209c62b112b5475dfd9eda6fd6c96cba3fbc2912a0e5bd378dd175cbbe3"
 token = "copyto"
 [[entry]]
 classification = "metadata_or_storage_preserving"
@@ -4410,14 +4442,6 @@ path = "ext/SHTnsKitGPUExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
 snippet_sha256 = "41d7dd1bb74bed330586e3eca50dce35fa8fbca1c92c28f7ae317ff837a5d456"
-token = "copyto"
-[[entry]]
-classification = "metadata_or_storage_preserving"
-key = "ext/SHTnsKitGPUExt.jl|copyto|8505935315b91ae4cf3bfcb0954278f12e5d6ceaf721265707fe6c38136f282c|1"
-path = "ext/SHTnsKitGPUExt.jl"
-reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
-same_snippet_ordinal = 1
-snippet_sha256 = "8505935315b91ae4cf3bfcb0954278f12e5d6ceaf721265707fe6c38136f282c"
 token = "copyto"
 [[entry]]
 classification = "metadata_or_storage_preserving"
@@ -4490,6 +4514,14 @@ path = "ext/SHTnsKitGPUExt.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
 snippet_sha256 = "bd8604414353cf714ee566498fe20c1f000a32c5653f81cdadbe0ea7104c1ea1"
+token = "copyto"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "ext/SHTnsKitGPUExt.jl|copyto|daac7858f6fdb3ae4701c66b7f84619cdcdb7eed7745cbbadd9f9fa51145bef1|1"
+path = "ext/SHTnsKitGPUExt.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "daac7858f6fdb3ae4701c66b7f84619cdcdb7eed7745cbbadd9f9fa51145bef1"
 token = "copyto"
 [[entry]]
 classification = "metadata_or_storage_preserving"
@@ -4948,22 +4980,6 @@ same_snippet_ordinal = 1
 snippet_sha256 = "d65d439a430514bec28f40a9046c6d76136d1406504ddfa4ae484682cedd7703"
 token = "parent"
 [[entry]]
-classification = "bounded_pinned_mpi_staging"
-key = "ext/SHTnsKitParallelAMDGPUExt.jl|copyto|e19cfcd3b7231ca89d3074c3994d77eb2ed7354fe047b3f9a6e29800c4836363|1"
-path = "ext/SHTnsKitParallelAMDGPUExt.jl"
-reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
-same_snippet_ordinal = 1
-snippet_sha256 = "e19cfcd3b7231ca89d3074c3994d77eb2ed7354fe047b3f9a6e29800c4836363"
-token = "copyto"
-[[entry]]
-classification = "bounded_pinned_mpi_staging"
-key = "ext/SHTnsKitParallelAMDGPUExt.jl|copyto|fbe90ed9af971dfd7a39579e5045eb6dd59d1ba29817eea5044b8ffcd279d0b6|1"
-path = "ext/SHTnsKitParallelAMDGPUExt.jl"
-reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
-same_snippet_ordinal = 1
-snippet_sha256 = "fbe90ed9af971dfd7a39579e5045eb6dd59d1ba29817eea5044b8ffcd279d0b6"
-token = "copyto"
-[[entry]]
 classification = "metadata_or_storage_preserving"
 key = "ext/SHTnsKitParallelAMDGPUExt.jl|parent|0fd87b347a588674f60d098c0ebf10d444b158bca034735c93f0775c83e9f488|1"
 path = "ext/SHTnsKitParallelAMDGPUExt.jl"
@@ -5131,22 +5147,6 @@ reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synch
 same_snippet_ordinal = 1
 snippet_sha256 = "8026ced75be30a4ee79eaebf4700cb65b918ed607e1bfffc62b034da6b1691de"
 token = "vector"
-[[entry]]
-classification = "bounded_pinned_mpi_staging"
-key = "ext/SHTnsKitParallelCUDAExt.jl|copyto|e19cfcd3b7231ca89d3074c3994d77eb2ed7354fe047b3f9a6e29800c4836363|1"
-path = "ext/SHTnsKitParallelCUDAExt.jl"
-reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
-same_snippet_ordinal = 1
-snippet_sha256 = "e19cfcd3b7231ca89d3074c3994d77eb2ed7354fe047b3f9a6e29800c4836363"
-token = "copyto"
-[[entry]]
-classification = "bounded_pinned_mpi_staging"
-key = "ext/SHTnsKitParallelCUDAExt.jl|copyto|fbe90ed9af971dfd7a39579e5045eb6dd59d1ba29817eea5044b8ffcd279d0b6|1"
-path = "ext/SHTnsKitParallelCUDAExt.jl"
-reason = "explicit pinned MPI staging boundary; keep the transfer bounded, synchronized, and restored to the originating vendor before return"
-same_snippet_ordinal = 1
-snippet_sha256 = "fbe90ed9af971dfd7a39579e5045eb6dd59d1ba29817eea5044b8ffcd279d0b6"
-token = "copyto"
 [[entry]]
 classification = "metadata_or_storage_preserving"
 key = "ext/SHTnsKitParallelCUDAExt.jl|parent|0fd87b347a588674f60d098c0ebf10d444b158bca034735c93f0775c83e9f488|1"
@@ -5461,6 +5461,14 @@ snippet_sha256 = "ea8335a96441744247067b762ff405f7bd8280d46e3021c5fe4a409d66b81c
 token = "matrix"
 [[entry]]
 classification = "cpu_only"
+key = "src/device_utils.jl|array|7eaf32331fe761717ffb8f5d1925a016f43bfdc1f9298a09fe8987b35058261b|1"
+path = "src/device_utils.jl"
+reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
+same_snippet_ordinal = 1
+snippet_sha256 = "7eaf32331fe761717ffb8f5d1925a016f43bfdc1f9298a09fe8987b35058261b"
+token = "array"
+[[entry]]
+classification = "cpu_only"
 key = "src/device_utils.jl|array|e1837b100cd2264e6644875f445ce3d9adf377b968bf38091d80a2bdc0058079|1"
 path = "src/device_utils.jl"
 reason = "explicit host workspace in a CPU-only algorithm; never route a vendor-backed mathematical result through this allocation"
@@ -5509,11 +5517,19 @@ snippet_sha256 = "9cbe50e8315895f446adb1a807023200b52c480fce902048cf7d9e3ed4315e
 token = "cpu_constructor"
 [[entry]]
 classification = "metadata_or_storage_preserving"
-key = "src/device_utils.jl|parent|606ff6d414fb60837d348dc9f0a92893dd0088451657ebf5f969a20dda12ab71|1"
+key = "src/device_utils.jl|parent|19628567e2603bee2cfe98905b29d9737df12c286ec344c0f9771f049f6ecc0d|1"
 path = "src/device_utils.jl"
 reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
 same_snippet_ordinal = 1
-snippet_sha256 = "606ff6d414fb60837d348dc9f0a92893dd0088451657ebf5f969a20dda12ab71"
+snippet_sha256 = "19628567e2603bee2cfe98905b29d9737df12c286ec344c0f9771f049f6ecc0d"
+token = "parent"
+[[entry]]
+classification = "metadata_or_storage_preserving"
+key = "src/device_utils.jl|parent|48c94fca82878ae8f919d9ece70d70fddefd20945900057a267361e91b1fbe20|1"
+path = "src/device_utils.jl"
+reason = "metadata collection or storage-preserving parent/copy operation; verify that the destination retains the source storage family"
+same_snippet_ordinal = 1
+snippet_sha256 = "48c94fca82878ae8f919d9ece70d70fddefd20945900057a267361e91b1fbe20"
 token = "parent"
 [[entry]]
 classification = "metadata_or_storage_preserving"

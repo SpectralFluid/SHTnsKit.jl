@@ -36,6 +36,39 @@ ParallelGPUAdapter(name::Symbol, matches, array_type, device, gpu_aware,
 _pinned_storage(host::Array) =
     @static VERSION >= v"1.11.0-" ? host.ref.mem : host
 
+# Staged host buffers are contiguous `view(buffer, 1:n)` slices of a pinned
+# `Vector`, often reshaped. CUDA.jl, AMDGPU.jl and GPUArrays implement bulk
+# host/device `copyto!` only for `Array` hosts; any other host falls back to
+# Base's element-wise copy, which indexes device memory. Vendor adapters copy
+# through the parent `Array` at the slice's linear offset instead.
+_bulk_host_parent(host::Array) = (host, 1)
+_bulk_host_parent(host::Base.ReshapedArray) = _bulk_host_parent(parent(host))
+_bulk_host_parent(
+    host::SubArray{<:Any,1,<:Array,<:Tuple{AbstractUnitRange{Int}}},
+) = (parent(host), first(only(parentindices(host))))
+
+function _check_bulk_lengths(host, device)
+    length(host) == length(device) || throw(DimensionMismatch(
+        "host stage has $(length(host)) elements but the device array has " *
+        "$(length(device))",
+    ))
+    return nothing
+end
+
+function _bulk_device_to_host!(host, device)
+    _check_bulk_lengths(host, device)
+    buffer, offset = _bulk_host_parent(host)
+    copyto!(buffer, offset, device, 1, length(device))
+    return host
+end
+
+function _bulk_host_to_device!(device, host)
+    _check_bulk_lengths(host, device)
+    buffer, offset = _bulk_host_parent(host)
+    copyto!(device, 1, buffer, offset, length(device))
+    return device
+end
+
 const _PARALLEL_GPU_ADAPTERS = Dict{Symbol,WeakRef}()
 const _PARALLEL_GPU_ADAPTER_LOCK = ReentrantLock()
 
@@ -1138,11 +1171,14 @@ function exchange!(send, receive, comm;
                    collective=MPI.Alltoall!)
     alias_flags = Base.mightalias(send, receive) ? UInt32(0x2000) : UInt32(0)
     _collective_validation_error(comm, alias_flags, :exchange)
+    # Host-resident ranks take part in the residency preflight too. Residency
+    # may vary by rank, and a CPU early return would otherwise reach the
+    # exchange while GPU ranks are still in the preflight collectives.
+    _validate_parallel_storage!(comm, :exchange, send, receive; adapter)
     receive_adapter = _parallel_gpu_adapter(receive)
     if adapter === nothing && receive_adapter === nothing
         return collective(send, receive, comm)
     end
-    _validate_parallel_storage!(comm, :exchange, send, receive; adapter)
     adapter !== nothing && adapter.matches(send) && adapter.matches(receive) &&
         (receive_adapter === nothing || adapter.name === receive_adapter.name) ||
         throw(ArgumentError(

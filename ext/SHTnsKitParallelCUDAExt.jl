@@ -37,8 +37,8 @@ const CUDA_PARALLEL_ADAPTER = ParallelExt.ParallelGPUAdapter(
     _ -> MPI.has_cuda(),
     _ -> CUDA.synchronize(),
     _cuda_pinned,
-    (host, device) -> copyto!(host, device),
-    (device, host) -> copyto!(device, host),
+    ParallelExt._bulk_device_to_host!,
+    ParallelExt._bulk_host_to_device!,
 )
 
 function __init__()

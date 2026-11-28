@@ -1293,48 +1293,38 @@ end
 
 """Apply one general rotation to SHTns real-packed device coefficients."""
 @kernel function rotation_real_kernel!(output, input, offsets, values,
-                                       input_scales, output_scales,
-                                       alpha, gamma, lmax, mmax)
+                                       input_factors, output_factors, lmax, mmax)
     index = @index(Global, Linear)
     if index <= length(output)
         l, m = _rotation_lm_from_packed(index - 1, lmax, mmax)
-        RT = typeof(alpha)
         offset = Int(offsets[l + 1])
         acc = zero(eltype(output))
         @inbounds for mp in -min(l, mmax):min(l, mmax)
             packed_index = _real_packed_device_index(l, abs(mp), lmax, 1) + 1
             value = mp < 0 ? conj(input[packed_index]) : input[packed_index]
             cplx_index = _lm_cplx_device_index(l, mp, mmax) + 1
-            scale = input_scales[cplx_index]
-            epsilon = mp < 0 && isodd(mp) ? -one(RT) : one(RT)
-            value *= scale * epsilon * cis(-RT(mp) * gamma)
+            value *= input_factors[cplx_index]
             acc += _rotation_block_value(values, offset, l, m, mp) * value
         end
         cplx_index = _lm_cplx_device_index(l, m, mmax) + 1
-        output[index] = acc * cis(-RT(m) * alpha) * output_scales[cplx_index]
+        output[index] = acc * output_factors[cplx_index]
     end
 end
 
 """Apply one general rotation to full LM_cplx device coefficients."""
 @kernel function rotation_cplx_kernel!(output, input, offsets, values,
-                                       input_scales, output_scales,
-                                       alpha, gamma, lmax, mmax)
+                                       input_factors, output_factors, lmax, mmax)
     index = @index(Global, Linear)
     if index <= length(output)
         l, m = _rotation_lm_from_cplx(index - 1, lmax, mmax)
-        RT = typeof(alpha)
         offset = Int(offsets[l + 1])
         acc = zero(eltype(output))
         @inbounds for mp in -min(l, mmax):min(l, mmax)
             source_index = _lm_cplx_device_index(l, mp, mmax) + 1
-            epsilon = mp < 0 && isodd(mp) ? -one(RT) : one(RT)
-            value = input[source_index] * input_scales[source_index] * epsilon *
-                    cis(-RT(mp) * gamma)
+            value = input[source_index] * input_factors[source_index]
             acc += _rotation_block_value(values, offset, l, m, mp) * value
         end
-        epsilon = m < 0 && isodd(m) ? -one(RT) : one(RT)
-        output[index] = epsilon * acc * cis(-RT(m) * alpha) *
-                        output_scales[index]
+        output[index] = acc * output_factors[index]
     end
 end
 

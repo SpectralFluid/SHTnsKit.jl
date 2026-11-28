@@ -123,7 +123,7 @@ function wrapper_module(vendor)
             Core.eval(sandbox, expr)
         elseif expr.head === :macrocall &&
                expr.args[1] in (Symbol("@inline"), GlobalRef(Core, Symbol("@doc"))) &&
-               last(expr.args) isa Expr && last(expr.args).head === :function &&
+               last(expr.args) isa Expr && last(expr.args).head in (:function, :(=)) &&
                function_name(last(expr.args)) in functions
             Core.eval(sandbox, expr)
         end
@@ -192,12 +192,16 @@ end
             spatialout = similar(fields)
             bins = use_rfft ? cfg.nlon ÷ 2 + 1 : cfg.nlon
             scratch = zeros(Complex{T}, cfg.nlat, bins, 2)
-            for fft_batch in (nothing, scratch)
+            padded = fill(Complex{T}(17), cfg.nlat, 2bins, 2)
+            strided = view(padded, :, 1:2:2bins, :)
+            for fft_batch in (nothing, scratch, strided)
                 @test batch_analysis!(cfg, batchout, fields; use_rfft, fft_batch) === batchout
                 @test batchout ≈ coefficients atol=tol rtol=tol
                 @test batch_synthesis!(cfg, spatialout, coefficients; use_rfft, fft_batch) === spatialout
                 @test spatialout ≈ fields atol=tol rtol=tol
             end
+            @test all(==(17), view(padded, :, 2:2:2bins, :))
+            @test any(!=(17), strided)
             vt, vp = synthesis_sphtor(cfg, coeff, 2coeff)
             sout, tout = similar(coeff), similar(coeff)
             @test vector_analysis!(cfg, cfg, sout, tout, vt, vp; use_rfft) === (sout, tout)
@@ -207,6 +211,23 @@ end
             @test vector_synthesis!(cfg, cfg, vtout, vpout, coeff, 2coeff; use_rfft) === (vtout, vpout)
             @test vtout ≈ vt atol=tol rtol=tol
             @test vpout ≈ vp atol=tol rtol=tol
+        end
+    end
+    @testset "Normalize coefficients before narrowing the destination" begin
+        cfg = create_gauss_config(2, 4; nlon=7, norm=:fourpi)
+        field = fill(1.5e38, cfg.nlat, cfg.nlon)
+        fields = cat(field, -field; dims=3)
+        expected = ComplexF32.(analysis(cfg, field))
+        @test expected[1, 1] ≈ 1.5f38
+        for (wrapper, prefix) in ((rocm, "amdgpu"), (cuda, "cuda")), use_rfft in (false, true)
+            analyze! = getproperty(wrapper, Symbol("_", prefix, "_scalar_analysis_direct!"))
+            batch! = getproperty(wrapper, Symbol("_", prefix, "_batch_analysis_direct!"))
+            out = similar(expected)
+            batch = similar(expected, size(expected)..., 2)
+            analyze!(cfg, cfg, out, field; use_rfft)
+            batch!(cfg, batch, fields; use_rfft)
+            @test isfinite(out[1, 1]) && out[1, 1] ≈ expected[1, 1]
+            @test batch[1, 1, :] ≈ [expected[1, 1], -expected[1, 1]]
         end
     end
     @testset "Rotation blocks follow the effective angles" begin
@@ -226,12 +247,10 @@ end
             tol = T === Float32 ? 2e-5 : 1e-12
             for rotation in (keyword, setter)    # keyword first: setter must not reuse it
                 b = blocks(rotation, T)
-                α, _, γ = SHTnsKit._rotation_zyz_angles(rotation, T)
-                @test (b.alpha, b.gamma) == (α, γ)
                 R = similar(Q)
                 GPUCommon.rotation_real_kernel!(KernelAbstractions.CPU())(
-                    R, Q, b.offsets, b.values, b.input_scales, b.output_scales,
-                    b.alpha, b.gamma, L, L; ndrange=length(Q),
+                    R, Q, b.offsets, b.values, b.input_factors, b.output_factors,
+                    L, L; ndrange=length(Q),
                 )
                 KernelAbstractions.synchronize(KernelAbstractions.CPU())
                 expected = similar(Q)

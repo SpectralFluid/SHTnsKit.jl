@@ -6,6 +6,7 @@ using GPUArraysCore
 import KernelAbstractions
 
 include("../wrapper_reference.jl")
+include("../test_transform_storage.jl")
 include("../test_mres.jl")
 if CUDA.functional()
     run_gpu_mres_tests()
@@ -339,6 +340,7 @@ SHTnsKit.synthesis(::SHTConfig, ::SafeFallbackArray; kwargs...) =
     )
     test_angle_axis_pi_singularity()
     if CUDA.functional()
+        test_transform_storage(CUDA, CuArray)
         loop_values = CUDA.zeros(Int32, 8)
         @sht_loop loop_values[i] = Int32(i) over i ∈ eachindex(loop_values)
         @test Array(loop_values) == Int32.(1:8)
@@ -550,13 +552,13 @@ SHTnsKit.synthesis(::SHTConfig, ::SafeFallbackArray; kwargs...) =
         Tuple{SHTConfig,Matrix{ComplexF32},Matrix{ComplexF32}},
     ).module === SHTnsKit
     vector_pipeline = split(
-        split(source, "function _cuda_vector_analysis"; limit=2)[2],
+        split(source, r"(?m)^_cuda_vector_analysis\("; limit=2)[2],
         "@inline function _cuda_lcap"; limit=2,
     )[1]
     @test !occursin(r"\bArray\s*\(", vector_pipeline)
     @test !occursin(r"\bcollect\s*\(", vector_pipeline)
     ordinary_pipeline = split(
-        split(source, "function _cuda_scalar_analysis"; limit=2)[2],
+        split(source, r"(?m)^_cuda_scalar_analysis_direct!\("; limit=2)[2],
         "function _gpu_adapter_analysis"; limit=2,
     )[1]
     @test !occursin(r"\bArray\s*\(", ordinary_pipeline)

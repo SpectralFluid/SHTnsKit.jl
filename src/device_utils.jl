@@ -40,6 +40,50 @@ end
 # into a dense array on the same device. Other values pass through unchanged.
 _gpu_adapter_dense(adapter, value) = value
 
+# An allocation identifies its physical GPU even if another device is active
+# in the calling task. CPU arrays and single-device adapters need no switch.
+_allocation_device(::Nothing) = nothing
+function _allocation_device(a::AbstractArray)
+    p = parent(a)
+    return p isa AbstractArray && p !== a ? _allocation_device(p) : nothing
+end
+
+_on_allocation_device(f, ::Nothing) = f()
+
+function _with_gpu_device(f, values...)
+    device = nothing
+    for value in values
+        owner = _allocation_device(value)
+        owner === nothing && continue
+        if device === nothing
+            device = owner
+        elseif device != owner
+            throw(ArgumentError("GPU operands must be on one device, got $device and $owner"))
+        end
+    end
+    return _on_allocation_device(f, device)
+end
+
+function _with_gpu_operands(f, operation::Symbol, prototype, values::Tuple)
+    selection = prototype
+    if selection === nothing
+        index = findfirst(value -> on_device(value) isa GPU, values)
+        index === nothing || (selection = values[index])
+    end
+    adapter = _gpu_adapter(selection; operation)
+    for value in values
+        if on_device(value) isa GPU && !_gpu_adapter_matches(adapter, value)
+            throw(ArgumentError("$operation operands and GPU prototype use different vendors"))
+        end
+    end
+    return _with_gpu_device(prototype, values...) do
+        placed = map(values) do value
+            _gpu_adapter_matches(adapter, value) ? value : _gpu_adapter_adapt(adapter, value)
+        end
+        f(adapter, placed)
+    end
+end
+
 function _gpu_adapter_analysis(adapter, cfg, field; kwargs...)
     throw(BackendUnavailableError(:analysis, "the selected GPU adapter does not yet implement scalar analysis"))
 end
@@ -165,11 +209,9 @@ function to_device(::GPU, value, prototype)
     prototype isa AbstractArray && on_device(prototype) isa GPU || throw(ArgumentError(
         "GPU placement prototype must already be a device array, got $(typeof(prototype))",
     ))
-    adapter = _gpu_adapter(prototype; operation=:to_device)
-    if on_device(value) isa GPU && !_gpu_adapter_matches(adapter, value)
-        throw(ArgumentError("value and GPU prototype use different vendors"))
+    return _with_gpu_operands(:to_device, prototype, (value,)) do _, placed
+        only(placed)
     end
-    return _gpu_adapter_matches(adapter, value) ? value : _gpu_adapter_adapt(adapter, value)
 end
 
 # Preserve the original value-first order and add the prototype form.
@@ -182,8 +224,11 @@ _to_cpu(value::Array) = value
 function _to_cpu(value::AbstractArray)
     # Gather wrapped device storage into a dense array on its device first, so
     # the transfer is one bulk copy instead of per-element reads.
-    if on_device(value) isa GPU && parent(value) !== value
-        value = similar(value, eltype(value), size(value)) .= value
+    if on_device(value) isa GPU
+        return _with_gpu_device(value) do
+            dense = parent(value) === value ? value : (similar(value, eltype(value), size(value)) .= value)
+            Array(dense)
+        end
     end
     return Array(value)
 end
@@ -218,23 +263,15 @@ function synthesis_cplx(::CPU, cfg::SHTConfig, coefficients::AbstractMatrix)
 end
 
 function analysis(::GPU, cfg::SHTConfig, field::AbstractMatrix; prototype=nothing, kwargs...)
-    selection = prototype === nothing && on_device(field) isa GPU ? field : prototype
-    adapter = _gpu_adapter(selection; operation=:analysis)
-    if on_device(field) isa GPU && !_gpu_adapter_matches(adapter, field)
-        throw(ArgumentError("analysis input and GPU prototype use different vendors"))
+    return _with_gpu_operands(:analysis, prototype, (field,)) do adapter, placed
+        _gpu_adapter_analysis(adapter, cfg, only(placed); kwargs...)
     end
-    device_field = _gpu_adapter_matches(adapter, field) ? field : _gpu_adapter_adapt(adapter, field)
-    return _gpu_adapter_analysis(adapter, cfg, device_field; kwargs...)
 end
 
 function synthesis(::GPU, cfg::SHTConfig, coefficients::AbstractMatrix; prototype=nothing, kwargs...)
-    selection = prototype === nothing && on_device(coefficients) isa GPU ? coefficients : prototype
-    adapter = _gpu_adapter(selection; operation=:synthesis)
-    if on_device(coefficients) isa GPU && !_gpu_adapter_matches(adapter, coefficients)
-        throw(ArgumentError("synthesis input and GPU prototype use different vendors"))
+    return _with_gpu_operands(:synthesis, prototype, (coefficients,)) do adapter, placed
+        _gpu_adapter_synthesis(adapter, cfg, only(placed); kwargs...)
     end
-    device_coefficients = _gpu_adapter_matches(adapter, coefficients) ? coefficients : _gpu_adapter_adapt(adapter, coefficients)
-    return _gpu_adapter_synthesis(adapter, cfg, device_coefficients; kwargs...)
 end
 
 function synthesis_cplx(::GPU, cfg::SHTConfig, coefficients::AbstractMatrix;

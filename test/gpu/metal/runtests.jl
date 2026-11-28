@@ -477,6 +477,23 @@ end
     check_device(synthesis(cfg, y), synthesis(cfg, a))
     check_device(synthesis_cplx(cfg, y), synthesis_cplx(cfg, a))
     @test_throws BackendUnavailableError synthesis!(cfg, MtlArray(field), y)
+    for storage in (Metal.PrivateStorage, Metal.SharedStorage)
+        source = MtlArray{ComplexF32,2,storage}(permutedims(a))
+        wrapped = view(PermutedDimsArray(source, (2, 1)), :, :)
+        for f in (synthesis_sph_cplx, synthesis_tor_cplx)
+            check_components(f(cfg, wrapped), f(cfg, a))
+        end
+        for f in (synthesis_sph_l_cplx, synthesis_tor_l_cplx)
+            check_components(f(cfg, wrapped, 2), f(cfg, a, 2))
+        end
+        for (f, f!) in ((divergence_from_spheroidal, divergence_from_spheroidal!),
+                        (spheroidal_from_divergence, spheroidal_from_divergence!),
+                        (vorticity_from_toroidal, vorticity_from_toroidal!),
+                        (toroidal_from_vorticity, toroidal_from_vorticity!))
+            check_device(f(cfg, wrapped), f(cfg, a))
+            @test_throws BackendUnavailableError f!(cfg, wrapped, source)
+        end
+    end
 
     # Batches, packed and single-order transforms, axisymmetric profiles.
     nested(h, perm) = view(PermutedDimsArray(MtlArray(permutedims(h, perm)), perm),
@@ -495,6 +512,7 @@ end
     mode = complex.(field[:, 3], field[:, 4])
     check_device(analysis_packed_ml(cfg, 1, column(mode), 3), analysis_packed_ml(cfg, 1, mode, 3))
     flat = vec(field)
+    check_device(analysis_packed(cfg, column(flat)), analysis_packed(cfg, flat))
     packed = analysis_packed_l(cfg, flat, 3)
     check_device(analysis_packed_l(cfg, column(flat), 3), packed)
     check_device(synthesis_packed_l(cfg, column(packed), 3), synthesis_packed_l(cfg, packed, 3))

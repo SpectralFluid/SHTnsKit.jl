@@ -152,24 +152,6 @@ function analysis_qst(cfg::SHTConfig, Vr::AbstractMatrix, Vt::AbstractMatrix,
     return Qlm, Slm, Tlm
 end
 
-function _qst_gpu_operands(operation::Symbol, prototype, values::Tuple)
-    selection = prototype
-    if selection === nothing
-        index = findfirst(value -> on_device(value) isa GPU, values)
-        index === nothing || (selection = values[index])
-    end
-    adapter = _gpu_adapter(selection; operation)
-    for value in values
-        if on_device(value) isa GPU && !_gpu_adapter_matches(adapter, value)
-            throw(ArgumentError("$operation operands and GPU prototype use different vendors"))
-        end
-    end
-    operands = map(values) do value
-        _gpu_adapter_matches(adapter, value) ? value : _gpu_adapter_adapt(adapter, value)
-    end
-    return adapter, operands
-end
-
 # Generic methods run CPU loops, so GPU storage must not reach them. Return
 # every operand on that GPU, with CPU operands copied there and deeper wrappers
 # copied into dense device arrays, so the caller can dispatch again to the
@@ -177,8 +159,9 @@ end
 # because no vendor method accepts them.
 function _rerouted_operands(operation::Symbol, values::Tuple)
     any(value -> on_device(value) isa GPU, values) || return nothing
-    adapter, placed = _qst_gpu_operands(operation, nothing, values)
-    operands = map(value -> _gpu_adapter_dense(adapter, value), placed)
+    operands = _with_gpu_operands(operation, nothing, values) do adapter, placed
+        map(value -> _gpu_adapter_dense(adapter, value), placed)
+    end
     all(map(===, operands, values)) && throw(_no_gpu_method_error(operation, values))
     return operands
 end
@@ -225,32 +208,24 @@ function synthesis_qst(::GPU, cfg::SHTConfig, Qlm::AbstractMatrix,
                        prototype=nothing, real_output::Bool=true,
                        use_rfft::Bool=false)
     validate_qst_dimensions(Qlm, Slm, Tlm, cfg)
-    adapter, operands = _qst_gpu_operands(
-        :synthesis_qst, prototype, (Qlm, Slm, Tlm),
-    )
-    Qd, Sd, Td = _qst_promoted(operands)
-    Vr = _gpu_adapter_synthesis(
-        adapter, cfg, Qd; real_output, use_rfft,
-    )
-    Vt, Vp = _gpu_adapter_synthesis_sphtor(
-        adapter, cfg, Sd, Td; real_output, use_rfft,
-    )
-    return Vr, Vt, Vp
+    return _with_gpu_operands(:synthesis_qst, prototype, (Qlm, Slm, Tlm)) do adapter, operands
+        Qd, Sd, Td = _qst_promoted(operands)
+        Vr = _gpu_adapter_synthesis(adapter, cfg, Qd; real_output, use_rfft)
+        Vt, Vp = _gpu_adapter_synthesis_sphtor(adapter, cfg, Sd, Td; real_output, use_rfft)
+        return Vr, Vt, Vp
+    end
 end
 
 function analysis_qst(::GPU, cfg::SHTConfig, Vr::AbstractMatrix,
                       Vt::AbstractMatrix, Vp::AbstractMatrix;
                       prototype=nothing, use_rfft::Bool=false)
     validate_vector_spatial_dimensions(Vr, Vt, Vp, cfg)
-    adapter, operands = _qst_gpu_operands(
-        :analysis_qst, prototype, (Vr, Vt, Vp),
-    )
-    Vrd, Vtd, Vpd = _qst_promoted(operands)
-    Qlm = _gpu_adapter_analysis(adapter, cfg, Vrd; use_rfft)
-    Slm, Tlm = _gpu_adapter_analysis_sphtor(
-        adapter, cfg, Vtd, Vpd; use_rfft,
-    )
-    return Qlm, Slm, Tlm
+    return _with_gpu_operands(:analysis_qst, prototype, (Vr, Vt, Vp)) do adapter, operands
+        Vrd, Vtd, Vpd = _qst_promoted(operands)
+        Qlm = _gpu_adapter_analysis(adapter, cfg, Vrd; use_rfft)
+        Slm, Tlm = _gpu_adapter_analysis_sphtor(adapter, cfg, Vtd, Vpd; use_rfft)
+        return Qlm, Slm, Tlm
+    end
 end
 
 function synthesis_qst(::CPU, cfg::SHTConfig, Qlm::AbstractMatrix,

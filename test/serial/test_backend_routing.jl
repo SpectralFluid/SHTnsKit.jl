@@ -12,9 +12,27 @@ mutable struct FailingRoutingTestAdapter
     message::String
 end
 
+struct RoutingTestDevice
+    index::Int
+end
+const routing_active_device = Ref(RoutingTestDevice(0))
+
 struct RoutingTestArray{T,N,A<:AbstractArray{T,N}} <: AbstractArray{T,N}
     parent::A
     vendor::Symbol
+    device::RoutingTestDevice
+end
+RoutingTestArray(data, vendor) = RoutingTestArray(data, vendor, routing_active_device[])
+
+SHTnsKit._allocation_device(array::RoutingTestArray) = array.device
+function SHTnsKit._on_allocation_device(f, device::RoutingTestDevice)
+    previous = routing_active_device[]
+    routing_active_device[] = device
+    try
+        return f()
+    finally
+        routing_active_device[] = previous
+    end
 end
 
 Base.size(array::RoutingTestArray) = size(array.parent)
@@ -103,6 +121,17 @@ end
         @test placed isa RoutingTestArray
         @test placed.vendor == :a
         @test to_device(host, GPU(), prototype).vendor == :a
+
+        other = RoutingTestArray(host, :a, RoutingTestDevice(1))
+        @test to_device(GPU(), host, other).device == other.device
+        @test_throws ArgumentError to_device(GPU(), prototype, other)
+        @test_throws ArgumentError analysis_qst(GPU(), create_gauss_config(1, 2; nlon=3),
+                                               other, host, prototype)
+        @test_throws ErrorException SHTnsKit._with_gpu_device(view(other, :, :)) do
+            @test routing_active_device[] == other.device
+            error("test restoration on failure")
+        end
+        @test routing_active_device[] == prototype.device
 
         cfg = create_gauss_config(1, 2; nlon=4)
         @test_throws ArgumentError analysis(CPU(), cfg, prototype)

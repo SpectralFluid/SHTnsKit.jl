@@ -14,6 +14,8 @@
 # - test_dist_plan_alloc.jl    : DistAnalysisPlan correctness + per-call allocation budget (mpiexec)
 # - test_mpi_audit_fixes.jl    : Regressions for the 2026-08 distributed audit fixes (mpiexec)
 # - test_mpi_2d_alignment.jl   : 2D spectral-plan alignment preconditions (mpiexec, 4 ranks)
+# - test_mpi_gpu_vendor_boundary.jl : MPI+GPU firewall and staging with mock device storage
+#                                 (mpiexec, 2 ranks; its single-rank cases also run here)
 #
 # To run MPI tests:
 #   mpiexec -n 4 julia --project test/parallel/test_mpi_comprehensive.jl
@@ -24,6 +26,7 @@
 #   mpiexec -n 4 julia --project test/parallel/test_mpi_audit_fixes.jl
 #   mpiexec -n 4 julia --project test/parallel/test_mpi_2d_alignment.jl
 #   mpiexec -n 1 julia --project test/parallel/test_parallel_ad_storage.jl
+#   mpiexec -n 2 julia --project test/parallel/test_mpi_gpu_vendor_boundary.jl
 
 using Test
 
@@ -34,10 +37,12 @@ using Test
     include("test_packed_storage.jl")
     include("test_threading.jl")
     include("test_parallel_ad_storage.jl")
+    include("test_mpi_gpu_vendor_boundary.jl")
 end
 
 # Multi-rank MPI tests are not included here; the single-rank ParallelAD
-# storage-boundary regression above is intentionally part of Pkg.test().
+# storage-boundary regression and the MPI+GPU vendor-boundary cases above are
+# intentionally part of Pkg.test(). The latter also has two-rank cases.
 # Run them separately with:
 #   mpiexec -n 4 julia --project test/parallel/test_mpi_comprehensive.jl
 #   mpiexec -n 4 julia --project test/parallel/test_mpi_extended.jl

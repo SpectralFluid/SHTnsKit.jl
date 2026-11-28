@@ -313,34 +313,16 @@ end
 function analysis_sphtor(::GPU, cfg::SHTConfig, Vt::AbstractMatrix,
                           Vp::AbstractMatrix; prototype=nothing, kwargs...)
     _validate_robert_analysis(cfg)
-    selection = prototype
-    selection === nothing && on_device(Vt) isa GPU && (selection = Vt)
-    selection === nothing && on_device(Vp) isa GPU && (selection = Vp)
-    adapter = _gpu_adapter(selection; operation=:analysis_sphtor)
-    for value in (Vt, Vp)
-        if on_device(value) isa GPU && !_gpu_adapter_matches(adapter, value)
-            throw(ArgumentError("vector inputs and GPU prototype use different vendors"))
-        end
+    return _with_gpu_operands(:analysis_sphtor, prototype, (Vt, Vp)) do adapter, placed
+        _gpu_adapter_analysis_sphtor(adapter, cfg, placed...; kwargs...)
     end
-    Vtd = _gpu_adapter_matches(adapter, Vt) ? Vt : _gpu_adapter_adapt(adapter, Vt)
-    Vpd = _gpu_adapter_matches(adapter, Vp) ? Vp : _gpu_adapter_adapt(adapter, Vp)
-    return _gpu_adapter_analysis_sphtor(adapter, cfg, Vtd, Vpd; kwargs...)
 end
 
 function synthesis_sphtor(::GPU, cfg::SHTConfig, Slm::AbstractMatrix,
                            Tlm::AbstractMatrix; prototype=nothing, kwargs...)
-    selection = prototype
-    selection === nothing && on_device(Slm) isa GPU && (selection = Slm)
-    selection === nothing && on_device(Tlm) isa GPU && (selection = Tlm)
-    adapter = _gpu_adapter(selection; operation=:synthesis_sphtor)
-    for value in (Slm, Tlm)
-        if on_device(value) isa GPU && !_gpu_adapter_matches(adapter, value)
-            throw(ArgumentError("vector coefficients and GPU prototype use different vendors"))
-        end
+    return _with_gpu_operands(:synthesis_sphtor, prototype, (Slm, Tlm)) do adapter, placed
+        _gpu_adapter_synthesis_sphtor(adapter, cfg, placed...; kwargs...)
     end
-    Sd = _gpu_adapter_matches(adapter, Slm) ? Slm : _gpu_adapter_adapt(adapter, Slm)
-    Td = _gpu_adapter_matches(adapter, Tlm) ? Tlm : _gpu_adapter_adapt(adapter, Tlm)
-    return _gpu_adapter_synthesis_sphtor(adapter, cfg, Sd, Td; kwargs...)
 end
 
 """
@@ -686,9 +668,10 @@ end
 
 function synthesis_sph(::GPU, cfg::SHTConfig, Slm::AbstractMatrix;
                        prototype=nothing, kwargs...)
-    zeroT = similar(Slm)
-    fill!(zeroT, zero(eltype(zeroT)))
-    return synthesis_sphtor(GPU(), cfg, Slm, zeroT; prototype, kwargs...)
+    return _with_gpu_operands(:synthesis_sph, prototype, (Slm,)) do adapter, placed
+        s = only(placed)
+        _gpu_adapter_synthesis_sphtor(adapter, cfg, s, fill!(similar(s), zero(eltype(s))); kwargs...)
+    end
 end
 
 """
@@ -698,6 +681,8 @@ Complex-output spheroidal-only synthesis without allocating a dense zero
 toroidal spectrum.
 """
 function synthesis_sph_cplx(cfg::SHTConfig, Slm::AbstractMatrix)
+    operands = _rerouted_operands(:synthesis_sph_cplx, (Slm,))
+    operands === nothing || return synthesis_sph_cplx(cfg, operands...)
     Tlm_zero = _zero_spectral_matrix(eltype(Slm), cfg)
     return _synthesis_sphtor(cfg, Slm, Tlm_zero, Val(false), Val(false))
 end
@@ -725,9 +710,10 @@ end
 
 function synthesis_tor(::GPU, cfg::SHTConfig, Tlm::AbstractMatrix;
                        prototype=nothing, kwargs...)
-    zeroS = similar(Tlm)
-    fill!(zeroS, zero(eltype(zeroS)))
-    return synthesis_sphtor(GPU(), cfg, zeroS, Tlm; prototype, kwargs...)
+    return _with_gpu_operands(:synthesis_tor, prototype, (Tlm,)) do adapter, placed
+        t = only(placed)
+        _gpu_adapter_synthesis_sphtor(adapter, cfg, fill!(similar(t), zero(eltype(t))), t; kwargs...)
+    end
 end
 
 """
@@ -737,6 +723,8 @@ Complex-output toroidal-only synthesis without allocating a dense zero
 spheroidal spectrum.
 """
 function synthesis_tor_cplx(cfg::SHTConfig, Tlm::AbstractMatrix)
+    operands = _rerouted_operands(:synthesis_tor_cplx, (Tlm,))
+    operands === nothing || return synthesis_tor_cplx(cfg, operands...)
     Slm_zero = _zero_spectral_matrix(eltype(Tlm), cfg)
     return _synthesis_sphtor(cfg, Slm_zero, Tlm, Val(false), Val(false))
 end
@@ -754,6 +742,8 @@ Return divergence spectral coefficients δ_lm corresponding to spheroidal modes
 via δ_lm = −l(l+1) S_lm (`δ_{00} = 0`).
 """
 function divergence_from_spheroidal(cfg::SHTConfig, Slm::AbstractMatrix)
+    operands = _rerouted_operands(:divergence_from_spheroidal, (Slm,))
+    operands === nothing || return divergence_from_spheroidal(cfg, operands...)
     δ = similar(Slm)
     return divergence_from_spheroidal!(cfg, δ, Slm)
 end
@@ -770,6 +760,7 @@ function divergence_from_spheroidal!(::CPU, cfg::SHTConfig, δ::AbstractMatrix,
 end
 
 function divergence_from_spheroidal!(cfg::SHTConfig, δ::AbstractMatrix, Slm::AbstractMatrix)
+    _require_host_operands(:divergence_from_spheroidal!, (δ, Slm))
     size(δ) == size(Slm) || throw(DimensionMismatch("divergence output dims"))
     expected = (cfg.lmax + 1, cfg.mmax + 1)
     size(Slm) == expected || throw(DimensionMismatch("spectral input dims"))
@@ -788,6 +779,8 @@ end
 Invert δ_lm = −l(l+1) S_lm for l ≥ 1 to recover spheroidal coefficients.
 """
 function spheroidal_from_divergence(cfg::SHTConfig, δlm::AbstractMatrix)
+    operands = _rerouted_operands(:spheroidal_from_divergence, (δlm,))
+    operands === nothing || return spheroidal_from_divergence(cfg, operands...)
     Slm = similar(δlm)
     return spheroidal_from_divergence!(cfg, Slm, δlm)
 end
@@ -804,6 +797,7 @@ function spheroidal_from_divergence!(::CPU, cfg::SHTConfig, Slm::AbstractMatrix,
 end
 
 function spheroidal_from_divergence!(cfg::SHTConfig, Slm::AbstractMatrix, δlm::AbstractMatrix)
+    _require_host_operands(:spheroidal_from_divergence!, (Slm, δlm))
     size(Slm) == size(δlm) || throw(DimensionMismatch("spheroidal output dims"))
     expected = (cfg.lmax + 1, cfg.mmax + 1)
     size(δlm) == expected || throw(DimensionMismatch("spectral input dims"))
@@ -824,6 +818,8 @@ end
 Return vorticity spectral coefficients ζ_lm = −l(l+1) T_lm.
 """
 function vorticity_from_toroidal(cfg::SHTConfig, Tlm::AbstractMatrix)
+    operands = _rerouted_operands(:vorticity_from_toroidal, (Tlm,))
+    operands === nothing || return vorticity_from_toroidal(cfg, operands...)
     ζ = similar(Tlm)
     return vorticity_from_toroidal!(cfg, ζ, Tlm)
 end
@@ -840,6 +836,7 @@ function vorticity_from_toroidal!(::CPU, cfg::SHTConfig, ζ::AbstractMatrix,
 end
 
 function vorticity_from_toroidal!(cfg::SHTConfig, ζ::AbstractMatrix, Tlm::AbstractMatrix)
+    _require_host_operands(:vorticity_from_toroidal!, (ζ, Tlm))
     size(ζ) == size(Tlm) || throw(DimensionMismatch("vorticity output dims"))
     expected = (cfg.lmax + 1, cfg.mmax + 1)
     size(Tlm) == expected || throw(DimensionMismatch("spectral input dims"))
@@ -858,6 +855,8 @@ end
 Recover toroidal stream function coefficients from vorticity spectra.
 """
 function toroidal_from_vorticity(cfg::SHTConfig, ζlm::AbstractMatrix)
+    operands = _rerouted_operands(:toroidal_from_vorticity, (ζlm,))
+    operands === nothing || return toroidal_from_vorticity(cfg, operands...)
     Tlm = similar(ζlm)
     return toroidal_from_vorticity!(cfg, Tlm, ζlm)
 end
@@ -874,6 +873,7 @@ function toroidal_from_vorticity!(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix,
 end
 
 function toroidal_from_vorticity!(cfg::SHTConfig, Tlm::AbstractMatrix, ζlm::AbstractMatrix)
+    _require_host_operands(:toroidal_from_vorticity!, (Tlm, ζlm))
     size(Tlm) == size(ζlm) || throw(DimensionMismatch("toroidal output dims"))
     expected = (cfg.lmax + 1, cfg.mmax + 1)
     size(ζlm) == expected || throw(DimensionMismatch("spectral input dims"))
@@ -1006,6 +1006,8 @@ function synthesis_sph_l(::CPU, cfg::SHTConfig, Slm::AbstractMatrix,
 end
 
 function synthesis_sph_l_cplx(cfg::SHTConfig, Slm::AbstractMatrix, ltr::Integer)
+    operands = _rerouted_operands(:synthesis_sph_l_cplx, (Slm,))
+    operands === nothing || return synthesis_sph_l_cplx(cfg, operands..., ltr)
     Tlm_zero = _zero_spectral_matrix(eltype(Slm), cfg)
     return _synthesis_sphtor_l(cfg, Slm, Tlm_zero, ltr, Val(false))
 end
@@ -1033,6 +1035,8 @@ function synthesis_tor_l(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix,
 end
 
 function synthesis_tor_l_cplx(cfg::SHTConfig, Tlm::AbstractMatrix, ltr::Integer)
+    operands = _rerouted_operands(:synthesis_tor_l_cplx, (Tlm,))
+    operands === nothing || return synthesis_tor_l_cplx(cfg, operands..., ltr)
     Slm_zero = _zero_spectral_matrix(eltype(Tlm), cfg)
     return _synthesis_sphtor_l(cfg, Slm_zero, Tlm, ltr, Val(false))
 end

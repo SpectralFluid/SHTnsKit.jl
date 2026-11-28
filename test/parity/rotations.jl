@@ -98,8 +98,8 @@ function test_angle_axis_pi_singularity()
                 actual_blocks = SHTnsKit._rotation_host_blocks(actual, T)
                 expected_blocks = SHTnsKit._rotation_host_blocks(expected, T)
                 @test actual_blocks.values ≈ expected_blocks.values atol=tol rtol=tol
-                @test cis(actual_blocks.alpha) ≈ cis(expected_blocks.alpha) atol=tol
-                @test cis(actual_blocks.gamma) ≈ cis(expected_blocks.gamma) atol=tol
+                @test actual_blocks.input_factors ≈ expected_blocks.input_factors atol=tol
+                @test actual_blocks.output_factors ≈ expected_blocks.output_factors atol=tol
             end
         end
     end
@@ -125,6 +125,16 @@ function run_rotation_parity(adapter::RotationParityAdapter;
                 expected_z[k] = q[k] * cis(-T(cfg.mi[k]) * T(0.37))
             end
             @test rotation_collect(adapter, z) ≈ expected_z atol=tol rtol=tol
+
+            # Each outer Euler angle alone is exactly a Z rotation, including
+            # angles whose low bits would disappear in a Float32 conversion.
+            angle = 100000001.0
+            expected = q .* cis.(-cfg.mi .* angle)
+            for rot in (SHTRotation(cfg.lmax, cfg.mmax; α=angle),
+                        SHTRotation(cfg.lmax, cfg.mmax; γ=angle))
+                rotation_apply_real(adapter, rot, placed, z)
+                @test rotation_collect(adapter, z) ≈ expected atol=tol rtol=tol
+            end
 
             y = similar(placed)
             back = similar(placed)
@@ -305,12 +315,12 @@ function run_shared_rotation_kernel_reference(common, backend)
             tol = T === Float32 ? T(2e-5) : T(2e-13)
             @test z ≈ expected atol=tol rtol=tol
 
-            rot = SHTRotation(3, 3; α=0.21, β=-0.34, γ=0.19)
+            rot = SHTRotation(3, 3; α=100000001.0, β=-0.34, γ=-99999999.5)
             blocks = SHTnsKit._rotation_host_blocks(rot, T)
             output = similar(q)
             common.rotation_real_kernel!(backend)(
-                output, q, blocks.offsets, blocks.values, blocks.input_scales,
-                blocks.output_scales, blocks.alpha, blocks.gamma,
+                output, q, blocks.offsets, blocks.values, blocks.input_factors,
+                blocks.output_factors,
                 rot.lmax, rot.mmax; ndrange=cfg.nlm,
             )
             reference = similar(q)
@@ -321,8 +331,8 @@ function run_shared_rotation_kernel_reference(common, backend)
             c = randn(MersenneTwister(0x6A17 + sizeof(T)), Complex{T}, nc)
             cout = similar(c)
             common.rotation_cplx_kernel!(backend)(
-                cout, c, blocks.offsets, blocks.values, blocks.input_scales,
-                blocks.output_scales, blocks.alpha, blocks.gamma,
+                cout, c, blocks.offsets, blocks.values, blocks.input_factors,
+                blocks.output_factors,
                 rot.lmax, rot.mmax; ndrange=nc,
             )
             cref = similar(c)

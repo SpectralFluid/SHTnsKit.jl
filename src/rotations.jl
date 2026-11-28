@@ -439,7 +439,7 @@ sweep, the same order as applying the matrices. The result is bitwise identical
 to `wigner_d_matrix(l, β)` because it runs the very same arithmetic.
 """
 function _wigner_d_advance!(d::AbstractMatrix{T}, work::AbstractMatrix{T},
-                            l::Int, beta::T) where {T<:AbstractFloat}
+                            l::Int, beta::AbstractFloat) where {T<:AbstractFloat}
     if l == 0
         d[1, 1] = one(T)
         return d
@@ -447,8 +447,8 @@ function _wigner_d_advance!(d::AbstractMatrix{T}, work::AbstractMatrix{T},
     n = 2l + 1
     size(d, 1) ≥ n && size(d, 2) ≥ n && size(work, 1) ≥ n && size(work, 2) ≥ n ||
         throw(DimensionMismatch("d and work must contain a (2l+1)×(2l+1) block"))
-    cb = cos(beta / T(2))
-    sb = sin(beta / T(2))
+    cb = T(cos(beta / 2))
+    sb = T(sin(beta / 2))
     _wigner_half_step!(work, d, 2l - 1, cb, sb)
     _wigner_half_step!(d, work, 2l, cb, sb)
     return d
@@ -627,13 +627,15 @@ Apply rotation with Euler angles (ZYZ/ZXZ) to complex SH coefficients in LM_cplx
 @inline function _rotation_zyz_angles(r::SHTRotation, ::Type{T}) where {T<:AbstractFloat}
     all(isfinite, (r.α, r.β, r.γ)) ||
         throw(ArgumentError("rotation angles must be finite"))
+    # Preserve the stored angle precision through argument reduction and ZXZ offsets.
+    A = promote_type(Float64, T)
+    α, β, γ = map(x -> rem2pi(A(x), RoundNearest), (r.α, r.β, r.γ))
     if r.conv === :ZYZ
-        return r.reverse_outer ? (T(r.γ), T(r.β), T(r.α)) :
-                                 (T(r.α), T(r.β), T(r.γ))
+        return r.reverse_outer ? (γ, β, α) : (α, β, γ)
     elseif r.conv === :ZXZ
+        halfpi = A(pi) / 2
         return r.reverse_outer ?
-            (T(r.γ) - T(pi / 2), T(r.β), T(r.α) + T(pi / 2)) :
-            (T(r.α) + T(pi / 2), T(r.β), T(r.γ) - T(pi / 2))
+            (γ - halfpi, β, α + halfpi) : (α + halfpi, β, γ - halfpi)
     end
     throw(ArgumentError("rotation convention must be :ZYZ or :ZXZ"))
 end
@@ -663,15 +665,22 @@ function _rotation_host_blocks(r::SHTRotation, ::Type{T}) where {T<:AbstractFloa
         end
     end
     offsets[end] = Int32(cursor)
-    input_scales = Vector{T}(undef, nlm_cplx_calc(r.lmax, r.mmax, 1))
-    output_scales = similar(input_scales)
-    @inbounds for l in 0:r.lmax, m in -min(l, r.mmax):min(l, r.mmax)
-        k = LM_cplx_index(r.lmax, r.mmax, l, m) + 1
-        scale = T(_rotation_coefficient_scale(r, l, m))
-        input_scales[k] = scale
-        output_scales[k] = inv(scale)
+    # Fold the phases and the negative-order basis sign into the cached scales.
+    # The device kernels then need only coefficient-precision multiplies.
+    input_factors = Vector{Complex{T}}(undef, nlm_cplx_calc(r.lmax, r.mmax, 1))
+    output_factors = similar(input_factors)
+    @inbounds for m in -r.mmax:r.mmax
+        sign = m < 0 && isodd(m) ? -1 : 1
+        input_phase = sign * cis(-m * γ)
+        output_phase = sign * cis(-m * α)
+        for l in abs(m):r.lmax
+            k = LM_cplx_index(r.lmax, r.mmax, l, m) + 1
+            scale = _rotation_coefficient_scale(r, l, m)
+            input_factors[k] = input_phase * scale
+            output_factors[k] = output_phase / scale
+        end
     end
-    return (; offsets, values, input_scales, output_scales, alpha=α, gamma=γ)
+    return (; offsets, values, input_factors, output_factors)
 end
 
 """

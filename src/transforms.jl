@@ -123,6 +123,8 @@ end
 Packed scalar analysis from flattened grid values (length nlat*nlon) to Qlm (LM order).
 """
 function analysis_packed(cfg::SHTConfig, Vr::AbstractVector{<:Real})
+    operands = _rerouted_operands(:analysis_packed, (Vr,))
+    operands === nothing || return analysis_packed(cfg, operands...)
     length(Vr) == cfg.nspat || throw(DimensionMismatch("Vr must have length $(cfg.nspat)"))
     f = reshape(Vr, cfg.nlat, cfg.nlon)
     alm_mat = analysis(cfg, f)
@@ -137,6 +139,8 @@ end
 Packed scalar synthesis from Qlm (LM order) to flattened real grid (length nlat*nlon).
 """
 function synthesis_packed(cfg::SHTConfig, Qlm::AbstractVector{<:Complex})
+    operands = _rerouted_operands(:synthesis_packed, (Qlm,))
+    operands === nothing || return synthesis_packed(cfg, operands...)
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm must have length $(cfg.nlm)"))
     # Packed LM order stores only valid (l,m) pairs. Expand to dense
     # (l+1,m+1) so the core synthesis kernel can be reused.
