@@ -291,6 +291,14 @@ SHTnsKit.analysis_axisym(::SHTConfig, field::RoutingTestArray{<:Real,1}) = (:ven
         @test_throws ArgumentError synthesis_sphtor!(plan, device(V), device(V), S, T)
         @test all(isone, S) && all(isone, T)
 
+        # The operator matrices and SH_mul_mx write element by element on the host.
+        mx = zeros(2cfg.nlm)
+        Q = complex.(zeros(cfg.nlm))
+        @test_throws ArgumentError mul_ct_matrix(cfg, device(mx))
+        @test_throws ArgumentError st_dt_matrix(CPU(), cfg, device(mx))
+        @test_throws ArgumentError SH_mul_mx(cfg, device(mul_ct_matrix(cfg, mx)), Q, similar(Q))
+        @test_throws ArgumentError SH_mul_mx(cfg, mx, device(Q), similar(Q))
+
         # Wrapped device storage reaches the host through one dense copy.
         @test to_device(CPU(), view(device(field), :, 2:3)) == field[:, 2:3]
     finally

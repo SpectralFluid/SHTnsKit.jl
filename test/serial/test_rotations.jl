@@ -475,4 +475,13 @@ using SHTnsKit
         E_rot = energy_scalar_packed(cfg, Rlm)
         @test isapprox(E_orig, E_rot; rtol=1e-10)
     end
+
+    @testset "Rotation block offsets index past Int32" begin
+        # The flattened Wigner blocks pass 2^31 entries near lmax = 1172, so the
+        # offsets the GPU kernels read must not be Int32.
+        blocks = SHTnsKit._rotation_host_blocks(SHTRotation(4, 4; α=0.1, β=0.2, γ=0.3), Float32)
+        @test eltype(blocks.offsets) === Int
+        @test blocks.offsets[end] - 1 == length(blocks.values)
+        @test sum((2l + 1)^2 for l in 0:1172) > typemax(Int32)
+    end
 end

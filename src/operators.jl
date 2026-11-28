@@ -103,6 +103,8 @@ Out-of-range neighbors (l<m or l>lmax) are automatically ignored.
 """Fill `mx` with the cosθ (`derivative=false`) or sinθ ∂θ couplings."""
 function _operator_matrix!(cfg::SHTConfig, mx::AbstractVector{<:Real},
                            derivative::Bool)
+    # The loop below writes mx element by element on the host.
+    _require_cpu_storage(derivative ? :st_dt_matrix : :mul_ct_matrix, mx)
     # Validate coefficient matrix size (2 coefficients per (l,m) mode)
     length(mx) == 2*cfg.nlm || throw(DimensionMismatch("mx length must be 2*nlm=$(2*cfg.nlm)"))
     
@@ -212,6 +214,7 @@ in the normalization guide).
 """
 function SH_mul_mx(::CPU, cfg::SHTConfig, mx::AbstractVector{<:Real},
                    Qlm::AbstractVector{<:Complex}, Rlm::AbstractVector{<:Complex})
+    foreach(value -> _require_cpu_storage(:SH_mul_mx, value), (mx, Qlm, Rlm))
     # Validate input array dimensions
     length(mx) == 2*cfg.nlm || throw(DimensionMismatch("mx length must be 2*nlm=$(2*cfg.nlm)"))
     length(Qlm) == cfg.nlm || throw(DimensionMismatch("Qlm length must be nlm=$(cfg.nlm)"))

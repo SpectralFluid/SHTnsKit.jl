@@ -97,9 +97,10 @@ function _dist_zrotate_local!(cfg, input::PencilArray, angle::Real,
                               output::PencilArray)
     source = parent(input); destination = parent(output)
     orders = collect(Int, globalindices(input, 2))
+    phase_angle = SHTnsKit._reduced_rotation_angle(angle)
     @inbounds for (local_m, m_index) in pairs(orders)
         m = m_index - 1
-        phase = cis(-m * angle)
+        phase = cis(-m * phase_angle)
         for local_l in axes(source, 1)
             destination[local_l, local_m] = phase * source[local_l, local_m]
         end

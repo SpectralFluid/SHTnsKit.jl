@@ -8,6 +8,7 @@ function test_transform_storage(vendor, device_array)
             out = f(cfg, nested(x))
             @test on_device(out) isa SHTnsKit.GPU
             @test Array(out) ≈ f(cfg, x)
+            @test Array(f(SHTnsKit.GPU(), cfg, nested(x))) ≈ f(cfg, x)
         end
 
         field .= 1.5e38

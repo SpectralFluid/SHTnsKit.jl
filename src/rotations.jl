@@ -122,7 +122,7 @@ function SH_Zrotate(::CPU, cfg::SHTConfig, Qlm::AbstractVector{<:Complex},
     length(Rlm) == cfg.nlm || throw(DimensionMismatch("Rlm length must be nlm=$(cfg.nlm)"))
     isfinite(alpha) || throw(ArgumentError("rotation angle must be finite"))
     lmax = cfg.lmax; mres = cfg.mres
-    phase_angle = _rotation_phase_angle(alpha)
+    phase_angle = _reduced_rotation_angle(alpha)
     @inbounds for m in 0:cfg.mmax
         (m % mres == 0) || continue
         phase = cis(-m * phase_angle)
@@ -142,11 +142,18 @@ SH_Zrotate(cfg::SHTConfig, Qlm::AbstractVector{<:Complex}, alpha::Real,
 # are both Float32. Wider inputs retain their precision.
 @inline _rotation_phase_angle(angle::Real) = first(promote(angle, 0.0))
 
+# Reduce before multiplying by the order, which can overflow even for a finite
+# angle. Keep generic real arithmetic available to automatic differentiation.
+@inline function _reduced_rotation_angle(angle::Real)
+    a = _rotation_phase_angle(angle)
+    return a isa AbstractFloat ? rem2pi(a, RoundNearest) : a
+end
+
 # The GPU Z rotation's per-coefficient phases, formed on the host as above and
 # rounded once to the coefficient type. In Float32, m*angle alone would be off
 # by up to 4e-4 radians at lmax = 1023.
 function _zrotation_phases(cfg::SHTConfig, alpha::Real, ::Type{CT}) where {CT<:Complex}
-    phase_angle = _rotation_phase_angle(alpha)
+    phase_angle = _reduced_rotation_angle(alpha)
     return CT[cis(-m * phase_angle) for m in cfg.mi]
 end
 
@@ -629,7 +636,7 @@ Apply rotation with Euler angles (ZYZ/ZXZ) to complex SH coefficients in LM_cplx
         throw(ArgumentError("rotation angles must be finite"))
     # Preserve the stored angle precision through argument reduction and ZXZ offsets.
     A = promote_type(Float64, T)
-    α, β, γ = map(x -> rem2pi(A(x), RoundNearest), (r.α, r.β, r.γ))
+    α, β, γ = map(x -> _reduced_rotation_angle(A(x)), (r.α, r.β, r.γ))
     if r.conv === :ZYZ
         return r.reverse_outer ? (γ, β, α) : (α, β, γ)
     elseif r.conv === :ZXZ
@@ -650,21 +657,22 @@ end
 """Typed flattened Wigner blocks and phases for one immutable rotation."""
 function _rotation_host_blocks(r::SHTRotation, ::Type{T}) where {T<:AbstractFloat}
     α, β, γ = _rotation_zyz_angles(r, T)
-    offsets = Vector{Int32}(undef, r.lmax + 2)
+    # The flattened blocks pass 2^31 entries near lmax = 1172, beyond Int32.
+    offsets = Vector{Int}(undef, r.lmax + 2)
     total = sum((2l + 1)^2 for l in 0:r.lmax)
     values = Vector{T}(undef, total)
     cursor = 1
     d = Matrix{T}(undef, 2r.lmax + 1, 2r.lmax + 1)
     work = similar(d)
     @inbounds for l in 0:r.lmax
-        offsets[l + 1] = Int32(cursor)
+        offsets[l + 1] = cursor
         _wigner_d_advance!(d, work, l, β)
         for m in -l:l, mp in -l:l
             values[cursor] = d[m + l + 1, mp + l + 1]
             cursor += 1
         end
     end
-    offsets[end] = Int32(cursor)
+    offsets[end] = cursor
     # Fold the phases and the negative-order basis sign into the cached scales.
     # The device kernels then need only coefficient-precision multiplies.
     input_factors = Vector{Complex{T}}(undef, nlm_cplx_calc(r.lmax, r.mmax, 1))

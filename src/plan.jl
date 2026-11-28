@@ -57,9 +57,11 @@ end
 REAL FFT OPTIMIZATION (use_rfft=true)
 -------------------------------------
 For real-valued scalar fields, pass `use_rfft=true` to `SHTPlan(cfg; ...)`.
-- Fourier buffer reduced from nlon to nlon÷2+1 complex numbers.
+- Scalar transforms use a half spectrum of nlon÷2+1 complex numbers per latitude.
 - Uses pre-planned `FFTW.plan_rfft` / `FFTW.plan_irfft`.
-- Vector sphtor transforms on the same plan still use the complex buffer.
+- Vector sphtor transforms on the same plan still use the full complex buffer,
+  so the plan holds that buffer plus the half spectrum and a real scratch grid:
+  more memory than a complex-FFT plan, not less.
 
 DEBUGGING
 ---------
@@ -163,9 +165,10 @@ For CPU transforms, build a new plan if you increase `cfg.lmax` beyond its plann
 
 Parameters:
 - cfg: SHTConfig defining the grid and spectral resolution
-- use_rfft: if true, use real-FFT along φ for scalar `analysis!`/`synthesis!`
-  (halves the Fourier buffer size). Vector (sphtor) transforms on the plan
-  still use the complex buffer. Requires `cfg.mmax ≤ cfg.nlon÷2`.
+- use_rfft: if true, use real-FFT along φ for scalar `analysis!`/`synthesis!`.
+  Vector (sphtor) transforms on the plan still use the full complex buffer, so
+  the plan adds a half-spectrum buffer and a real scratch grid to it and holds
+  more memory than a complex-FFT plan. Requires `cfg.mmax ≤ cfg.nlon÷2`.
 """
 function SHTPlan(cfg::SHTConfig; use_rfft::Bool=false)
     nlat, nlon = cfg.nlat, cfg.nlon
@@ -230,6 +233,9 @@ function analysis_sphtor!(plan::SHTPlan, Slm_out::AbstractMatrix, Tlm_out::Abstr
     size(Slm_out,1)==cfg.lmax+1 && size(Slm_out,2)==cfg.mmax+1 || throw(DimensionMismatch("Slm_out dims"))
     size(Tlm_out,1)==cfg.lmax+1 && size(Tlm_out,2)==cfg.mmax+1 || throw(DimensionMismatch("Tlm_out dims"))
     _validate_robert_analysis(cfg)
+    eltype(Slm_out) <: Complex && eltype(Tlm_out) <: Complex || throw(ArgumentError(
+        "analysis_sphtor! requires complex coefficient output storage",
+    ))
     Base.mightalias(Slm_out, Tlm_out) &&
         throw(ArgumentError("Slm_out and Tlm_out must not alias each other"))
     # Both spectra are cleared and accumulated before the second pass reads Vp,
@@ -332,6 +338,9 @@ function synthesis_sphtor!(plan::SHTPlan, Vt_out::AbstractMatrix, Vp_out::Abstra
     size(Vp_out,1)==nlat && size(Vp_out,2)==nlon || throw(DimensionMismatch("Vp_out dims"))
     size(Slm,1)==cfg.lmax+1 && size(Slm,2)==cfg.mmax+1 || throw(DimensionMismatch("Slm dims"))
     size(Tlm,1)==cfg.lmax+1 && size(Tlm,2)==cfg.mmax+1 || throw(DimensionMismatch("Tlm dims"))
+    !real_output && !(eltype(Vt_out) <: Complex && eltype(Vp_out) <: Complex) && throw(ArgumentError(
+        "synthesis_sphtor! with real_output=false requires complex output storage",
+    ))
     Base.mightalias(Vt_out, Vp_out) &&
         throw(ArgumentError("Vt_out and Vp_out must not alias each other"))
     # The second pass reads the spectra again after Vt_out is written.

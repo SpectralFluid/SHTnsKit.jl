@@ -128,12 +128,15 @@ function run_rotation_parity(adapter::RotationParityAdapter;
 
             # Each outer Euler angle alone is exactly a Z rotation, including
             # angles whose low bits would disappear in a Float32 conversion.
-            angle = 100000001.0
-            expected = q .* cis.(-cfg.mi .* angle)
-            for rot in (SHTRotation(cfg.lmax, cfg.mmax; α=angle),
-                        SHTRotation(cfg.lmax, cfg.mmax; γ=angle))
-                rotation_apply_real(adapter, rot, placed, z)
+            for angle in (100000001.0, floatmax(Float64) / 2)
+                expected = q .* ComplexF64[cis(-m * BigFloat(angle)) for m in cfg.mi]
+                rotation_z(adapter, cfg, placed, angle, z)
                 @test rotation_collect(adapter, z) ≈ expected atol=tol rtol=tol
+                for rot in (SHTRotation(cfg.lmax, cfg.mmax; α=angle),
+                            SHTRotation(cfg.lmax, cfg.mmax; γ=angle))
+                    rotation_apply_real(adapter, rot, placed, z)
+                    @test rotation_collect(adapter, z) ≈ expected atol=tol rtol=tol
+                end
             end
 
             y = similar(placed)
@@ -268,8 +271,8 @@ function test_gpu_rotation_contract(extension, packed_type, complex_type)
         block_name = isdefined(extension, :CUDARotationBlocks) ?
                      :CUDARotationBlocks : :AMDGPURotationBlocks
         block_type = Base.unwrap_unionall(getfield(extension, block_name))
-        @test fieldtype(block_type, :alpha) isa TypeVar
-        @test fieldtype(block_type, :gamma) isa TypeVar
+        @test fieldtype(block_type, :input_factors) isa TypeVar
+        @test fieldtype(block_type, :output_factors) isa TypeVar
 
         cache = common.RotationBlockCache(2)
         completed = Ref(false)
@@ -317,6 +320,7 @@ function run_shared_rotation_kernel_reference(common, backend)
 
             rot = SHTRotation(3, 3; α=100000001.0, β=-0.34, γ=-99999999.5)
             blocks = SHTnsKit._rotation_host_blocks(rot, T)
+            @test eltype(blocks.input_factors) == eltype(blocks.output_factors) == Complex{T}
             output = similar(q)
             common.rotation_real_kernel!(backend)(
                 output, q, blocks.offsets, blocks.values, blocks.input_factors,

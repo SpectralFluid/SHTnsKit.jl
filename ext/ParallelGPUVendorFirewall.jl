@@ -315,18 +315,18 @@ function SHTnsKit.dist_synthesis!(plan::ParallelExt.DistTransposePlan,
     )
 end
 
+# The vector transposes use the CPU methods' operand rules, including the
+# collective `with_vector` check: outputs must be distinct, while the read-only
+# inputs may alias (one field passed as both components).
 function SHTnsKit.dist_analysis_sphtor!(plan::ParallelExt.DistTransposePlan,
                                         S::VendorPencilArray,
                                         T::PencilArrays.PencilArray,
                                         Vt::PencilArrays.PencilArray,
                                         Vp::PencilArrays.PencilArray)
-    ParallelExt._validate_transpose_call!(
-        plan, :dist_analysis_sphtor_transpose;
-        spatial=(Vt, Vp), spectral=(S, T),
+    ParallelExt._require_transpose_operands(
+        plan, :dist_analysis_sphtor_transpose,
+        (Vt, Vp), (S, T), (), (S, T), true,
     )
-    plan.with_vector || throw(ArgumentError(
-        "DistTransposePlan requires with_vector=true for sphtor transforms",
-    ))
     return ParallelExt._dist_transpose_gpu_vector_analysis!(
         _vendor_adapter(Vt), plan, S, T, Vt, Vp,
     )
@@ -337,13 +337,10 @@ function SHTnsKit.dist_synthesis_sphtor!(plan::ParallelExt.DistTransposePlan,
                                          Vp::PencilArrays.PencilArray,
                                          S::PencilArrays.PencilArray,
                                          T::PencilArrays.PencilArray)
-    ParallelExt._validate_transpose_call!(
-        plan, :dist_synthesis_sphtor_transpose;
-        spatial=(Vt, Vp), spectral=(S, T),
+    ParallelExt._require_transpose_operands(
+        plan, :dist_synthesis_sphtor_transpose,
+        (Vt, Vp), (S, T), (Vt, Vp), (), true,
     )
-    plan.with_vector || throw(ArgumentError(
-        "DistTransposePlan requires with_vector=true for sphtor transforms",
-    ))
     return ParallelExt._dist_transpose_gpu_vector_synthesis!(
         _vendor_adapter(Vt), plan, Vt, Vp, S, T,
     )

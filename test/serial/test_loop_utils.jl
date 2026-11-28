@@ -115,6 +115,15 @@ Base.setindex!(a::TestCuArray, value, I...) = setindex!(a.data, value, I...)
         @test SHTnsKit._loop_index_symbols(Expr(:tuple, :i, :j)) == [:i, :j]
     end
 
+    @testset "@sht_loop with a scalar first operand" begin
+        # The backend follows the first array operand. Here the first operand
+        # is the Bool condition.
+        flag = true
+        dest = zeros(5)
+        SHTnsKit.@sht_loop if flag; dest[i] = 2.0i; end over i ∈ 1:5
+        @test dest == 2.0 .* (1:5)
+    end
+
     @testset "@sht_loop basic" begin
         # Test that @sht_loop writes correct values
         dest = zeros(4, 8)

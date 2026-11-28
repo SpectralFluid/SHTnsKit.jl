@@ -16,12 +16,18 @@ module HostVendor
     const AnyCuArray{T,N} = Union{Array{T,N}, SubArray{T,N,<:Array}}
     const ROCArray = Array
     const CuArray = Array
+    # Tests switch rocFFT off to check which operations still run without it.
+    const ROCFFT_AVAILABLE = Ref(true)
     functional(args...) = true
+    functional(feature::Symbol) = feature === :rocfft ? ROCFFT_AVAILABLE[] : true
     device() = 0
     device_id() = 0
     deviceid(device) = device
-    synchronize() = KernelAbstractions.synchronize(KernelAbstractions.CPU())
+    const SYNCHRONIZE_CALLS = Ref(0)
+    synchronize() = (SYNCHRONIZE_CALLS[] += 1;
+                     KernelAbstractions.synchronize(KernelAbstractions.CPU()))
     zeros(args...) = Base.zeros(args...)
+    unsafe_free!(_) = nothing
 end
 
 module HostFFT
@@ -78,7 +84,7 @@ function wrapper_module(vendor)
         "_local_tables", "_local_precision", "_validate_local_arrays",
         "_local_scalar", "_local_qst", "_lcap", "_mode_synthesis",
         "_coefficient_scales", "_safe_required_memory",
-        "_device_array", "_scalar_analysis", "_scalar_synthesis",
+        "_device_array", "_scalar_analysis", "_scalar_synthesis", "_local_constants",
         "_vector_analysis", "_vector_synthesis",
     ]))
     # Public wrappers are defined as sandbox-local functions:
@@ -102,6 +108,7 @@ function wrapper_module(vendor)
     ]))
     constants = Set(Symbol.("_" .* typeprefix .* [
         "_SCALAR_CACHE", "_VECTOR_CACHE", "_WORKSPACE_CACHE", "_LOCAL_CACHE",
+        "_LOCAL_CONSTANTS",
     ]))
     push!(constants, :_rotation_cache)
     for expr in source.args[3].args
@@ -473,6 +480,84 @@ end
             @test v[1] ≈ vt atol=tol rtol=tol
             @test v[2] ≈ vp atol=tol rtol=tol
         end
+    end
+    @testset "Planned precision, output parity, caches and rocFFT-free calls" begin
+        for (wrapper, prefix) in ((rocm, "amdgpu"), (cuda, "cuda"))
+            fn(name) = getproperty(wrapper, Symbol("_", prefix, "_", name))
+            cache(name) = getproperty(wrapper, Symbol("_", uppercase(prefix), "_", name))
+            cfg = create_gauss_config(4, 8; nlon=12)
+            coeff = zeros(ComplexF64, 5, 5)
+            coeff[2, 1] = 0.25
+            coeff[4, 3] = complex(0.1, 0.2)
+            field = synthesis(cfg, coeff)
+            # A wider output sets the planned precision, as a CPU plan's Float64 does.
+            narrow = Float32.(field)
+            spectrum = zeros(ComplexF64, size(coeff))
+            fn("scalar_analysis_direct!")(cfg, cfg, spectrum, narrow)
+            @test spectrum ≈ analysis(cfg, Float64.(narrow)) rtol=1e-12 atol=1e-14
+            grid = zeros(cfg.nlat, cfg.nlon)
+            fn("scalar_synthesis_direct!")(cfg, cfg, grid, ComplexF32.(coeff))
+            @test grid ≈ synthesis(cfg, ComplexF64.(ComplexF32.(coeff))) rtol=1e-12 atol=1e-14
+            # Real vector fields may land in complex storage, as on the CPU.
+            vt, vp = synthesis_sphtor(cfg, coeff, 2coeff)
+            zt, zp = zeros(ComplexF64, size(vt)), zeros(ComplexF64, size(vp))
+            fn("vector_synthesis_direct!")(cfg, cfg, zt, zp, coeff, 2coeff)
+            @test zt ≈ vt rtol=1e-12 atol=1e-14
+            @test zp ≈ vp rtol=1e-12 atol=1e-14
+            # A profile too short for the degree limit is an argument error, as on the CPU.
+            @test_throws ArgumentError wrapper.synthesis_axisym_l(
+                SHTnsKit.GPU(), cfg, ComplexF64[1, 2], 3)
+            # A failing workspace body drains its submitted work before unlocking.
+            with_workspace = getproperty(wrapper, Symbol("_with_", prefix, "_workspace"))
+            before = HostVendor.SYNCHRONIZE_CALLS[]
+            @test_throws ErrorException with_workspace(cfg, cfg, Float64, 0, false) do _
+                error("kernel launch failed")
+            end
+            @test HostVendor.SYNCHRONIZE_CALLS[] > before
+            # Vector tables share the small scalar tables but never build Plm.
+            GPUCommon.scalar_cache_clear!(cache("SCALAR_CACHE"))
+            GPUCommon.scalar_cache_clear!(cache("VECTOR_CACHE"))
+            tables = fn("vector_tables")(cfg, Float64)
+            @test GPUCommon.scalar_cache_size(cache("SCALAR_CACHE")) == 0
+            @test tables.scales ≈ GPUCommon.coefficient_scales(cfg, Float64)
+            # Every latitude shares the normalization table and convention scales,
+            # even with no resident scalar tables to borrow them from.
+            GPUCommon.scalar_cache_clear!(cache("SCALAR_CACHE"))
+            GPUCommon.scalar_cache_clear!(cache("LOCAL_CACHE"))
+            first_row = fn("local_tables")(cfg, Float64, cfg.x[1])
+            second_row = fn("local_tables")(cfg, Float64, cfg.x[2])
+            @test first_row.scales === second_row.scales
+        end
+        # Only the transforms need rocFFT.
+        HostVendor.ROCFFT_AVAILABLE[] = false
+        try
+            cfg = create_gauss_config(3, 8; nlon=10)
+            lap = zeros(ComplexF64, 4, 4)
+            lap[3, 2] = 1
+            rocm.gpu_apply_laplacian!(cfg, view(lap, :, :))
+            @test lap[3, 2] == -6
+            @test rocm._require_amdgpu(:SH_mul_mx; fft=false) === nothing
+            @test_throws SHTnsKit.BackendUnavailableError rocm._require_amdgpu(:analysis)
+        finally
+            HostVendor.ROCFFT_AVAILABLE[] = true
+        end
+        # A live plan keeps its workspace however many plans are live. The cap
+        # bounds the workspaces of configuration-level calls only.
+        workspaces = GPUCommon.ScalarWorkspaceCache(1)
+        builds = Ref(0)
+        use(owner) = GPUCommon.scalar_workspace_use!(
+            identity, () -> (builds[] += 1; owner), workspaces, :device, owner,
+            Float64, :fft, (1,), UInt(0),
+        )
+        plans = [SHTPlan(create_gauss_config(3, 6)) for _ in 1:3]
+        foreach(use, plans)
+        foreach(use, plans)
+        @test builds[] == 3
+        owners = [Ref(1), Ref(2)]
+        foreach(use, owners)
+        foreach(use, owners)
+        @test builds[] == 7
+        @test GPUCommon.scalar_workspace_size(workspaces; device=:device) == 4
     end
     @testset "Vector batch synthesis clears unused Fourier bins" begin
         for (vendor, call) in ((:AMDGPU, rocm._amdgpu_vector_batch_synthesis),

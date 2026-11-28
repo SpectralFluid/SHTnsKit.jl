@@ -175,6 +175,77 @@ end
 MPI.Allreduce(value, _op, log::CollectiveLog) =
     (push!(log.events, :Allreduce); value)
 
+"""Validation-only stand-in for the PencilFFTs plan of a `DistTransposePlan`."""
+struct MockTransposeFFTPlan{I,O}
+    input::I
+    output::O
+    extra_dims::Tuple{Int}
+end
+
+PencilFFTs.pencil_input(plan::MockTransposeFFTPlan) = plan.input
+PencilFFTs.pencil_output(plan::MockTransposeFFTPlan) = plan.output
+PencilFFTs.Transforms.eltype_input(::MockTransposeFFTPlan) = Float64
+PencilFFTs.Transforms.eltype_output(::MockTransposeFFTPlan) = ComplexF64
+
+function zeroed_on(pen, ::Type{T}) where {T}
+    array = PencilArray{T}(undef, pen, 1)
+    fill!(host_data(parent(array)), zero(T))
+    return array
+end
+
+"""
+A one-level `DistTransposePlan` over mock device storage. It passes operand
+validation like a vendor plan; the stubbed kernels below only record calls.
+"""
+function mock_device_transpose_plan()
+    nbin = cfg.nlon ÷ 2 + 1
+    input = Pencil(MockDeviceArray, (cfg.nlon, cfg.nlat), (2,), comm)
+    output = Pencil(MockDeviceArray, (nbin, cfg.nlat), (1,), comm)
+    return ParExt.DistTransposePlan(
+        cfg, ParExt._cfg_fingerprint(cfg), cfg.nlat, cfg.nlon, cfg.lmax,
+        cfg.mmax, 1, true, comm, UInt(1),
+        MockTransposeFFTPlan(input, output, (1,)),
+        zeroed_on(output, ComplexF64), zeroed_on(output, ComplexF64),
+        Pencil(MockDeviceArray, (cfg.lmax + 1, nbin), (2,), comm),
+        Int[], Int[], Matrix{Float64}[], Matrix{Float64}[],
+        Matrix{Float64}[], true,
+    )
+end
+
+const TRANSPOSE_KERNELS = Symbol[]
+
+ParExt._dist_transpose_gpu_analysis!(
+    ::Val{:mock_vendor}, _adapter, _plan, output, _input) =
+    (push!(TRANSPOSE_KERNELS, :analysis); output)
+ParExt._dist_transpose_gpu_synthesis!(
+    ::Val{:mock_vendor}, _adapter, _plan, output, _input) =
+    (push!(TRANSPOSE_KERNELS, :synthesis); output)
+ParExt._dist_transpose_gpu_vector_analysis!(
+    ::Val{:mock_vendor}, _adapter, _plan, S, T, _Vt, _Vp) =
+    (push!(TRANSPOSE_KERNELS, :vector_analysis); (S, T))
+ParExt._dist_transpose_gpu_vector_synthesis!(
+    ::Val{:mock_vendor}, _adapter, _plan, Vt, Vp, _S, _T) =
+    (push!(TRANSPOSE_KERNELS, :vector_synthesis); (Vt, Vp))
+
+"""`:ok`, `:rejected` for an `ArgumentError`, or a summary of another error."""
+function transpose_outcome(call)
+    try
+        call()
+        return :ok
+    catch error
+        error isa ArgumentError && return :rejected
+        return string(typeof(error), ": ",
+                      first(split(sprint(showerror, error), '\n')))
+    end
+end
+
+"""Wrap a pinned stage and return only a reshaped mirror of it."""
+@noinline function pinned_stage_mirror(allocate, release)
+    host = ParExt._vendor_pinned_vector(ComplexF32, 6, allocate, release)
+    host .= ComplexF32.(1:6)
+    return reshape(host, 2, 3)
+end
+
 ParExt._register_parallel_gpu_adapter!(MOCK_ADAPTER)
 try
     @testset "MPI GPU vendor boundary ($nprocs ranks)" begin
@@ -484,6 +555,177 @@ try
             @test parent(result[2]) isa MockDeviceArray
             @test all(==(3(rank + 1)), host_data(parent(result[2])))
             ParExt.parallel_gpu_clear_caches!()
+        end
+
+        @testset "exchange! of a buffer with itself holds no staging slot" begin
+            # `mightalias` ignores empty arrays. A self-exchange of an empty
+            # device buffer used to release its staging entry twice, leaving
+            # users == -1; after 8 such slots every staged call waited forever.
+            ParExt.parallel_gpu_clear_caches!()
+            previous_limit = ParExt.parallel_gpu_cache_limit!(8)
+            buffers = [MockDeviceArray(Float32[]) for _ in 1:9]
+            for buffer in buffers
+                @test_throws ArgumentError ParExt.exchange!(
+                    buffer, buffer, comm;
+                    collective=(_send, receive, _comm) -> receive,
+                )
+                @test all(entry -> entry.users == 0,
+                          values(ParExt._GPU_STAGING))
+            end
+            staged = MockDeviceArray(Float32[1, 2])
+            task = @async ParExt.allreduce!(staged, +, comm)
+            finished = timedwait(() -> istaskdone(task), 30.0) === :ok
+            if !finished
+                ParExt.parallel_gpu_cache_limit!(64)
+                notify(ParExt._GPU_STAGING_AVAILABLE)
+            end
+            fetch(task)
+            @test finished
+            @test staged.data == nprocs .* Float32[1, 2]
+            ParExt.parallel_gpu_cache_limit!(previous_limit)
+            ParExt.parallel_gpu_clear_caches!()
+        end
+
+        @testset "exchange! splits both buffers evenly by default" begin
+            width = 2
+            expected = reduce(vcat, [
+                Float32.(100source .+ (width * rank .+ (1:width)))
+                for source in 0:nprocs-1
+            ])
+            for storage in (Array, MockDeviceArray)
+                send = storage(Float32.(100rank .+ (1:width * nprocs)))
+                receive = storage(zeros(Float32, width * nprocs))
+                @test ParExt.exchange!(send, receive, comm) === receive
+                @test host_data(receive) == expected
+
+                # Uneven splits fail on every rank before any data moves.
+                lengths = [(width * nprocs, width * nprocs + 1)]
+                if nprocs > 1
+                    push!(lengths, (width * nprocs + 1, width * nprocs + 1))
+                    push!(lengths, rank == 0 ? (nprocs, nprocs) :
+                                              (2nprocs, 2nprocs))
+                end
+                for (send_length, receive_length) in lengths
+                    send = storage(ones(Float32, send_length))
+                    receive = storage(zeros(Float32, receive_length))
+                    caught = try
+                        ParExt.exchange!(send, receive, comm)
+                        nothing
+                    catch error
+                        error
+                    end
+                    @test caught isa ArgumentError &&
+                          occursin("evenly", sprint(showerror, caught))
+                    @test all(iszero, host_data(receive))
+                end
+            end
+            ParExt.parallel_gpu_clear_caches!()
+        end
+
+        @testset "vendor vector transposes follow the CPU operand rules" begin
+            cpu_plan = SHTnsKit.DistTransposePlan(
+                cfg; comm, nlev=1, with_vector=true,
+            )
+            device_plan = mock_device_transpose_plan()
+            cpu_spatial() = (A = SHTnsKit.allocate_spatial(cpu_plan);
+                             fill!(parent(A), 0); A)
+            cpu_spectral() = (A = SHTnsKit.allocate_spectral(cpu_plan);
+                              fill!(parent(A), 0); A)
+            device_spatial() = zeroed_on(
+                PencilFFTs.pencil_input(device_plan.fft_plan), Float64,
+            )
+            device_spectral() = zeroed_on(
+                device_plan.spectral_pencil, ComplexF64,
+            )
+            operands = Dict(
+                :cpu => (; plan=cpu_plan, Vr=cpu_spatial(), Vt=cpu_spatial(),
+                         Vp=cpu_spatial(), Q=cpu_spectral(),
+                         S=cpu_spectral(), T=cpu_spectral()),
+                :device => (; plan=device_plan, Vr=device_spatial(),
+                            Vt=device_spatial(), Vp=device_spatial(),
+                            Q=device_spectral(), S=device_spectral(),
+                            T=device_spectral()),
+            )
+            # Sphtor outputs must be distinct while read-only inputs may
+            # alias; QST requires all six operands to be distinct.
+            cases = (
+                (:analysis, :ok, o -> SHTnsKit.dist_analysis_sphtor!(
+                    o.plan, o.S, o.T, o.Vt, o.Vp)),
+                (:analysis_shared_input, :ok,
+                 o -> SHTnsKit.dist_analysis_sphtor!(
+                    o.plan, o.S, o.T, o.Vt, o.Vt)),
+                (:analysis_shared_output, :rejected,
+                 o -> SHTnsKit.dist_analysis_sphtor!(
+                    o.plan, o.S, o.S, o.Vt, o.Vp)),
+                (:synthesis, :ok, o -> SHTnsKit.dist_synthesis_sphtor!(
+                    o.plan, o.Vt, o.Vp, o.S, o.T)),
+                (:synthesis_shared_input, :ok,
+                 o -> SHTnsKit.dist_synthesis_sphtor!(
+                    o.plan, o.Vt, o.Vp, o.S, o.S)),
+                (:synthesis_shared_output, :rejected,
+                 o -> SHTnsKit.dist_synthesis_sphtor!(
+                    o.plan, o.Vt, o.Vt, o.S, o.T)),
+                (:qst_analysis, :ok, o -> SHTnsKit.dist_analysis_qst!(
+                    o.plan, o.Q, o.S, o.T, o.Vr, o.Vt, o.Vp)),
+                (:qst_analysis_shared_input, :rejected,
+                 o -> SHTnsKit.dist_analysis_qst!(
+                    o.plan, o.Q, o.S, o.T, o.Vr, o.Vt, o.Vt)),
+                (:qst_synthesis_shared_input, :rejected,
+                 o -> SHTnsKit.dist_synthesis_qst!(
+                    o.plan, o.Vr, o.Vt, o.Vp, o.Q, o.S, o.S)),
+            )
+            @testset "$name" for (name, expected, call) in cases
+                @test transpose_outcome(() -> call(operands[:cpu])) ===
+                      expected
+                empty!(TRANSPOSE_KERNELS)
+                outcome = transpose_outcome(() -> call(operands[:device]))
+                @test outcome === expected
+                # A rejected call stops before any vendor kernel runs.
+                @test isempty(TRANSPOSE_KERNELS) == (outcome !== :ok)
+            end
+        end
+
+        @testset "pinned stages wrap vendor host allocations" begin
+            allocations = Int[]
+            released = Ref(0)
+            allocate = function (nbytes)
+                push!(allocations, nbytes)
+                address = Libc.malloc(nbytes)
+                return (address, address)
+            end
+            release = address -> (Libc.free(address); released[] += 1)
+            @test ParExt._vendor_pinned_vector(
+                Float64, 0, allocate, release,
+            ) == Float64[]
+            @test isempty(allocations)
+            @test_throws ArgumentError ParExt._vendor_pinned_vector(
+                Vector{Int}, 1, allocate, release,
+            )
+            mirror = pinned_stage_mirror(allocate, release)
+            @test allocations == [6 * sizeof(ComplexF32)]
+            @test mirror isa Matrix{ComplexF32}
+            for _ in 1:3
+                GC.gc(true)
+            end
+            # The vendor allocation outlives the wrapped Vector while any
+            # reshaped mirror of its storage is alive, and is released once.
+            @test released[] == 0
+            @test vec(mirror) == ComplexF32.(1:6)
+            mirror = nothing
+            for _ in 1:3
+                GC.gc(true)
+            end
+            @test released[] == 1
+            for (file, allocator, registration) in (
+                    ("SHTnsKitParallelCUDAExt.jl",
+                     "CUDA.alloc(", "CUDA.pin("),
+                    ("SHTnsKitParallelAMDGPUExt.jl",
+                     "AMDGPU.Mem.HostBuffer(", "AMDGPU.Mem.pin("))
+                source = read(joinpath(pkgdir(SHTnsKit), "ext", file), String)
+                @test occursin("ParallelExt._vendor_pinned_vector(", source)
+                @test occursin(allocator, source)
+                @test !occursin(registration, source)
+            end
         end
     end
 finally

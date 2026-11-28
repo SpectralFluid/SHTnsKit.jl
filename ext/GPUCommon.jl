@@ -328,8 +328,10 @@ mutable struct ScalarWorkspaceCacheEntry
 end
 
 """
-Bounded device workspace cache used by in-place scalar and batch transforms.
+Device workspace cache used by in-place scalar and batch transforms.
 
+An `SHTPlan` keeps its workspace while it lives, as a CPU plan owns its buffers;
+`max_per_device` bounds only the workspaces of configuration-level calls.
 Keys contain only `objectid(owner)`, never the owner itself. The accompanying
 `WeakRef` prevents a cached vendor buffer or FFT plan from keeping an SHTPlan
 or SHTConfig alive. Each entry has its own lock, so unrelated plans may execute
@@ -369,13 +371,17 @@ function _workspace_entry!(builder, cache::ScalarWorkspaceCache, device,
             return entry
         end
         entry === nothing || delete!(cache.entries, key)
-        device_keys = [
-            candidate for candidate in keys(cache.entries)
-            if candidate[1] == device
-        ]
-        if length(device_keys) >= cache.max_per_device
-            oldest = argmin(candidate -> cache.entries[candidate].tick, device_keys)
-            delete!(cache.entries, oldest)
+        # Evicting a live plan's workspace would rebuild its FFT plans and
+        # buffers on every call once more plans are live than the cap.
+        if !(owner isa SHTnsKit.SHTPlan)
+            evictable = [
+                candidate for (candidate, cached) in cache.entries
+                if candidate[1] == device && !(cached.owner.value isa SHTnsKit.SHTPlan)
+            ]
+            if length(evictable) >= cache.max_per_device
+                oldest = argmin(candidate -> cache.entries[candidate].tick, evictable)
+                delete!(cache.entries, oldest)
+            end
         end
         value = builder()
         cache.tick += 1
@@ -387,15 +393,24 @@ function _workspace_entry!(builder, cache::ScalarWorkspaceCache, device,
     end
 end
 
-"""Run `f(workspace)` while holding the selected workspace's per-entry lock."""
+"""Run `f(workspace)` while holding the selected workspace's per-entry lock.
+
+If `f` throws, `drain()` runs before the lock is released, so work it already
+submitted cannot still be using the workspace when another task takes it."""
 function scalar_workspace_use!(f, builder, cache::ScalarWorkspaceCache,
                                device, owner, precision::DataType,
-                               kind::Symbol, shape::Tuple, signature::UInt)
+                               kind::Symbol, shape::Tuple, signature::UInt;
+                               drain=nothing)
     entry = _workspace_entry!(
         builder, cache, device, owner, precision, kind, shape, signature,
     )
     return lock(entry.lock) do
-        f(entry.value)
+        try
+            f(entry.value)
+        catch
+            drain === nothing || drain()
+            rethrow()
+        end
     end
 end
 

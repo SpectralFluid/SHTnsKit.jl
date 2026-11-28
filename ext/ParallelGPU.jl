@@ -36,6 +36,23 @@ ParallelGPUAdapter(name::Symbol, matches, array_type, device, gpu_aware,
 _pinned_storage(host::Array) =
     @static VERSION >= v"1.11.0-" ? host.ref.mem : host
 
+# Pinned stages come from the vendor's own host allocator. Registering a Julia
+# `Vector` pins a range that can share a page with other allocations, and a
+# second registration touching an already pinned page is rejected or skipped.
+# `allocate(nbytes)` returns `(pointer, handle)`; `release(handle)` runs once
+# the backing storage, which reshaped mirrors share, is unreachable.
+function _vendor_pinned_vector(::Type{T}, n::Integer, allocate,
+                               release) where {T}
+    isbitstype(T) || throw(ArgumentError(
+        "pinned staging needs a bits element type, not $T",
+    ))
+    n == 0 && return Vector{T}(undef, 0)
+    address, handle = allocate(n * sizeof(T))
+    host = unsafe_wrap(Array, Ptr{T}(address), n; own=false)
+    finalizer(_ -> release(handle), _pinned_storage(host))
+    return host
+end
+
 # Staged host buffers are contiguous `view(buffer, 1:n)` slices of a pinned
 # `Vector`, often reshaped. CUDA.jl, AMDGPU.jl and GPUArrays implement bulk
 # host/device `copyto!` only for `Array` hosts; any other host falls back to
@@ -1160,16 +1177,51 @@ function allreduce!(buffer, op, comm;
 end
 
 """
+    _even_alltoall!(send, receive, comm)
+
+Default `exchange!` collective. Both buffers are split into one equal block
+per rank of `comm`, and block `r` is exchanged with rank `r`. Every rank needs
+one element type, equal send and receive lengths divisible by the number of
+ranks, and the same block size; this is checked collectively before any data
+moves.
+"""
+function _even_alltoall!(send, receive, comm)
+    nranks = MPI.Comm_size(comm)
+    block = length(send) ÷ nranks
+    valid = eltype(send) === eltype(receive) &&
+            length(receive) == length(send) == block * nranks
+    verdict = MPI.Allreduce([valid ? 0 : 1, block, -block], max, comm)
+    verdict[1] == 0 && verdict[2] == -verdict[3] || throw(ArgumentError(
+        "exchange! splits send and receive evenly over the $nranks ranks, so " *
+        "both need one element type and the same length, divisible by " *
+        "$nranks, with one block size on every rank (this rank has " *
+        "$(length(send)) send and $(length(receive)) receive elements)",
+    ))
+    # The explicit chunk count keeps zero-length blocks valid.
+    datatype = MPI.Datatype(eltype(send))
+    MPI.Alltoall!(
+        MPI.UBuffer(send, block, nranks, datatype),
+        MPI.UBuffer(receive, block, nranks, datatype),
+        comm,
+    )
+    return receive
+end
+
+"""
     exchange!(send, receive, comm)
 
 Vendor-neutral two-buffer exchange used by transpose/redistribution paths.
-The callback has signature `(send, receive, comm)`; callers may supply the
-exact MPI collective required by their layout.
+By default both buffers are split evenly across the ranks of `comm` and
+exchanged with `MPI.Alltoall!`. Callers may instead supply the exact MPI
+collective their layout requires, with signature `(send, receive, comm)`.
 """
 function exchange!(send, receive, comm;
                    adapter=_parallel_gpu_adapter(send),
-                   collective=MPI.Alltoall!)
-    alias_flags = Base.mightalias(send, receive) ? UInt32(0x2000) : UInt32(0)
+                   collective=_even_alltoall!)
+    # `mightalias` ignores empty arrays, so identical buffers are rejected
+    # explicitly, in the same collective verdict as any other alias.
+    aliased = send === receive || Base.mightalias(send, receive)
+    alias_flags = aliased ? UInt32(0x2000) : UInt32(0)
     _collective_validation_error(comm, alias_flags, :exchange)
     # Host-resident ranks take part in the residency preflight too. Residency
     # may vary by rank, and a CPU early return would otherwise reach the
@@ -1217,8 +1269,9 @@ function exchange!(send, receive, comm;
             end
         end
     finally
+        # Identical requests share one reserved entry; release it once.
         _release_staging_entry(receive_entry)
-        _release_staging_entry(send_entry)
+        send_entry === receive_entry || _release_staging_entry(send_entry)
     end
     Threads.atomic_add!(_GPU_STAGED_CALLS, 1)
     Threads.atomic_add!(_GPU_STAGED_BYTES, bytes)

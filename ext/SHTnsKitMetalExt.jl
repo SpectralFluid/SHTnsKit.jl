@@ -60,18 +60,23 @@ function _basis_tables(cfg, vector)
     tables = vector ? (dtheta=shared_table(), over_sin=shared_table()) : (Plm=shared_table(),)
     GC.@preserve tables begin
         host = map(a -> unsafe_wrap(Array, a), tables)
-        p = zeros(cfg.lmax + 1)
-        d = vector ? similar(p) : nothing
-        p_over_s = vector ? similar(p) : nothing
-        scratch = vector ? zeros(cfg.lmax + 2) : nothing
-        for m in 0:cfg.mmax, i in eachindex(cfg.x)
-            if vector
-                SHT.Plm_norm_dPdtheta_over_sinth_row!(p, d, p_over_s, cfg.x[i], cfg.lmax, m, scratch)
-                host.dtheta[i, :, m+1] .= d
-                host.over_sin[i, :, m+1] .= p_over_s
-            else
-                SHT.Plm_norm_row!(p, cfg.x[i], cfg.lmax, m)
-                host.Plm[i, :, m+1] .= p
+        # Tasks take the orders round robin, since low orders have the most
+        # degrees, and each writes only its own orders' slices.
+        ntasks = min(Threads.nthreads(), cfg.mmax + 1)
+        Threads.@threads for first_order in 0:(ntasks - 1)
+            p = zeros(cfg.lmax + 1)
+            d = vector ? similar(p) : nothing
+            p_over_s = vector ? similar(p) : nothing
+            scratch = vector ? zeros(cfg.lmax + 2) : nothing
+            for m in first_order:ntasks:cfg.mmax, i in eachindex(cfg.x)
+                if vector
+                    SHT.Plm_norm_dPdtheta_over_sinth_row!(p, d, p_over_s, cfg.x[i], cfg.lmax, m, scratch)
+                    host.dtheta[i, :, m+1] .= d
+                    host.over_sin[i, :, m+1] .= p_over_s
+                else
+                    SHT.Plm_norm_row!(p, cfg.x[i], cfg.lmax, m)
+                    host.Plm[i, :, m+1] .= p
+                end
             end
         end
     end
@@ -224,8 +229,9 @@ function _scalar_synthesis(cfg, coeff; real_output=true, use_rfft=false,
     _check_field(coeff, _spectral(cfg))
     use_rfft && !real_output && throw(ArgumentError("use_rfft=true requires real_output=true"))
     out === nothing || _check_output(out, cfg, coeff, real_output, use_rfft)
-    fft_scratch !== nothing && out !== nothing && _overlaps(fft_scratch, out) &&
-        throw(ArgumentError("FFT scratch overlaps the spatial output"))
+    # Complex output may be its own FFT scratch, as on the CPU.
+    fft_scratch !== nothing && out !== nothing && !(fft_scratch === out && !real_output) &&
+        _overlaps(fft_scratch, out) && throw(ArgumentError("FFT scratch overlaps the spatial output"))
     # An odd-length Metal real inverse needs a full complex grid. Write into
     # that grid directly unless the caller supplied half-width FFT scratch.
     bins = _fourier_buffer(cfg, coeff, half, fft_scratch)

@@ -55,6 +55,12 @@ end
         @test_throws BackendUnavailableError SHqst_to_lat(device..., cfg, packed, packed, packed, 0.3)
         @test_throws BackendUnavailableError SH_to_grad_point(device..., cfg, packed, packed, 0.3, 0.2)
     end
+    # The operator matrices are built on the host, so device storage is refused
+    # instead of written element by element.
+    mx = MtlArray(zeros(Float32, 2cfg.nlm))
+    @test_throws ArgumentError mul_ct_matrix(cfg, mx)
+    @test_throws ArgumentError st_dt_matrix(cfg, mx)
+    @test_throws ArgumentError SH_mul_mx(cfg, mx, packed, similar(packed))
 end
 
 @testset "Band-limited roundtrip" begin
@@ -482,15 +488,18 @@ end
         wrapped = view(PermutedDimsArray(source, (2, 1)), :, :)
         for f in (synthesis_sph_cplx, synthesis_tor_cplx)
             check_components(f(cfg, wrapped), f(cfg, a))
+            check_components(f(GPU(), cfg, wrapped), f(cfg, a))
         end
         for f in (synthesis_sph_l_cplx, synthesis_tor_l_cplx)
             check_components(f(cfg, wrapped, 2), f(cfg, a, 2))
+            check_components(f(GPU(), cfg, wrapped, 2), f(cfg, a, 2))
         end
         for (f, f!) in ((divergence_from_spheroidal, divergence_from_spheroidal!),
                         (spheroidal_from_divergence, spheroidal_from_divergence!),
                         (vorticity_from_toroidal, vorticity_from_toroidal!),
                         (toroidal_from_vorticity, toroidal_from_vorticity!))
             check_device(f(cfg, wrapped), f(cfg, a))
+            check_device(f(GPU(), cfg, wrapped), f(cfg, a))
             @test_throws BackendUnavailableError f!(cfg, wrapped, source)
         end
     end
@@ -513,10 +522,12 @@ end
     check_device(analysis_packed_ml(cfg, 1, column(mode), 3), analysis_packed_ml(cfg, 1, mode, 3))
     flat = vec(field)
     check_device(analysis_packed(cfg, column(flat)), analysis_packed(cfg, flat))
+    check_device(analysis_packed(GPU(), cfg, column(flat)), analysis_packed(cfg, flat))
     packed = analysis_packed_l(cfg, flat, 3)
     check_device(analysis_packed_l(cfg, column(flat), 3), packed)
     check_device(synthesis_packed_l(cfg, column(packed), 3), synthesis_packed_l(cfg, packed, 3))
     check_device(synthesis_packed(cfg, column(packed)), synthesis_packed(cfg, packed))
+    check_device(synthesis_packed(GPU(), cfg, column(packed)), synthesis_packed(cfg, packed))
 end
 
 @testset "Disjoint parts of one buffer are not aliases" begin
@@ -569,6 +580,10 @@ end
     zout = MtlArray{ComplexF32}(undef, cfg.lmax + 1, cfg.mmax + 1)
     analysis!(cfg, zout, Z; fft_scratch=Z)
     @test Array(zout) ≈ analysis(cfg, z) rtol=4f-5 atol=3f-6
+    # So may complex synthesis output.
+    zfield = MtlArray{ComplexF32}(undef, cfg.nlat, cfg.nlon)
+    @test synthesis!(cfg, zfield, MtlArray(s); real_output=false, fft_scratch=zfield) === zfield
+    @test Array(zfield) ≈ synthesis(cfg, s; real_output=false) rtol=4f-5 atol=3f-6
 end
 
 @testset "Plans follow a raised degree" begin

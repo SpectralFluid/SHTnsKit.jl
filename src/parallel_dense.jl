@@ -27,7 +27,7 @@ function dist_SH_Zrotate(cfg::SHTnsKit.SHTConfig, Alm::AbstractMatrix, alpha::Re
     lmax, mmax = cfg.lmax, cfg.mmax
     size(Alm,1)==lmax+1 && size(Alm,2)==mmax+1 || throw(DimensionMismatch("Alm dims"))
     size(Rlm,1)==lmax+1 && size(Rlm,2)==mmax+1 || throw(DimensionMismatch("Rlm dims"))
-    phase_angle = _rotation_phase_angle(alpha)
+    phase_angle = _reduced_rotation_angle(alpha)
     @inbounds for m in 0:mmax
         phase = cis(-m * phase_angle)
         for l in m:lmax

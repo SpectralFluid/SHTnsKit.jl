@@ -268,10 +268,11 @@ macro sht_loop(args...)
 
         # Dispatch function: choose backend based on array type
         function $dispatch_kern($(symWtypes...), R) where {$(symT...)}
-            first_arr = $(names[1])
+            # Scalar operands, such as a Bool flag, carry no storage.
+            first_arr = $_first_array_operand($(names...))
 
             # Check for PencilArray (MPI-distributed) - always use CPU SIMD on local data
-            if $_is_pencil_array(first_arr)
+            if first_arr === nothing || $_is_pencil_array(first_arr)
                 # For PencilArrays, get local data and run SIMD
                 # Note: Caller must handle MPI communication separately
                 $kern_cpu($(names...), R)
@@ -295,6 +296,11 @@ macro sht_loop(args...)
         $dispatch_kern($(ops...), $R)
     end |> esc
 end
+
+# The loop's backend follows its first array operand.
+_first_array_operand(value::AbstractArray, rest...) = value
+_first_array_operand(value, rest...) = _first_array_operand(rest...)
+_first_array_operand() = nothing
 
 # Helper functions for macro symbol extraction (matching BioFlow.jl pattern)
 

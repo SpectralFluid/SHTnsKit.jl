@@ -196,6 +196,18 @@ function test_device_routing_fixes()
         @test Array(analysis_batch(cfg, stacked)) ≈ analysis_batch(cfg, fields) atol=2f-4 rtol=2f-4
         @test to_device(SHTnsKit.CPU(), nested) == field
         @test_throws SHTnsKit.BackendUnavailableError analysis!(cfg, out, nested)
+        # A wider output sets the planned precision, as a CPU plan's Float64 does.
+        wide = AMDGPU.zeros(ComplexF64, size(a))
+        analysis!(cfg, wide, d)
+        @test Array(wide) ≈ analysis(cfg, Float64.(field)) rtol=1e-10 atol=1e-12
+        # Real vector fields may land in complex storage, as on the CPU.
+        S, T = analysis_sphtor(cfg, field, 2f0 .* field)
+        zt, zp = AMDGPU.zeros(ComplexF32, size(field)), AMDGPU.zeros(ComplexF32, size(field))
+        synthesis_sphtor!(SHTPlan(cfg), zt, zp, ROCArray(S), ROCArray(T))
+        expected = synthesis_sphtor(cfg, S, T)
+        @test Array(zt) ≈ expected[1] atol=2f-4 rtol=2f-4
+        @test Array(zp) ≈ expected[2] atol=2f-4 rtol=2f-4
+        @test_throws ArgumentError synthesis_axisym_l(cfg, AMDGPU.zeros(ComplexF32, 2), 3)
         # Float32 Z rotations keep the CPU's phase accuracy at high orders.
         big = create_gauss_config(255, 257; nlon=512)
         q = _rotation_real_spectrum(big, Float32)

@@ -21,11 +21,23 @@ const VendorArrayType = CUDA.CuArray
 const VENDOR_NAME = Val(:cuda)
 include("ParallelGPUVendorFirewall.jl")
 
+# Driver-allocated (cuMemHostAlloc) rather than `CUDA.pin`-registered memory: a
+# registered Julia array can share a page that another stage already pinned.
 function _cuda_pinned(::Type{T}, n::Integer) where {T}
     n == 0 && return Vector{T}(undef, 0)
-    host = Vector{T}(undef, n)
-    CUDA.pin(ParallelExt._pinned_storage(host))
-    return host
+    ctx = CUDA.context()
+    return ParallelExt._vendor_pinned_vector(
+        T, n,
+        nbytes -> begin
+            memory = CUDA.alloc(
+                CUDA.HostMemory, nbytes, CUDA.MEMHOSTALLOC_PORTABLE,
+            )
+            (pointer(memory), memory)
+        end,
+        memory -> CUDA.context!(ctx; skip_destroyed=true) do
+            CUDA.free(memory)
+        end,
+    )
 end
 
 const CUDA_PARALLEL_ADAPTER = ParallelExt.ParallelGPUAdapter(

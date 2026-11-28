@@ -133,6 +133,9 @@ function analysis_packed(cfg::SHTConfig, Vr::AbstractVector{<:Real})
     return pack_lm(cfg, alm_mat)
 end
 
+analysis_packed(gpu::GPU, cfg::SHTConfig, field::AbstractVector{<:Real}) =
+    analysis_packed(cfg, to_device(gpu, field))
+
 """
     synthesis_packed(cfg, Qlm::AbstractVector{<:Complex}) -> Vector{Float64}
 
@@ -148,6 +151,9 @@ function synthesis_packed(cfg::SHTConfig, Qlm::AbstractVector{<:Complex})
     f = synthesis(cfg, alm_mat; real_output=true)
     return vec(f)
 end
+
+synthesis_packed(gpu::GPU, cfg::SHTConfig, coefficients::AbstractVector{<:Complex}) =
+    synthesis_packed(cfg, to_device(gpu, coefficients))
 
 """Convert and validate a public degree limit without overflowing `Int`."""
 @inline function _degree_limit_candidate(ltr::Integer)

@@ -42,7 +42,7 @@ _gpu_adapter_dense(adapter, value) = value
 
 # An allocation identifies its physical GPU even if another device is active
 # in the calling task. CPU arrays and single-device adapters need no switch.
-_allocation_device(::Nothing) = nothing
+_allocation_device(value) = nothing
 function _allocation_device(a::AbstractArray)
     p = parent(a)
     return p isa AbstractArray && p !== a ? _allocation_device(p) : nothing

@@ -2304,14 +2304,20 @@ if isempty(ARGS) || "rotations" in ARGS
             output = PencilArray{Complex{RT}}(undef, pencil(source))
 
             extension._reset_rotation_stats!()
-            @test SHTnsKit.dist_SH_Zrotate(cfg, source, RT(0.27), output) === output
             expected_z = zeros(Complex{RT}, size(dense))
-            SHTnsKit.dist_SH_Zrotate(cfg, dense, RT(0.27), expected_z)
-            for m in 0:cfg.mmax, l in m:cfg.lmax
-                @test expected_z[l + 1, m + 1] ≈
-                      dense[l + 1, m + 1] * cis(-RT(m) * RT(0.27)) atol=tol rtol=tol
+            packed = SHTnsKit.pack_lm(cfg, dense)
+            for angle in (RT(0.27), floatmax(Float64) / 2)
+                @test SHTnsKit.dist_SH_Zrotate(cfg, source, angle, output) === output
+                SHTnsKit.dist_SH_Zrotate(cfg, dense, angle, expected_z)
+                for m in 0:cfg.mmax
+                    phase = ComplexF64(cis(-m * BigFloat(angle)))
+                    @test expected_z[:, m + 1] ≈ dense[:, m + 1] .* phase atol=tol rtol=tol
+                end
+                @test spectral_pencil_to_matrix(cfg, output) ≈ expected_z atol=tol rtol=tol
+                @test SHTnsKit.dist_SH_Zrotate_packed(
+                    cfg, packed, angle; prototype_lm=source,
+                ) ≈ SHTnsKit.pack_lm(cfg, expected_z) atol=tol rtol=tol
             end
-            @test spectral_pencil_to_matrix(cfg, output) ≈ expected_z atol=tol rtol=tol
             @test extension._rotation_stats().z_payload_sent_elements == 0
 
             extension._reset_rotation_stats!()
@@ -2349,10 +2355,6 @@ if isempty(ARGS) || "rotations" in ARGS
             SHTnsKit.dist_SH_Zrotate(cfg, t2, RT(0.41), expected_euler)
             @test spectral_pencil_to_matrix(cfg, euler) ≈ expected_euler atol=tol rtol=tol
 
-            packed = SHTnsKit.pack_lm(cfg, dense)
-            @test SHTnsKit.dist_SH_Zrotate_packed(
-                cfg, packed, RT(0.27); prototype_lm=source,
-            ) ≈ SHTnsKit.pack_lm(cfg, expected_z) atol=tol rtol=tol
             @test SHTnsKit.dist_SH_Yrotate_packed(
                 cfg, packed, RT(-0.36); prototype_lm=source,
             ) ≈ SHTnsKit.pack_lm(cfg, expected_y) atol=tol rtol=tol

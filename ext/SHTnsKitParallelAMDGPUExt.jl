@@ -21,18 +21,23 @@ const VendorArrayType = AMDGPU.ROCArray
 const VENDOR_NAME = Val(:amdgpu)
 include("ParallelGPUVendorFirewall.jl")
 
+# Driver-allocated (hipHostMalloc) rather than `Mem.pin`-registered memory: a
+# registered Julia array can share a page that another stage already pinned.
 function _amdgpu_pinned(::Type{T}, n::Integer) where {T}
     n == 0 && return Vector{T}(undef, 0)
-    host = Vector{T}(undef, n)
-    storage = ParallelExt._pinned_storage(host)
-    AMDGPU.Mem.pin(pointer(storage), sizeof(storage))
-    finalizer(storage) do value
-        try
-            AMDGPU.Mem.unpin(pointer(value))
+    return ParallelExt._vendor_pinned_vector(
+        T, n,
+        nbytes -> begin
+            buffer = AMDGPU.Mem.HostBuffer(
+                nbytes, AMDGPU.HIP.hipHostMallocPortable,
+            )
+            (buffer.ptr, buffer)
+        end,
+        buffer -> try
+            AMDGPU.Mem.free(buffer)
         catch
-        end
-    end
-    return host
+        end,
+    )
 end
 
 const AMDGPU_PARALLEL_ADAPTER = ParallelExt.ParallelGPUAdapter(

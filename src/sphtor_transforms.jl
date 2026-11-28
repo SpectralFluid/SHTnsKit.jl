@@ -748,6 +748,9 @@ function divergence_from_spheroidal(cfg::SHTConfig, Slm::AbstractMatrix)
     return divergence_from_spheroidal!(cfg, δ, Slm)
 end
 
+divergence_from_spheroidal(gpu::GPU, cfg::SHTConfig, Slm::AbstractArray) =
+    divergence_from_spheroidal(cfg, to_device(gpu, Slm))
+
 function divergence_from_spheroidal(::CPU, cfg::SHTConfig, Slm::AbstractMatrix)
     _require_cpu_storage(:divergence_from_spheroidal, Slm)
     return divergence_from_spheroidal(cfg, Slm)
@@ -784,6 +787,9 @@ function spheroidal_from_divergence(cfg::SHTConfig, δlm::AbstractMatrix)
     Slm = similar(δlm)
     return spheroidal_from_divergence!(cfg, Slm, δlm)
 end
+
+spheroidal_from_divergence(gpu::GPU, cfg::SHTConfig, δlm::AbstractArray) =
+    spheroidal_from_divergence(cfg, to_device(gpu, δlm))
 
 function spheroidal_from_divergence(::CPU, cfg::SHTConfig, δlm::AbstractMatrix)
     _require_cpu_storage(:spheroidal_from_divergence, δlm)
@@ -824,6 +830,9 @@ function vorticity_from_toroidal(cfg::SHTConfig, Tlm::AbstractMatrix)
     return vorticity_from_toroidal!(cfg, ζ, Tlm)
 end
 
+vorticity_from_toroidal(gpu::GPU, cfg::SHTConfig, Tlm::AbstractArray) =
+    vorticity_from_toroidal(cfg, to_device(gpu, Tlm))
+
 function vorticity_from_toroidal(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix)
     _require_cpu_storage(:vorticity_from_toroidal, Tlm)
     return vorticity_from_toroidal(cfg, Tlm)
@@ -860,6 +869,9 @@ function toroidal_from_vorticity(cfg::SHTConfig, ζlm::AbstractMatrix)
     Tlm = similar(ζlm)
     return toroidal_from_vorticity!(cfg, Tlm, ζlm)
 end
+
+toroidal_from_vorticity(gpu::GPU, cfg::SHTConfig, ζlm::AbstractArray) =
+    toroidal_from_vorticity(cfg, to_device(gpu, ζlm))
 
 function toroidal_from_vorticity(::CPU, cfg::SHTConfig, ζlm::AbstractMatrix)
     _require_cpu_storage(:toroidal_from_vorticity, ζlm)
@@ -1016,6 +1028,9 @@ synthesis_sph_l_cplx(::CPU, cfg::SHTConfig, Slm::AbstractMatrix,
                       ltr::Integer) =
     synthesis_sph_l(CPU(), cfg, Slm, ltr; real_output=false)
 
+synthesis_sph_l_cplx(gpu::GPU, cfg::SHTConfig, Slm::AbstractMatrix, ltr::Integer) =
+    synthesis_sph_l_cplx(cfg, to_device(gpu, Slm), ltr)
+
 """
     synthesis_tor_l(cfg, Tlm, ltr; real_output=true) -> (Vt, Vp)
 
@@ -1044,6 +1059,9 @@ end
 synthesis_tor_l_cplx(::CPU, cfg::SHTConfig, Tlm::AbstractMatrix,
                       ltr::Integer) =
     synthesis_tor_l(CPU(), cfg, Tlm, ltr; real_output=false)
+
+synthesis_tor_l_cplx(gpu::GPU, cfg::SHTConfig, Tlm::AbstractMatrix, ltr::Integer) =
+    synthesis_tor_l_cplx(cfg, to_device(gpu, Tlm), ltr)
 
 """
     synthesis_sph_ml(cfg::SHTConfig, mval::Int, Sl::AbstractVector{<:Complex}, ltr::Int)

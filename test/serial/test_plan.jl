@@ -225,6 +225,16 @@ end
             @test G[1:cfg.nlat, :] ≈ Vt rtol=1e-11 atol=1e-13
             @test G[(cfg.nlat + 1):end, :] ≈ Vp rtol=1e-11 atol=1e-13
         end
+        # Output storage that cannot hold the result is rejected before any write.
+        for plan in (SHTPlan(cfg), SHTPlan(cfg; use_rfft=true))
+            real_spectra = (fill(7.0, size(S)), fill(7.0, size(S)))
+            @test_throws ArgumentError analysis_sphtor!(plan, real_spectra..., Vt, Vp)
+            @test all(A -> all(==(7), A), real_spectra)
+        end
+        real_fields = (fill(7.0, size(Vt)), fill(7.0, size(Vt)))
+        @test_throws ArgumentError synthesis_sphtor!(SHTPlan(cfg), real_fields..., S, T;
+                                                     real_output=false)
+        @test all(A -> all(==(7), A), real_fields)
         # The configuration-level in-place transforms check axes too.
         spectrum = _ZeroBasedMatrix(zeros(ComplexF64, size(S)))
         grid = _ZeroBasedMatrix(zeros(cfg.nlat, cfg.nlon))

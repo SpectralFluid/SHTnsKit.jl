@@ -117,12 +117,14 @@ function _gpu_adapter_adapt(::AMDGPUAdapter, value)
     return ROCArray(value)
 end
 
-function _require_amdgpu(operation::Symbol)
+# Only the transforms need rocFFT. Local evaluation, the spectral operators and
+# the Laplacian pass `fft=false` and run without it.
+function _require_amdgpu(operation::Symbol; fft::Bool=true)
     AMDGPU.functional() || throw(SHTnsKit.BackendUnavailableError(
         operation,
         "AMDGPU.jl is loaded but AMDGPU.functional() is false",
     ))
-    AMDGPU.functional(:rocfft) || throw(SHTnsKit.BackendUnavailableError(
+    !fft || AMDGPU.functional(:rocfft) || throw(SHTnsKit.BackendUnavailableError(
         operation,
         "AMDGPU is functional but rocFFT is unavailable",
     ))
@@ -147,6 +149,7 @@ end
 const _AMDGPU_SCALAR_CACHE = ScalarTableCache(8)
 const _AMDGPU_VECTOR_CACHE = ScalarTableCache(8)
 const _AMDGPU_LOCAL_CACHE = ScalarTableCache(8)
+const _AMDGPU_LOCAL_CONSTANTS = ScalarTableCache(8)
 const _AMDGPU_WORKSPACE_CACHE = ScalarWorkspaceCache(8)
 const _rotation_cache = RotationBlockCache(8)
 
@@ -328,6 +331,22 @@ function _amdgpu_coefficient_scales(cfg::SHTConfig, ::Type{T}) where {T<:Abstrac
     return tables === nothing ? ROCArray(coefficient_scales(cfg, T)) : tables.scales
 end
 
+# The normalization table and convention scales do not depend on the latitude,
+# so build them once per configuration and precision, not for every latitude.
+function _amdgpu_local_constants(cfg::SHTConfig, ::Type{T}) where {T<:AbstractFloat}
+    device = AMDGPU.device_id()
+    identity = objectid(cfg)
+    signature = vector_config_signature(cfg)
+    cached = scalar_cache_lookup(
+        _AMDGPU_LOCAL_CONSTANTS, device, identity, T, signature; owner=cfg,
+    )
+    cached === nothing || return cached
+    built = (; Nlm=ROCArray(Float64.(cfg.Nlm)), scales=_amdgpu_coefficient_scales(cfg, T))
+    return scalar_cache_publish!(AMDGPU.synchronize,
+        _AMDGPU_LOCAL_CONSTANTS, device, identity, T, signature, built; owner=cfg,
+    )
+end
+
 function _amdgpu_local_tables(cfg::SHTConfig, ::Type{T}, cost::Real) where {T<:AbstractFloat}
     SHTnsKit._validate_local_cost(cost, :local_evaluation)
     x = Float64(cost)
@@ -339,7 +358,8 @@ function _amdgpu_local_tables(cfg::SHTConfig, ::Type{T}, cost::Real) where {T<:A
     )
     cached === nothing || return cached
     x_device = ROCArray(Float64[x])
-    Nlm = ROCArray(Float64.(cfg.Nlm))
+    constants = _amdgpu_local_constants(cfg, T)
+    Nlm = constants.Nlm
     Plm = AMDGPU.zeros(T, 1, cfg.lmax + 1, cfg.mmax + 1)
     dtheta = similar(Plm)
     over_sin = similar(Plm)
@@ -347,8 +367,7 @@ function _amdgpu_local_tables(cfg::SHTConfig, ::Type{T}, cost::Real) where {T<:A
         Plm, dtheta, over_sin, x_device, Nlm, cfg.lmax, cfg.mmax;
         ndrange=(1, cfg.mmax + 1),
     )
-    scales = _amdgpu_coefficient_scales(cfg, T)
-    built = AMDGPULocalTables(Plm, dtheta, over_sin, scales)
+    built = AMDGPULocalTables(Plm, dtheta, over_sin, constants.scales)
     return scalar_cache_publish!(AMDGPU.synchronize,
         _AMDGPU_LOCAL_CACHE, device, identity, T, signature, built; owner=cfg,
     )
@@ -363,7 +382,7 @@ end
 end
 
 function _amdgpu_validate_local_arrays(operation::Symbol, arrays...)
-    _require_amdgpu(operation)
+    _require_amdgpu(operation; fft=false)
     for array in arrays
         array isa AMDGPU.AnyROCArray || throw(ArgumentError(
             "$operation requires AMDGPU-owned coefficient storage",
@@ -507,17 +526,30 @@ function _amdgpu_vector_tables(cfg::SHTConfig, ::Type{T}) where {T<:AbstractFloa
     )
     cached === nothing || return cached
 
-    scalar = _amdgpu_scalar_tables(cfg, T)
+    # Share the small tables with resident scalar tables, but never build the
+    # nlat×(lmax+1)×(mmax+1) scalar Legendre table just for them.
+    resident = scalar_cache_lookup(
+        _AMDGPU_SCALAR_CACHE, device, identity, T, scalar_config_signature(cfg); owner=cfg,
+    )
+    small = if resident === nothing
+        _, weights_host, scales_host, sint_host = scalar_host_tables(cfg, T)
+        (sint=ROCArray(sint_host), weights=ROCArray(weights_host), scales=ROCArray(scales_host))
+    else
+        (sint=resident.sint, weights=resident.weights, scales=resident.scales)
+    end
     nodes = ROCArray(Float64.(cfg.x))
     Nlm = ROCArray(Float64.(cfg.Nlm))
-    Plm = similar(scalar.Plm)
+    # The kernel also writes Plm, which no vector transform reads.
+    Plm = ROCArray{T}(undef, cfg.nlat, cfg.lmax + 1, cfg.mmax + 1)
     dtheta = similar(Plm)
     over_sin = similar(Plm)
     kernel! = vector_derivative_table_kernel!(ROCBackend())
     kernel!(Plm, dtheta, over_sin, nodes, Nlm, cfg.lmax, cfg.mmax;
             ndrange=(cfg.nlat, cfg.mmax + 1))
+    AMDGPU.synchronize()
+    AMDGPU.unsafe_free!(Plm)
     built = AMDGPUVectorTables(
-        scalar.sint, scalar.weights, scalar.scales, dtheta, over_sin,
+        small.sint, small.weights, small.scales, dtheta, over_sin,
     )
     return scalar_cache_publish!(AMDGPU.synchronize,
         _AMDGPU_VECTOR_CACHE, device, identity, T, signature, built; owner=cfg,
@@ -528,6 +560,7 @@ function _amdgpu_clear_scalar_cache!(; device=nothing)
     scalar_cache_clear!(_AMDGPU_SCALAR_CACHE; device)
     scalar_cache_clear!(_AMDGPU_VECTOR_CACHE; device)
     scalar_cache_clear!(_AMDGPU_LOCAL_CACHE; device)
+    scalar_cache_clear!(_AMDGPU_LOCAL_CONSTANTS; device)
     scalar_workspace_clear!(_AMDGPU_WORKSPACE_CACHE; device)
     rotation_cache_clear!(_rotation_cache; device)
     return nothing
@@ -572,7 +605,7 @@ function _with_amdgpu_workspace(f, owner, cfg::SHTConfig, ::Type{RT},
     builder = () -> _amdgpu_workspace_builder(cfg, RT, nfields, use_rfft)
     return scalar_workspace_use!(
         f, builder, _AMDGPU_WORKSPACE_CACHE, device, owner, RT,
-        kind, shape, signature,
+        kind, shape, signature; drain=AMDGPU.synchronize,
     )
 end
 
@@ -599,7 +632,7 @@ function _with_amdgpu_vector_workspace(f, owner, cfg::SHTConfig,
     builder = () -> _amdgpu_vector_workspace_builder(cfg, RT)
     return scalar_workspace_use!(
         f, builder, _AMDGPU_WORKSPACE_CACHE, device, owner, RT,
-        :vector, shape, signature,
+        :vector, shape, signature; drain=AMDGPU.synchronize,
     )
 end
 
@@ -637,7 +670,8 @@ _amdgpu_scalar_analysis_direct!(owner, cfg::SHTConfig,
     use_rfft && cfg.mmax > cfg.nlon ÷ 2 && throw(ArgumentError(
         "use_rfft=true requires mmax ≤ nlon÷2",
     ))
-    RT = typeof(float(real(zero(eltype(field)))))
+    # A wider output asks for that precision, as a CPU plan computes in Float64.
+    RT = real(float(promote_type(eltype(field), eltype(output))))
     eltype(output) <: Complex || throw(ArgumentError("analysis output must be complex"))
     tables = _amdgpu_scalar_tables(cfg, RT)
     return _with_amdgpu_workspace(owner, cfg, RT, 0, use_rfft) do workspace
@@ -683,7 +717,8 @@ _amdgpu_scalar_synthesis_direct!(owner, cfg::SHTConfig,
     use_rfft && cfg.mmax > cfg.nlon ÷ 2 && throw(ArgumentError(
         "use_rfft=true requires mmax ≤ nlon÷2",
     ))
-    RT = typeof(float(real(zero(eltype(coefficients)))))
+    # A wider output asks for that precision, as a CPU plan computes in Float64.
+    RT = real(float(promote_type(eltype(coefficients), eltype(output))))
     tables = _amdgpu_scalar_tables(cfg, RT)
     return _with_amdgpu_workspace(owner, cfg, RT, 0, use_rfft) do workspace
         backend = ROCBackend()
@@ -918,9 +953,10 @@ _amdgpu_vector_synthesis_direct!(owner, cfg::SHTConfig,
     RT in (Float32, Float64) || throw(ArgumentError(
         "vector synthesis supports Float32 and Float64 precision",
     ))
-    output_type = real_output ? RT : CT
-    eltype(Vt) === output_type && eltype(Vp) === output_type || throw(ArgumentError(
-        "Vt and Vp must have element type $output_type",
+    # Real fields may also land in complex storage of that precision, as on the CPU.
+    output_types = real_output ? (RT, CT) : (CT,)
+    eltype(Vt) in output_types && eltype(Vp) in output_types || throw(ArgumentError(
+        "Vt and Vp must have element type $(join(output_types, " or "))",
     ))
     any(Base.mightalias(a, b) for a in (Vt, Vp), b in (Slm, Tlm)) &&
         throw(ArgumentError("vector synthesis outputs must not alias inputs"))
@@ -1338,7 +1374,7 @@ end
 _amdgpu_operator_matrix!(cfg::SHTConfig,
                          mx::AMDGPU.AnyROCArray{T,1},
                          derivative::Bool) where {T<:Real} = SHTnsKit._with_gpu_device(mx) do
-    _require_amdgpu(derivative ? :st_dt_matrix : :mul_ct_matrix)
+    _require_amdgpu(derivative ? :st_dt_matrix : :mul_ct_matrix; fft=false)
     length(mx) == 2cfg.nlm || throw(DimensionMismatch(
         "mx length must be 2*nlm=$(2cfg.nlm)",
     ))
@@ -1367,7 +1403,7 @@ SH_mul_mx(::SHTnsKit.GPU, cfg::SHTConfig,
           mx::AMDGPU.AnyROCArray{<:Real,1},
           input::AMDGPU.AnyROCArray{<:Complex,1},
           output::AMDGPU.AnyROCArray{<:Complex,1}) = SHTnsKit._with_gpu_device(mx, input, output) do
-    _require_amdgpu(:SH_mul_mx)
+    _require_amdgpu(:SH_mul_mx; fft=false)
     length(mx) == 2cfg.nlm || throw(DimensionMismatch(
         "mx length must be 2*nlm=$(2cfg.nlm)",
     ))
@@ -1400,7 +1436,7 @@ gpu_apply_laplacian!(cfg::SHTConfig, coeffs::AMDGPU.AnyROCArray;
     device isa SHTnsKit.GPU || throw(ArgumentError(
         "gpu_apply_laplacian! requires GPU(), got $(typeof(device))",
     ))
-    _require_amdgpu(:gpu_apply_laplacian!)
+    _require_amdgpu(:gpu_apply_laplacian!; fft=false)
     expected = (cfg.lmax + 1, cfg.mmax + 1)
     size(coeffs) == expected || throw(DimensionMismatch(
         "coeffs must have size $expected",
@@ -1612,8 +1648,8 @@ synthesis_axisym_l(::SHTnsKit.GPU, cfg::SHTConfig,
                    coefficients::AMDGPU.AnyROCArray{T,1},
                    ltr::Integer) where {T<:Complex} = SHTnsKit._with_gpu_device(coefficients) do
     lcap = _amdgpu_lcap(cfg, ltr)
-    length(coefficients) >= lcap + 1 || throw(DimensionMismatch(
-        "coefficients must contain degrees 0:ltr",
+    lcap < length(coefficients) || throw(ArgumentError(
+        "ltr must be <= length(Qlm)-1=$(length(coefficients) - 1)",
     ))
     return real.(_amdgpu_mode_synthesis(
         cfg, 0, @view(coefficients[1:(lcap + 1)]), lcap,
